@@ -15,6 +15,9 @@ void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export default function RootLayout() {
   const colors = useColors();
+  /** A full-height page sheet (Apple's "New Event") and a short sheet that fits its content. */
+  const page = { presentation: "modal" as const, contentStyle: { backgroundColor: colors.bg2 } };
+  const small = { presentation: "formSheet" as const, sheetGrabberVisible: true, sheetCornerRadius: 30, contentStyle: { backgroundColor: colors.bg2 } };
   const dark = useIsDark();
   const status = useSession((s) => s.status);
   const hydrated = usePrefs((s) => s.hydrated);
@@ -38,6 +41,19 @@ export default function RootLayout() {
           </Stack.Protected>
           <Stack.Protected guard={status === "ready"}>
             <Stack.Screen name="index" />
+            <Stack.Screen name="year" />
+            <Stack.Screen name="day/[date]" />
+            <Stack.Screen name="lists/index" />
+            <Stack.Screen name="lists/[id]" />
+            <Stack.Screen name="search" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="sheet/edit" options={{ ...page, gestureEnabled: true }} />
+            <Stack.Screen name="sheet/listEdit" options={page} />
+            <Stack.Screen name="settings" options={page} />
+            <Stack.Screen name="integrations" options={page} />
+            <Stack.Screen name="sheet/detail" options={{ ...small, sheetAllowedDetents: "fitToContents" }} />
+            <Stack.Screen name="sheet/list" options={{ ...small, sheetAllowedDetents: [0.6, 1] }} />
+            <Stack.Screen name="sheet/tags" options={{ ...small, sheetAllowedDetents: [0.55, 1] }} />
+            <Stack.Screen name="calendars" options={{ ...small, sheetAllowedDetents: "fitToContents" }} />
           </Stack.Protected>
         </Stack>
       )}
