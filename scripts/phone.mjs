@@ -300,7 +300,8 @@ async function iphoneSim() {
   step(`Starting the development server (${mode === "demo" ? "demo mode: sample data, no sign-in" : "the real project"})`);
   const log = logFile(`metro-${mode}.log`);
   const out = fs.openSync(log, "w");
-  const metro = spawn(bin("expo"), ["start", "--port", String(METRO_PORT), "--clear"], { env: { ...env, CI: "1", EXPO_NO_TELEMETRY: "1" }, stdio: ["ignore", out, out] });
+  // One bundle per load (no lazy chunks): the development client otherwise keeps stale chunks across relaunches.
+  const metro = spawn(bin("expo"), ["start", "--port", String(METRO_PORT), "--clear"], { env: { ...env, CI: "1", EXPO_NO_TELEMETRY: "1", EXPO_NO_METRO_LAZY: "1" }, stdio: ["ignore", out, out] });
   let up = false;
   for (let i = 0; i < 60 && !up; i++) {
     up = await responds(`http://127.0.0.1:${METRO_PORT}/status`);

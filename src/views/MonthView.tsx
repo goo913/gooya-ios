@@ -112,10 +112,24 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
   const byDay = useTasksByDay(windowStart, windowEnd, people, viewerTz);
   const eventsByDay = useEventsByDay(windowStart, windowEnd, people, viewerTz);
 
-  const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const idx = titleIndexForScroll(e.nativeEvent.contentOffset.y);
-    setTitleIdx((cur) => (cur === idx ? cur : idx));
-  }, []);
+  // The list's own initial positioning (initialScrollIndex) can land a little short on a cold start; align it
+  // ourselves once the content is laid out, and correct the first scroll event if it still is not.
+  const settled = useRef(false);
+  const settle = useCallback(() => {
+    if (settled.current) return;
+    settled.current = true;
+    scrollToBlock(shown.current, false);
+    setTimeout(() => scrollToBlock(shown.current, false), 120);
+  }, [scrollToBlock]);
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y;
+      if (!settled.current && Math.abs(y - alignedOffset(shown.current)) > 1 && Math.abs(y - alignedOffset(shown.current)) < 80) settle();
+      const idx = titleIndexForScroll(y);
+      setTitleIdx((cur) => (cur === idx ? cur : idx));
+    },
+    [settle],
+  );
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<Block>[] }) => {
     if (!viewableItems.length) return;
     const idxs = viewableItems.map((v) => v.index ?? 0);
@@ -151,6 +165,7 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
         renderItem={renderItem}
         getItemLayout={(_, i) => ({ length: BLOCKS[i].height, offset: BLOCK_OFFSETS[i], index: i })}
         initialScrollIndex={initialIndex}
+        onContentSizeChange={() => requestAnimationFrame(settle)}
         onScroll={onScroll}
         scrollEventThrottle={16}
         onViewableItemsChanged={onViewable}
@@ -229,7 +244,7 @@ const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, isToday, o
   const overflow = list.length > MAX_CHIPS ? list.length - (MAX_CHIPS - 1) : 0;
   const visible = overflow ? list.slice(0, MAX_CHIPS - 1) : list;
   return (
-    <Pressable accessibilityLabel={dateKey} onPress={() => onPick(dateKey)} style={[styles.cell, { left: col * colW, width: colW, top: row * ROW_H }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={dateKey} onPress={() => onPick(dateKey)} style={[styles.cell, { left: col * colW, width: colW, top: row * ROW_H }]}>
       <View style={[styles.number, isToday && { backgroundColor: colors.red }]}>
         <Text style={[styles.numberText, { color: isToday ? "#ffffff" : weekend ? colors.gray : colors.label }, isToday && styles.numberToday]}>{day}</Text>
       </View>

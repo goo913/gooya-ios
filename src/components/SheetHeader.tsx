@@ -18,7 +18,7 @@ export function SheetBar({ title, left, right }: { title: ReactNode; left?: Reac
 export function BarButton({ children, onPress, disabled, bold }: { children: ReactNode; onPress: () => void; disabled?: boolean; bold?: boolean }) {
   const colors = useColors();
   return (
-    <Pressable onPress={onPress} disabled={disabled} hitSlop={8} style={({ pressed }) => ({ opacity: disabled ? 0.4 : pressed ? 0.5 : 1 })}>
+    <Pressable accessibilityRole="button" onPress={onPress} disabled={disabled} hitSlop={8} style={({ pressed }) => ({ opacity: disabled ? 0.4 : pressed ? 0.5 : 1 })}>
       <Text style={[styles.button, { color: colors.blue, fontWeight: bold ? "600" : "400" }]}>{children}</Text>
     </Pressable>
   );
@@ -29,11 +29,11 @@ export function DetailsBar({ title, onCancel, onDone, doneLabel, doneDisabled }:
   const colors = useColors();
   return (
     <View style={styles.detailsBar}>
-      <Pressable accessibilityLabel="Cancel" onPress={onCancel} style={[styles.round, { backgroundColor: colors.fill3, left: 16 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Cancel" onPress={onCancel} style={[styles.round, { backgroundColor: colors.fill3, left: 16 }]}>
         <Icon name="xmark" size={17} weight="bold" />
       </Pressable>
       <Text style={[styles.title, { color: colors.label }]}>{title}</Text>
-      <Pressable accessibilityLabel={doneLabel} onPress={onDone} disabled={doneDisabled} style={[styles.round, { backgroundColor: colors.blue, right: 16, opacity: doneDisabled ? 0.4 : 1 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={doneLabel} onPress={onDone} disabled={doneDisabled} style={[styles.round, { backgroundColor: colors.blue, right: 16, opacity: doneDisabled ? 0.4 : 1 }]}>
         <Icon name="checkmark" size={19} color="#ffffff" weight="bold" />
       </Pressable>
     </View>

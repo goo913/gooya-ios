@@ -4,7 +4,9 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useCallback } from "react";
 import { View } from "react-native";
 import { BottomChrome, TopChrome } from "@/components/Chrome";
+import { pickOption } from "@/components/Form";
 import { useNewItem } from "@/lib/actions";
+import { usePrefs } from "@/store/prefs";
 import { MonthView } from "@/views/MonthView";
 import { useNav } from "@/store/nav";
 import { useColors } from "@/theme";
@@ -17,10 +19,17 @@ export default function MonthScreen() {
   const visible = useNav((s) => s.visibleMonthKey);
   const onPickDay = useCallback((key: DateKey) => router.push({ pathname: "/day/[date]", params: { date: key } }), []);
   const newItem = useNewItem();
+  const monthDisplay = usePrefs((s) => s.monthDisplay);
+  const setMonthDisplay = usePrefs((s) => s.setMonthDisplay);
+  const viewOptions = () =>
+    pickOption(["Month", "List", "Task lists"], monthDisplay === "list" ? "List" : "Month", (_, i) => {
+      if (i === 2) router.push("/lists");
+      else setMonthDisplay(i === 1 ? "list" : "stacked");
+    });
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <MonthView monthKey={monthKey} onPickDay={onPickDay} />
-      <TopChrome back={visible.slice(0, 4)} onBack={() => router.push({ pathname: "/year", params: { year: visible.slice(0, 4) } })} onAdd={newItem} onSearch={() => router.push("/search")} />
+      <TopChrome back={visible.slice(0, 4)} onBack={() => router.push({ pathname: "/year", params: { year: visible.slice(0, 4) } })} onViewOptions={viewOptions} onAdd={newItem} onSearch={() => router.push("/search")} />
       <BottomChrome onSettings={() => router.push("/settings")} onCalendars={() => router.push("/calendars")} />
     </View>
   );
