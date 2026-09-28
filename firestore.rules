@@ -1,0 +1,89 @@
+rules_version = '2';
+
+// GOOYA — private two-person calendar.
+// Only the two allow-listed Google accounts can read or write anything.
+// Person keys are stable ('gooya' | 'eunbi') so either person can create
+// items on the other's calendar even before the other has ever signed in.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function email() {
+      return request.auth.token.email.lower();
+    }
+
+    function isMember() {
+      return signedIn()
+        && email() in ['goochoi913@gmail.com', 'evapark7147@gmail.com'];
+    }
+
+    // Which person the signed-in account is.
+    function myKey() {
+      return email() == 'goochoi913@gmail.com' ? 'gooya' : 'eunbi';
+    }
+
+    function validPersonKey(k) {
+      return k in ['gooya', 'eunbi'];
+    }
+
+    // users/{personKey}: profile, settings, push tokens, widget token.
+    // Anyone in the pair may read (names, colors, time zones are shared);
+    // only the owner may write their own document.
+    match /users/{key} {
+      allow read: if isMember();
+      allow write: if isMember() && key == myKey() && validPersonKey(key);
+    }
+
+    // tasks/{id}: either person may create/edit/delete tasks on either calendar.
+    match /tasks/{id} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && validPersonKey(request.resource.data.owner)
+        && request.resource.data.createdBy == myKey();
+      allow update: if isMember() && validPersonKey(request.resource.data.owner);
+      allow delete: if isMember();
+    }
+
+    // schedules/{id}: recurring background routines (work, sleep, ...).
+    match /schedules/{id} {
+      allow read: if isMember();
+      allow create, update: if isMember() && validPersonKey(request.resource.data.owner);
+      allow delete: if isMember();
+    }
+
+    // lists/{id}: shared task lists (Reminders-style).
+    match /lists/{id} {
+      allow read, write: if isMember();
+    }
+
+    // events/{id}: imported calendar events (written by sync functions; editable when two-way).
+    match /events/{id} {
+      allow read, write: if isMember();
+    }
+
+    // integrations/{person}/accounts/{id}: each person manages their own connections.
+    match /integrations/{person}/accounts/{accountId} {
+      allow read, write: if isMember() && person == myKey();
+    }
+    match /integrationSecrets/{id} {
+      allow read, write: if false;
+    }
+
+    // Written and read only by Cloud Functions (Admin SDK bypasses rules).
+    match /alertQueue/{id} {
+      allow read, write: if false;
+    }
+    match /alertLog/{id} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

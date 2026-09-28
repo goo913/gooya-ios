@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+functions/node_modules/
+functions/lib/
+
+# Expo
+.expo/
+dist/
+expo-env.d.ts
+# The native project is generated (npx expo prebuild); nothing in it is edited by hand.
+ios/
+
+# Firebase's file for the real project (scripts/phone.mjs downloads it): never committed
+/firebase/GoogleService-Info.plist
+/firebase/GoogleService-Info.*.plist
+functions/.env
+functions/.env.*
+.env
+.env.local
+*.local
+
+# Publishing: the App Store Connect key and the screenshots (scripts/publish.mjs)
+/.publish/
+
+# Native / keys
+*.orig.*
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# logs
+npm-debug.*
+firebase-debug.log
+*.log
+
+# macOS
+.DS_Store

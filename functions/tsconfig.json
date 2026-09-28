@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "es2022",
+    "lib": [
+      "es2023"
+    ],
+    "outDir": "lib",
+    "rootDir": "..",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": false,
+    "noUnusedLocals": true
+  },
+  "include": [
+    "src",
+    "../shared/*.ts"
+  ],
+  "exclude": [
+    "../shared/*.test.ts"
+  ]
+}
