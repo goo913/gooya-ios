@@ -1,0 +1,33 @@
+# Running GOOYA
+
+## On your iPhone (the real app)
+
+1. Plug the iPhone into this Mac with its cable and unlock it. Tap **Trust** if it asks. Developer Mode must be on (Settings → Privacy & Security → Developer Mode).
+2. In Terminal, in this folder: `npm run iphone`.
+
+The first time it makes the native project (`npx expo prebuild`), fetches the libraries (CocoaPods), builds a **Release** build (10–20 minutes), registers the iPhone with HyberTec LLC's team, installs the app and opens it. Later runs rebuild only what changed. The app is signed by the paid team, so it keeps opening for a year without the Mac.
+
+Sign in with Google (goochoi913@gmail.com or evapark7147@gmail.com; any other account is refused). Notifications: allow them when asked (Settings → Notifications in the app turns them on later).
+
+## On the iPhone Simulator
+
+- `npm run iphone:sim` — **demo mode**: made-up tasks and schedules, no sign-in, nothing written to Firestore. Edits to the code show up as you save (Fast Refresh).
+- `npm run iphone:sim:live` — the real project. Google sign-in works through the Simulator's browser.
+
+Both make their own simulator ("GOOYA Demo", "GOOYA Live"). Ctrl+C stops the development server; the simulator stays open. Logs: `.expo/logs/`.
+
+## When it won't build
+
+- **"No profiles for com.hybertec.gooya"** / **"Your team has no devices"** — no iPhone was plugged in: Xcode registers the phone and makes the profile the first time `npm run iphone` runs with it connected.
+- **"Xcode isn't signed in"** — Xcode → Settings… → Accounts → + → the Apple ID that is on HyberTec LLC's team.
+- **Anything native changed** (a package with native code, `app.config.ts`, the Firebase file) — the scripts notice and run `prebuild` again. To force it: `npm run iphone -- --rebuild`.
+- **The demo simulator shows stale code after a relaunch** — the development server runs without lazy chunks for this reason; if it still happens, stop it (Ctrl+C) and run `npm run iphone:sim` again.
+
+## Checks
+
+```bash
+npm run typecheck   # the app, with shared/
+npm run lint
+npm test            # shared/ unit tests (recurrence, normalisation, widget feed)
+cd functions && npx tsc --noEmit -p tsconfig.json
+```
