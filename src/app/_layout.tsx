@@ -1,9 +1,14 @@
-import { Stack } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { Stack, router } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { initAuth } from "@/lib/auth";
+import { isMock } from "@/lib/mock";
+import { refreshPushToken, requestNotifications } from "@/lib/push";
+import { useSheets } from "@/store/sheets";
+import { useData } from "@/store/data";
 import { setupProblem } from "@/lib/env";
 import { usePrefs } from "@/store/prefs";
 import { useSession } from "@/store/session";
@@ -20,7 +25,29 @@ export default function RootLayout() {
   const small = { presentation: "formSheet" as const, sheetGrabberVisible: true, sheetCornerRadius: 30, contentStyle: { backgroundColor: colors.bg2 } };
   const dark = useIsDark();
   const status = useSession((s) => s.status);
+  const me = useSession((s) => s.me);
   const hydrated = usePrefs((s) => s.hydrated);
+  // Once signed in: ask for notifications (once) and register this phone for the server's alerts.
+  useEffect(() => {
+    if (status !== "ready" || !me || isMock) return;
+    void requestNotifications().then((granted) => granted && refreshPushToken(me));
+  }, [status, me]);
+  // A tapped alert opens its task (the server puts taskId and dateKey in the push data).
+  useEffect(() => {
+    const open = (data: Record<string, unknown> | undefined) => {
+      const taskId = typeof data?.taskId === "string" ? data.taskId : null;
+      const dateKey = typeof data?.dateKey === "string" ? data.dateKey : "";
+      if (!taskId) return;
+      const task = useData.getState().tasks.find((t) => t.id === taskId);
+      if (!task) return;
+      useSheets.getState().openEditor({ kind: "task", task });
+      if (dateKey) router.push({ pathname: "/day/[date]", params: { date: dateKey } });
+      router.push("/sheet/edit");
+    };
+    const sub = Notifications.addNotificationResponseReceivedListener((r) => open(r.notification.request.content.data as Record<string, unknown>));
+    void Notifications.getLastNotificationResponseAsync().then((r) => r && setTimeout(() => open(r.notification.request.content.data as Record<string, unknown>), 800));
+    return () => sub.remove();
+  }, []);
   useEffect(() => {
     if (!setupProblem) initAuth();
   }, []);
