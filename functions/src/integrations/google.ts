@@ -53,22 +53,33 @@ export const googleAuthStart = onRequest({ secrets: SECRETS, invoker: 'public' }
     return
   }
   const nonce = randomUUID()
-  const state = `${person}.${nonce}.${sign(`${person}.${nonce}`)}`
+  // Where to return afterwards: the iPhone app (its gooya:// scheme) or the web app.
+  const target = req.query.app ? 'app' : 'web'
+  const state = `${person}.${nonce}.${target}.${sign(`${person}.${nonce}.${target}`)}`
   const url = oauthClient().generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES, state, include_granted_scopes: true })
   res.redirect(302, url)
 })
 
+/** The page the callback returns to: the app's own scheme, or the web app. */
+function returnUrl(target: string, error?: string): string {
+  const q = `integrations=google${error ? `&error=${encodeURIComponent(error)}` : ''}`
+  return target === 'app' ? `gooya://integrations?${q}` : `${APP_URL}/?${q}`
+}
+
 /** Step 2: exchange the code, store the refresh token encrypted, list calendars, return to the app. */
 export const googleAuthCallback = onRequest({ secrets: SECRETS, invoker: 'public' }, async (req, res) => {
   const state = String(req.query.state ?? '')
-  const [person, nonce, sig] = state.split('.')
-  if (!person || !nonce || sig !== sign(`${person}.${nonce}`) || !(person in PEOPLE)) {
+  const parts = state.split('.')
+  // Older states (before the app existed) have three parts; new ones carry the return target.
+  const [person, nonce, target, sig] = parts.length === 4 ? parts : [parts[0], parts[1], 'web', parts[2]]
+  const signed = parts.length === 4 ? `${person}.${nonce}.${target}` : `${person}.${nonce}`
+  if (!person || !nonce || sig !== sign(signed) || !(person in PEOPLE)) {
     res.status(400).send('Bad state')
     return
   }
   const code = String(req.query.code ?? '')
   if (!code) {
-    res.redirect(302, `${APP_URL}/?integrations=google&error=${encodeURIComponent(String(req.query.error ?? 'denied'))}`)
+    res.redirect(302, returnUrl(target, String(req.query.error ?? 'denied')))
     return
   }
   try {
@@ -101,10 +112,10 @@ export const googleAuthCallback = onRequest({ secrets: SECRETS, invoker: 'public
       watch: existing?.watch ?? {},
     }
     await accountsRef(person as PersonKey).doc(accountId).set(doc)
-    res.redirect(302, `${APP_URL}/?integrations=google`)
+    res.redirect(302, returnUrl(target))
   } catch (e) {
     logger.error('googleAuthCallback failed', { error: String(e) })
-    res.redirect(302, `${APP_URL}/?integrations=google&error=${encodeURIComponent(String((e as Error).message ?? e))}`)
+    res.redirect(302, returnUrl(target, String((e as Error).message ?? e)))
   }
 })
 

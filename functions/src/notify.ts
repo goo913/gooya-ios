@@ -39,6 +39,11 @@ export async function sendToPerson(person: PersonKey, content: PushContent): Pro
     tokens,
     data,
     webpush: { headers: { Urgency: 'high', TTL: '3600' }, fcmOptions: { link: content.url } },
+    // The iPhone app: iOS shows the alert itself (the app may be closed); the data above tells the app where to go.
+    apns: {
+      headers: { 'apns-priority': '10', ...(content.tag ? { 'apns-collapse-id': content.tag.slice(0, 64) } : {}) },
+      payload: { aps: { alert: { title: content.title, body: content.body }, sound: 'default', 'thread-id': content.tag ?? 'gooya', 'mutable-content': 1 } },
+    },
   })
   const dead: string[] = []
   res.responses.forEach((r, i) => {

@@ -9,6 +9,8 @@ import { useEventsByDay, useTasksByDay } from "@/lib/occurrences";
 import { useFilteredPeople } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { useNav } from "@/store/nav";
+import { usePrefs } from "@/store/prefs";
+import { ListView } from "./ListView";
 import { useColors, type Colors } from "@/theme";
 
 export const ROW_H = 130;
@@ -140,6 +142,7 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
     });
   }).current;
 
+  const display = usePrefs((s) => s.monthDisplay);
   const title = BLOCKS[titleIdx];
   const renderItem = useCallback(
     ({ item }: { item: Block }) => <MonthBlock block={item} width={width} today={today} byDay={byDay} eventsByDay={eventsByDay} colors={colors} onPick={onPickDay} />,
@@ -150,14 +153,19 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
     <View style={[styles.fill, { backgroundColor: colors.bg }]}>
       <View style={[styles.header, { paddingTop: insets.top + TITLE_TOP, borderBottomColor: colors.separator }]}>
         <Text style={[styles.title, { color: colors.label }]}>{MONTH_NAMES[title.m - 1]}</Text>
-        <View style={styles.weekdays}>
-          {WEEKDAY_LETTERS.map((l, i) => (
-            <Text key={i} style={[styles.weekday, { color: colors.label2 }]}>
-              {l}
-            </Text>
-          ))}
-        </View>
+        {display === "list" ? null : (
+          <View style={styles.weekdays}>
+            {WEEKDAY_LETTERS.map((l, i) => (
+              <Text key={i} style={[styles.weekday, { color: colors.label2 }]}>
+                {l}
+              </Text>
+            ))}
+          </View>
+        )}
       </View>
+      {display === "list" ? (
+        <ListView />
+      ) : (
       <FlatList
         ref={listRef}
         data={BLOCKS}
@@ -177,6 +185,7 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
         contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}
         style={styles.fill}
       />
+      )}
     </View>
   );
 }
