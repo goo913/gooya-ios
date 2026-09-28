@@ -30,7 +30,9 @@ export default function RootLayout() {
   // Once signed in: ask for notifications (once) and register this phone for the server's alerts.
   useEffect(() => {
     if (status !== "ready" || !me || isMock) return;
-    void requestNotifications().then((granted) => granted && refreshPushToken(me));
+    void requestNotifications().then((granted) => {
+      if (granted) void refreshPushToken(me);
+    });
   }, [status, me]);
   // A tapped alert opens its task (the server puts taskId and dateKey in the push data).
   useEffect(() => {
