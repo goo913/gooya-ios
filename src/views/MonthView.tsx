@@ -132,7 +132,8 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
     },
     [settle],
   );
-  const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<Block>[] }) => {
+  // One function for the list's lifetime: FlatList refuses a changing onViewableItemsChanged.
+  const [onViewable] = useState(() => ({ viewableItems }: { viewableItems: ViewToken<Block>[] }) => {
     if (!viewableItems.length) return;
     const idxs = viewableItems.map((v) => v.index ?? 0);
     setRange((r) => {
@@ -140,7 +141,7 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
       const last = Math.max(...idxs);
       return r.first === first && r.last === last ? r : { first, last };
     });
-  }).current;
+  });
 
   const display = usePrefs((s) => s.monthDisplay);
   const title = BLOCKS[titleIdx];

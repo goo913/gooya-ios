@@ -33,7 +33,7 @@ TestFlight alone is not a way to distribute for good: every build stops working 
    ```
 
    Leave `appleId` empty until part 2 creates the app. Back the folder up (a password manager): it is the only copy.
-4. **Check the Mac can archive and sign:** `npm run publish:iphone -- --dry-run --no-bump`. It builds the App Store version without uploading (10–20 minutes the first time) and ends with `✓ Ready to upload: .expo/publish/ios/GOOYA.ipa`. If it stops at signing with "cloud-managed", the Apple ID in Xcode must be the Account Holder or an Admin of HyberTec LLC.
+4. **Check the Mac can archive and sign:** `npm run publish:iphone -- --dry-run --no-bump`. It builds the App Store version without uploading (10–20 minutes the first time) and ends with `✓ Ready to upload: .expo/publish/ios/GOOYA.ipa`. If it stops at signing with "cloud-managed", the Apple ID in Xcode must be the Account Holder or an Admin of HyberTec LLC. The app carries its Home Screen widget as an extension (`com.hybertec.gooya.widget`) sharing the App Group `group.com.hybertec.gooya`; Xcode registers both, and the group, with the team by itself the first time it signs — nothing to create by hand, and App Store Connect needs no separate record for it.
 
 ## Part 2: TestFlight, for you and 은비
 

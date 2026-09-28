@@ -47,7 +47,7 @@ export default function DayScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <DayView dateKey={dateKey} onChangeDate={(k) => router.setParams({ date: k })} actions={actions} />
-      <TopChrome back={month} onBack={() => router.back()} viewIcon="day" onAdd={() => actions.createTask(dateKey, "gooya", 9 * 60)} onSearch={() => router.push("/search")} />
+      <TopChrome back={month} onBack={() => (router.canGoBack() ? router.back() : router.replace("/"))} viewIcon="day" onAdd={() => actions.createTask(dateKey, "gooya", 9 * 60)} onSearch={() => router.push("/search")} />
       <BottomChrome onSettings={() => router.push("/settings")} onCalendars={() => router.push("/calendars")} />
     </View>
   );

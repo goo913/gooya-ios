@@ -6,6 +6,7 @@ import { useData, type IntegrationAccount } from "@/store/data";
 import { useSession } from "@/store/session";
 import { db } from "./firebase";
 import { isMock, startMockData } from "./mock";
+import { startWidgetSync } from "./widget";
 
 type Snap = QueryDocumentSnapshot<DocumentData>;
 
@@ -27,8 +28,10 @@ export function startData(): void {
   started = true;
   if (isMock) {
     startMockData();
+    startWidgetSync();
     return;
   }
+  startWidgetSync();
   const { setTasks, setSchedules, setUsers, setLists } = useData.getState();
   onSnapshot(collection(db, "tasks"), (qs) => setTasks(qs.docs.map(taskFromSnap)));
   onSnapshot(collection(db, "lists"), (qs) => {

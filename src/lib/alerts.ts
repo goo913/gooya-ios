@@ -1,5 +1,5 @@
 /** Early reminder options in Apple Reminders' wording. Values are minutes before the due time. */
-export const EARLY_REMINDERS: Array<{ value: number | null; label: string }> = [
+export const EARLY_REMINDERS: { value: number | null; label: string }[] = [
   { value: null, label: 'None' },
   { value: 5, label: '5 minutes before' },
   { value: 15, label: '15 minutes before' },

@@ -2,11 +2,12 @@ import { onAuthStateChanged, signOut } from "@react-native-firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from "@react-native-firebase/firestore";
 import { PEOPLE, personForEmail, type PersonKey } from "@shared/people";
 import { useSession, type AuthUser } from "@/store/session";
-import { startData } from "./db";
+import { newId, startData } from "./db";
 import { auth, db } from "./firebase";
 import { signInWithGoogle, signOutOfGoogle } from "./googleSignIn";
 import { isMock, mockMe } from "./mock";
 import { refreshPushToken } from "./push";
+import { clearWidget } from "./widget";
 
 export async function signIn(): Promise<void> {
   const session = useSession.getState();
@@ -21,6 +22,7 @@ export async function signIn(): Promise<void> {
 }
 
 export async function signOutUser(): Promise<void> {
+  clearWidget();
   await signOutOfGoogle();
   await signOut(auth);
 }
@@ -34,7 +36,10 @@ function describeError(e: unknown): string {
   return e instanceof Error ? e.message : "Sign-in failed";
 }
 
-/** Create or refresh users/{personKey}. Never overwrites user-edited fields. */
+/** The token the widget, the subscription feed and the Reminders bridge identify this person with (users/{me}.widgetToken). */
+const newWidgetToken = () => `${newId()}${newId()}`;
+
+/** Create or refresh users/{personKey}. Never overwrites user-edited fields; gives the person a widget token once. */
 async function ensureUserDoc(me: PersonKey, user: AuthUser): Promise<void> {
   const ref = doc(db, "users", me);
   const def = PEOPLE[me];
@@ -43,10 +48,11 @@ async function ensureUserDoc(me: PersonKey, user: AuthUser): Promise<void> {
     if (!snap.exists()) {
       await setDoc(ref, {
         key: me, uid: user.uid, email: def.email, name: def.name, timezone: def.timezone, color: def.color,
-        fcmTokens: [], settings: {}, createdAt: serverTimestamp(), lastSeenAt: serverTimestamp(),
+        fcmTokens: [], settings: {}, widgetToken: newWidgetToken(), createdAt: serverTimestamp(), lastSeenAt: serverTimestamp(),
       });
     } else {
-      await updateDoc(ref, { uid: user.uid, email: def.email, lastSeenAt: serverTimestamp() });
+      const token = snap.data()?.widgetToken;
+      await updateDoc(ref, { uid: user.uid, email: def.email, lastSeenAt: serverTimestamp(), ...(typeof token === "string" && token ? {} : { widgetToken: newWidgetToken() }) });
     }
   } catch {
     await setDoc(ref, { key: me, uid: user.uid, email: def.email, lastSeenAt: serverTimestamp() }, { merge: true });

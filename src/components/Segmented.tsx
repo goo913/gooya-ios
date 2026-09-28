@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
 import { useColors, useIsDark } from "@/theme";
 
@@ -13,7 +13,7 @@ export function Segmented<T extends string>({ options, value, onChange, style }:
   const dark = useIsDark();
   const [width, setWidth] = useState(0);
   const index = Math.max(0, options.findIndex((o) => o.value === value));
-  const x = useRef(new Animated.Value(0)).current;
+  const [x] = useState(() => new Animated.Value(0));
   const segW = width ? (width - 4) / options.length : 0;
   useEffect(() => {
     Animated.spring(x, { toValue: index * segW, useNativeDriver: true, stiffness: 500, damping: 40, mass: 1 }).start();

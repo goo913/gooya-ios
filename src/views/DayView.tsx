@@ -182,7 +182,9 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const nowMin = minutesSinceMidnight(now, viewerTz);
   const centerHasToday = pageDates[1].includes(today);
   const hourHRef = useRef(hourH);
-  hourHRef.current = hourH;
+  useEffect(() => {
+    hourHRef.current = hourH;
+  }, [hourH]);
   const scrollTop = useRef(0);
 
   const scrollToMinutes = useCallback((min: number, animated: boolean) => {
@@ -213,23 +215,23 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const syncHeader = (e: NativeSyntheticEvent<NativeScrollEvent>) => headerPagerRef.current?.scrollTo({ x: e.nativeEvent.contentOffset.x, animated: false });
 
   // Pinch to zoom the hour height, keeping the time under the fingers fixed.
-  const pinch = useMemo(
-    () =>
-      Gesture.Pinch()
-        .runOnJS(true)
-        .onStart((e) => {
-          pinchMemo.current = { h0: hourHRef.current, top0: scrollTop.current, oy: e.focalY };
-        })
-        .onUpdate((e) => {
-          const m = pinchMemo.current;
-          if (!m) return;
-          const newH = Math.min(200, Math.max(28, m.h0 * e.scale));
-          setHourHeight(newH);
-          scrollRef.current?.scrollTo({ y: ((m.top0 + m.oy) / m.h0) * newH - m.oy, animated: false });
-        }),
+  const pinchMemo = useRef<{ h0: number; top0: number; oy: number } | null>(null);
+  const onPinchStart = useCallback((e: { focalY: number }) => {
+    pinchMemo.current = { h0: hourHRef.current, top0: scrollTop.current, oy: e.focalY };
+  }, []);
+  const onPinchUpdate = useCallback(
+    (e: { scale: number }) => {
+      const m = pinchMemo.current;
+      if (!m) return;
+      const newH = Math.min(200, Math.max(28, m.h0 * e.scale));
+      setHourHeight(newH);
+      scrollRef.current?.scrollTo({ y: ((m.top0 + m.oy) / m.h0) * newH - m.oy, animated: false });
+    },
     [setHourHeight],
   );
-  const pinchMemo = useRef<{ h0: number; top0: number; oy: number } | null>(null);
+  // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
+  // eslint-disable-next-line react-hooks/refs
+  const pinch = useMemo(() => Gesture.Pinch().runOnJS(true).onStart(onPinchStart).onUpdate(onPinchUpdate), [onPinchStart, onPinchUpdate]);
 
   const scheduleMenu = useCallback(
     (occ: ScheduleOccurrence) => {
@@ -541,39 +543,51 @@ const TaskPill = memo(function TaskPill({ seg, info, hourH, dark, date, person, 
   const moved = useRef(false);
   const o = seg.occ;
   const snap = snapFor(hourH);
+  // The preview is also kept in a ref: the gesture's end reads it without going through a state update.
+  const previewRef = useRef<{ startMin: number; dx: number; target: number } | null>(null);
+  const showPreview = useCallback((p: { startMin: number; dx: number; target: number } | null) => {
+    previewRef.current = p;
+    setPreview(p);
+  }, []);
+  const onPanStart = useCallback(() => {
+    moved.current = false;
+    setLifted(true);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+  const onPanUpdate = useCallback(
+    (e: { translationX: number; translationY: number }) => {
+      if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
+      moved.current = true;
+      const deltaMin = Math.round(((e.translationY / hourH) * 60) / snap) * snap;
+      const startMin = Math.min(24 * 60 - snap, Math.max(0, seg.startMin + deltaMin));
+      const shift = subIndex < 0 ? 0 : Math.max(-subIndex, Math.min(subCols.length - 1 - subIndex, Math.round(e.translationX / subW)));
+      showPreview({ startMin, dx: shift * subW, target: subIndex < 0 ? -1 : subIndex + shift });
+    },
+    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, showPreview],
+  );
+  const onPanEnd = useCallback(() => {
+    const p = previewRef.current;
+    setLifted(false);
+    showPreview(null);
+    if (p && moved.current) {
+      const target = p.target >= 0 ? subCols[p.target] : { date, person };
+      if (p.startMin !== seg.startMin || target.date !== date || target.person !== person) onMove(seg, p.startMin, target.date, target.person);
+    } else onMenu(o);
+  }, [subCols, date, person, seg, onMove, onMenu, o, showPreview]);
+  // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
+  /* eslint-disable react-hooks/refs */
   const pan = useMemo(
     () =>
       Gesture.Pan()
         .runOnJS(true)
         .activateAfterLongPress(420)
-        .onStart(() => {
-          moved.current = false;
-          setLifted(true);
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        })
-        .onUpdate((e) => {
-          if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
-          moved.current = true;
-          const deltaMin = Math.round(((e.translationY / hourH) * 60) / snap) * snap;
-          const startMin = Math.min(24 * 60 - snap, Math.max(0, seg.startMin + deltaMin));
-          const shift = subIndex < 0 ? 0 : Math.max(-subIndex, Math.min(subCols.length - 1 - subIndex, Math.round(e.translationX / subW)));
-          setPreview({ startMin, dx: shift * subW, target: subIndex < 0 ? -1 : subIndex + shift });
-        })
-        .onEnd(() => {
-          setLifted(false);
-          setPreview((p) => {
-            if (p && moved.current) {
-              const target = p.target >= 0 ? subCols[p.target] : { date, person };
-              if (p.startMin !== seg.startMin || target.date !== date || target.person !== person) onMove(seg, p.startMin, target.date, target.person);
-            } else onMenu(o);
-            return null;
-          });
-        })
-        .onFinalize(() => {
-          setLifted(false);
-        }),
-    [seg, hourH, snap, subW, subIndex, subCols, date, person, onMove, onMenu, o],
+        .onStart(onPanStart)
+        .onUpdate(onPanUpdate)
+        .onEnd(onPanEnd)
+        .onFinalize(() => setLifted(false)),
+    [onPanStart, onPanUpdate, onPanEnd],
   );
+  /* eslint-enable react-hooks/refs */
   const tap = useMemo(() => Gesture.Tap().runOnJS(true).onEnd(() => onTap(o)), [onTap, o]);
   const gesture = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
   const startMin = preview?.startMin ?? seg.startMin;

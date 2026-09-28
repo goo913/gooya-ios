@@ -14,7 +14,8 @@ The app is published through **HyberTec LLC**'s Apple Developer team (`YSK7CHH56
 | `src/components/` | Glass pills (iOS 26 Liquid Glass), grouped rows, segmented control, chips, icons (SF Symbols) |
 | `src/lib/` | Firebase (auth, Firestore, push), the occurrence hooks, task/schedule operations, demo data |
 | `src/store/` | zustand stores: data, session, preferences (per phone), sheets |
-| `shared/` | The model, recurrence (RRULE, time zones), normalisation — shared with the functions |
+| `targets/widget/` | The Home Screen widget (WidgetKit, Swift), built into the app by `@bacons/apple-targets`; it reads the feed the app writes into the App Group (`src/lib/widget.ts`) |
+| `shared/` | The model, recurrence (RRULE, time zones), normalisation, the widget feed — shared with the functions |
 | `functions/` | Cloud Functions: alerts, push, calendar integrations (Google, iCloud, Reminders bridge, ICS feed), the widget feed |
 | `scripts/` | `phone.mjs` (simulator and iPhone builds), `publish.mjs` (App Store Connect) |
 | `docs/` | `running.md`, `publishing.md` |
@@ -25,6 +26,7 @@ The app is published through **HyberTec LLC**'s Apple Developer team (`YSK7CHH56
 - `npm run iphone:sim` — the iPhone Simulator in **demo mode** (sample data, no sign-in), with Fast Refresh.
 - `npm run iphone:sim:live` — the Simulator on the real project (Google sign-in in the Simulator's browser).
 - `npm run phone:setup` — gets a new Mac ready (Firebase file, CocoaPods, Xcode) and says what is left.
+- `npm run widget:preview` — draws the Home Screen widget's three sizes (light and dark) into `.expo/widget-preview/` on this Mac, from the demo simulator's calendar, to check its layout without a phone.
 
 See `docs/running.md`. `npm run typecheck`, `npm run lint` and `npm test` (the shared logic's unit tests) run the checks.
 

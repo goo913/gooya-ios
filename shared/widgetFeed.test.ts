@@ -58,3 +58,56 @@ test('rows are sorted by start across schedules', () => {
     ['Gym', 'Sleep'],
   )
 })
+
+// ---------------------------------------------------------------- buildWidgetFeed (the Home Screen widget)
+import { buildWidgetFeed } from './widgetFeed'
+import type { Task, UserDoc } from './model'
+
+function user(key: 'gooya' | 'eunbi', extra: Partial<UserDoc> = {}): UserDoc {
+  return { key, email: '', name: key === 'gooya' ? '구야' : '은비', timezone: key === 'gooya' ? TZ : 'Asia/Seoul', color: '#0091ff', fcmTokens: [], settings: {}, ...extra }
+}
+
+function task(id: string, owner: 'gooya' | 'eunbi', dueDate: string, dueTime: string | null, extra: Partial<Task> = {}): Task {
+  return {
+    id, owner, createdBy: owner, listId: 'tasks', title: id, notes: '', dueDate, dueTime, timezone: TZ, rrule: null, exdates: [], overrides: {},
+    completed: false, completedDates: [], earlyReminders: [], tags: [], flagged: false, priority: 0, source: 'gooya', externalRefs: [], createdAt: 0, updatedAt: 0, ...extra,
+  }
+}
+
+test('the feed lists both people’s tasks from today on, all-day first, with a dot per person and day', () => {
+  const now = startOfDayMs(TODAY, TZ) + 8 * H
+  const feed = buildWidgetFeed({
+    me: user('gooya'),
+    users: [user('gooya'), user('eunbi', { color: '#ff9230' })],
+    tasks: [task('Dentist', 'gooya', '2026-09-30', '14:00'), task('Rent', 'gooya', TODAY, null), task('Standup', 'eunbi', TODAY, '10:00'), task('Old', 'gooya', '2026-09-20', '09:00'), task('Trip', 'eunbi', '2026-10-03', null)],
+    schedules: [schedule('Work', '09:00', '17:00'), schedule('Sleep', '23:30', '07:00')],
+    now,
+    days: 7,
+  })
+  assert.equal(feed.today, TODAY)
+  assert.equal(feed.me, 'gooya')
+  assert.equal(feed.other, 'eunbi')
+  assert.deepEqual(
+    feed.items.map((i) => i.title),
+    ['Rent', 'Standup', 'Dentist', 'Trip'],
+  )
+  assert.equal(feed.items[0].time, 'all-day')
+  assert.equal(feed.items[1].time, '10:00 AM')
+  assert.deepEqual(feed.dots[TODAY], ['gooya', 'eunbi'])
+  assert.deepEqual(feed.dots['2026-09-30'], ['gooya'])
+  assert.deepEqual(feed.dots['2026-09-20'], ['gooya'])
+  assert.deepEqual(
+    feed.schedules.map((s) => s.title),
+    ['Work', 'Sleep'],
+  )
+  assert.equal(feed.people[1].colorDark, '#ff9230')
+})
+
+test('completed tasks stay out of the feed when the person hides them', () => {
+  const now = startOfDayMs(TODAY, TZ) + 8 * H
+  const tasks = [task('Done', 'gooya', TODAY, '09:00', { completed: true }), task('Open', 'gooya', TODAY, '11:00')]
+  const shown = buildWidgetFeed({ me: user('gooya'), users: [user('gooya')], tasks, schedules: [], now })
+  assert.deepEqual(shown.items.map((i) => [i.title, i.completed]), [['Done', true], ['Open', false]])
+  const hidden = buildWidgetFeed({ me: user('gooya', { settings: { showCompleted: false } }), users: [user('gooya')], tasks, schedules: [], now })
+  assert.deepEqual(hidden.items.map((i) => i.title), ['Open'])
+})

@@ -13,9 +13,11 @@
     "iphone:sim:live": "node scripts/phone.mjs iphone --sim --live",
     "phone:setup": "node scripts/phone.mjs setup",
     "publish:iphone": "node scripts/publish.mjs iphone",
-    "deploy:backend": "firebase deploy --only functions,firestore:rules,firestore:indexes --project gooya-37d79"
+    "deploy:backend": "firebase deploy --only functions,firestore:rules,firestore:indexes --project gooya-37d79",
+    "widget:preview": "node scripts/widget-preview.mjs"
   },
   "dependencies": {
+    "@bacons/apple-targets": "^5.0.0",
     "@date-fns/tz": "^1.5.0",
     "@expo/ui": "~57.0.19",
     "@react-native-async-storage/async-storage": "2.2.0",

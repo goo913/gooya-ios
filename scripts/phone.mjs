@@ -187,6 +187,14 @@ function nativeFingerprint(env) {
     if (fs.existsSync(p)) h.update(fs.readFileSync(p));
   }
   if (fs.existsSync(PLIST)) h.update(fs.readFileSync(PLIST));
+  // The widget's Swift code and settings (targets/) are compiled into the app.
+  const targets = path.join(root, "targets");
+  if (fs.existsSync(targets)) {
+    for (const f of fs.readdirSync(targets, { recursive: true }).map(String).sort()) {
+      const file = path.join(targets, f);
+      if (fs.statSync(file).isFile()) h.update(`${f}\n`).update(fs.readFileSync(file));
+    }
+  }
   for (const key of ["APP_ID", "APPLE_TEAM_ID", "APPLE_PERSONAL_TEAM", "GOOGLE_SERVICES_PLIST"]) h.update(`${key}=${env[key] ?? ""}\n`);
   return h.digest("hex").slice(0, 16);
 }

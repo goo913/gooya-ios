@@ -9,6 +9,8 @@ The first time it makes the native project (`npx expo prebuild`), fetches the li
 
 Sign in with Google (goochoi913@gmail.com or evapark7147@gmail.com; any other account is refused). Notifications: allow them when asked (Settings → Notifications in the app turns them on later).
 
+**The widget:** touch and hold an empty spot on the Home Screen → **Edit** (top left) → **Add Widget** → search **GOOYA** → pick a size → **Add Widget**. Small: today (or what is next). Medium: today's date and schedules, then the week's tasks. Large: the month with a dot per person and day, then the next tasks. It also offers Lock Screen sizes. Touch and hold the widget → **Edit Widget** → **Show** picks both of you, only you or only 은비. It updates within seconds of a change in the app, and on its own every half hour (from the server, so 은비's additions show up with the app closed).
+
 ## On the iPhone Simulator
 
 - `npm run iphone:sim` — **demo mode**: made-up tasks and schedules, no sign-in, nothing written to Firestore. Edits to the code show up as you save (Fast Refresh).
@@ -22,6 +24,8 @@ Both make their own simulator ("GOOYA Demo", "GOOYA Live"). Ctrl+C stops the dev
 - **"Xcode isn't signed in"** — Xcode → Settings… → Accounts → + → the Apple ID that is on HyberTec LLC's team.
 - **Anything native changed** (a package with native code, `app.config.ts`, the Firebase file) — the scripts notice and run `prebuild` again. To force it: `npm run iphone -- --rebuild`.
 - **The demo simulator shows stale code after a relaunch** — the development server runs without lazy chunks for this reason; if it still happens, stop it (Ctrl+C) and run `npm run iphone:sim` again.
+- **The widget shows "Open GOOYA and sign in"** — the app writes the widget's data when it runs signed in; open the app once. On the Simulator the demo app writes sample data the same way.
+- **"Personal development teams do not support the App Groups capability"** — a build for a free Apple team (`APPLE_PERSONAL_TEAM=1`) leaves the widget out on purpose; the HyberTec build has it.
 
 ## Checks
 

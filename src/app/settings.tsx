@@ -2,7 +2,7 @@ import { ColorPicker, Host, Slider } from "@expo/ui/swift-ui";
 import { PEOPLE, otherPerson } from "@shared/people";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
-import { Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DestructiveButton, Group, Row, Switch, ValueRow, pickOption } from "@/components/Form";
 import { Segmented } from "@/components/Segmented";
 import { BarButton, SheetBar } from "@/components/SheetHeader";
@@ -148,6 +148,19 @@ export default function SettingsSheet() {
 
         <Group header="Integrations" footer="Google Calendar, Apple Calendar (iCloud), the Apple Reminders bridge and a subscription feed.">
           <Row label="Calendar integrations" onPress={() => router.push("/integrations")} chevron />
+        </Group>
+
+        <Group header="Home Screen widget" footer={`Today, the coming week and the month, for both of you, in three sizes (and on the Lock Screen). It follows what you change here, and tapping a day opens it in GOOYA.`}>
+          <Row
+            label="How to add it"
+            onPress={() =>
+              Alert.alert(
+                "Adding the widget",
+                `1. Touch and hold an empty spot on the Home Screen.\n2. Tap Edit at the top left, then Add Widget.\n3. Search for GOOYA, pick a size and tap Add Widget.\n\nTo show only you or only ${other.name}: touch and hold the widget, tap Edit Widget, then Show.`,
+              )
+            }
+            chevron
+          />
         </Group>
 
         <DestructiveButton

@@ -17,6 +17,11 @@ const APP_ID = process.env.APP_ID || "com.hybertec.gooya";
 const APP_NAME = APP_ID === "com.hybertec.gooya" ? "GOOYA" : "GOOYA Dev";
 /** HyberTec LLC's Apple team, which signs the real app (scripts/phone.mjs picks it; APPLE_TEAM_ID overrides). */
 const APPLE_TEAM_ID = process.env.APPLE_TEAM_ID || "YSK7CHH56P";
+/**
+ * The App Group the app and its Home Screen widget (targets/widget) share their data through. A free Apple team
+ * (APPLE_PERSONAL_TEAM=1) cannot sign App Groups, so such a build has neither the group nor the widget.
+ */
+const APP_GROUP = process.env.APPLE_PERSONAL_TEAM === "1" ? null : `group.${APP_ID}`;
 
 /** The version people see and the build number the App Store counts up (release.json; the publishing command bumps it). */
 const release = JSON.parse(fs.readFileSync(path.join(__dirname, "release.json"), "utf8")) as { version: string; build: number };
@@ -111,6 +116,7 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       appleTeamId: APPLE_TEAM_ID,
       googleServicesFile: plist.file,
       supportsTablet: false,
+      ...(APP_GROUP ? { entitlements: { "com.apple.security.application-groups": [APP_GROUP] } } : {}),
       infoPlist: {
         // Only the standard HTTPS kind of encryption (exempt): App Store Connect never asks the export-compliance question.
         ITSAppUsesNonExemptEncryption: false,
@@ -138,6 +144,8 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       "@react-native-firebase/messaging",
       ...(iosUrlScheme ? [["@react-native-google-signin/google-signin", { iosUrlScheme }] as [string, unknown]] : []),
       ["expo-notifications", { color: "#0a84ff" }],
+      // The Home Screen widget: a WidgetKit extension written in Swift, from targets/widget.
+      ...(APP_GROUP ? [["@bacons/apple-targets", { appleTeamId: APPLE_TEAM_ID }] as [string, unknown]] : []),
     ],
     experiments: {
       typedRoutes: true,
@@ -145,5 +153,6 @@ export default ({ config }: ConfigContext): ExpoConfig =>
     },
     extra: {
       firebaseConfigured: plist.real,
+      appGroup: APP_GROUP,
     },
   });
