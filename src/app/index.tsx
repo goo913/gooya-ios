@@ -4,7 +4,10 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useCallback } from "react";
 import { View } from "react-native";
 import { BottomChrome, TopChrome } from "@/components/Chrome";
+import * as Haptics from "expo-haptics";
 import { useNewItem } from "@/lib/actions";
+import { useMe } from "@/lib/people";
+import { useSheets } from "@/store/sheets";
 import { usePrefs } from "@/store/prefs";
 import { MonthView } from "@/views/MonthView";
 import { useNav } from "@/store/nav";
@@ -17,6 +20,16 @@ export default function MonthScreen() {
   const monthKey: DateKey = month && /^\d{4}-\d{2}-01$/.test(month) ? month : `${todayKey(deviceTimeZone()).slice(0, 7)}-01`;
   const visible = useNav((s) => s.visibleMonthKey);
   const onPickDay = useCallback((key: DateKey) => router.push({ pathname: "/day/[date]", params: { date: key } }), []);
+  const me = useMe();
+  const openEditor = useSheets((s) => s.openEditor);
+  const onHoldDay = useCallback(
+    (key: DateKey) => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      openEditor({ kind: "task", initialOwner: me, initialDate: key });
+      router.push("/sheet/edit");
+    },
+    [me, openEditor],
+  );
   const newItem = useNewItem();
   const monthDisplay = usePrefs((s) => s.monthDisplay);
   const setMonthDisplay = usePrefs((s) => s.setMonthDisplay);
@@ -37,7 +50,7 @@ export default function MonthScreen() {
   };
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <MonthView monthKey={monthKey} onPickDay={onPickDay} />
+      <MonthView monthKey={monthKey} onPickDay={onPickDay} onHoldDay={onHoldDay} />
       <TopChrome back={visible.slice(0, 4)} onBack={() => router.push({ pathname: "/year", params: { year: visible.slice(0, 4) } })} viewMenu={viewMenu} onAdd={newItem} onSearch={() => router.push("/search")} />
       <BottomChrome onSettings={() => router.push("/settings")} onCalendars={() => router.push("/calendars")} />
     </View>

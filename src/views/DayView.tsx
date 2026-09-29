@@ -119,8 +119,8 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
     }
   }
   for (const c of map.values()) {
-    assignLanes(c.timed);
-    assignLanes(c.events);
+    // Tasks and events share the columns: overlapping ones sit side by side, as in Apple Calendar.
+    assignLanes<TaskOccurrence | EventOccurrence>([...c.timed, ...c.events] as Seg<TaskOccurrence | EventOccurrence>[]);
     c.allDay.sort((a, b) => a.title.localeCompare(b.title));
     c.schedules.sort((a, b) => a.startMin - b.startMin);
   }
@@ -548,17 +548,27 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   const c = seg.occ.event.color || colors.blue;
   const top = (seg.startMin / 60) * hourH;
   const height = Math.max(metrics.eventTitle * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
-  const text = dark ? mix(c, "#ffffff", 0.08) : mix(c, "#000000", 0.3);
+  const text = dark ? mix(c, "#ffffff", 0.85) : mix(c, "#000000", 0.7);
   const titleH = metrics.eventTitle * 1.25;
+  const timeH = metrics.eventTime * 1.3;
+  // As many title lines as fit, keeping one line for the time when there is room for it (never a half-cut line).
+  const avail = height - 4;
+  const showTime = !seg.occ.allDay && avail >= titleH + timeH;
+  const titleLines = Math.max(1, Math.floor((avail - (showTime ? timeH : 0)) / titleH));
   return (
-    <Pressable onPress={() => onTap(seg.occ)} style={[styles.event, { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={seg.occ.title}
+      onPress={() => onTap(seg.occ)}
+      style={[styles.event, { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}
+    >
       <View style={[styles.eventBar, { backgroundColor: c }]} />
       <View style={styles.eventText}>
-        <Text allowFontScaling={false} numberOfLines={height > titleH * 2.6 ? 2 : 1} style={[styles.eventTitle, { color: text, fontSize: metrics.eventTitle, lineHeight: titleH }]}>
+        <Text allowFontScaling={false} numberOfLines={titleLines} style={[styles.eventTitle, { color: text, fontSize: metrics.eventTitle, lineHeight: titleH }]}>
           {seg.occ.title}
         </Text>
-        {height >= titleH + metrics.eventTime * 1.3 + 4 && !seg.occ.allDay ? (
-          <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime }]}>
+        {showTime ? (
+          <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
             {formatTime(seg.start, viewerTz)} – {formatTime(seg.end, viewerTz)}
           </Text>
         ) : null}

@@ -87,7 +87,7 @@ function titleIndexForScroll(scrollTop: number, layout: MonthLayout): number {
   return lo;
 }
 
-export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDay: (key: DateKey) => void }) {
+export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKey; onPickDay: (key: DateKey) => void; onHoldDay?: (key: DateKey) => void }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -169,8 +169,8 @@ export function MonthView({ monthKey, onPickDay }: { monthKey: DateKey; onPickDa
   const display = usePrefs((s) => s.monthDisplay);
   const title = layout.blocks[titleIdx];
   const renderItem = useCallback(
-    ({ item }: { item: Block }) => <MonthBlock block={item} layout={layout} metrics={metrics} width={width} today={today} byDay={byDay} eventsByDay={eventsByDay} colors={colors} onPick={onPickDay} />,
-    [layout, metrics, width, today, byDay, eventsByDay, colors, onPickDay],
+    ({ item }: { item: Block }) => <MonthBlock block={item} layout={layout} metrics={metrics} width={width} today={today} byDay={byDay} eventsByDay={eventsByDay} colors={colors} onPick={onPickDay} onHold={onHoldDay} />,
+    [layout, metrics, width, today, byDay, eventsByDay, colors, onPickDay, onHoldDay],
   );
 
   return (
@@ -227,9 +227,10 @@ interface MonthBlockProps {
   eventsByDay: Map<DateKey, EventOccurrence[]>;
   colors: Colors;
   onPick: (key: DateKey) => void;
+  onHold?: (key: DateKey) => void;
 }
 
-const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, today, byDay, eventsByDay, colors, onPick }: MonthBlockProps) {
+const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, today, byDay, eventsByDay, colors, onPick, onHold }: MonthBlockProps) {
   const { y, m, startCol, days, rows } = block;
   const { rowH, labelH } = layout;
   const colW = width / 7;
@@ -247,7 +248,7 @@ const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, tod
       if (dayIndex < 0 || dayIndex >= days) continue;
       const day = dayIndex + 1;
       const key = makeKey(y, m, day);
-      cells.push(<DayCell key={key} dateKey={key} day={day} col={c} row={r} colW={colW} rowH={rowH} metrics={metrics} isToday={key === today} occurrences={byDay.get(key)} events={eventsByDay.get(key)} colors={colors} onPick={onPick} />);
+      cells.push(<DayCell key={key} dateKey={key} day={day} col={c} row={r} colW={colW} rowH={rowH} metrics={metrics} isToday={key === today} occurrences={byDay.get(key)} events={eventsByDay.get(key)} colors={colors} onPick={onPick} onHold={onHold} />);
     }
   }
   const next = layout.blocks[(y - FIRST_YEAR) * 12 + m] ?? null;
@@ -280,9 +281,10 @@ interface DayCellProps {
   events?: EventOccurrence[];
   colors: Colors;
   onPick: (key: DateKey) => void;
+  onHold?: (key: DateKey) => void;
 }
 
-const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metrics, isToday, occurrences, events, colors, onPick }: DayCellProps) {
+const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metrics, isToday, occurrences, events, colors, onPick, onHold }: DayCellProps) {
   const weekend = col === 0 || col === 6;
   const max = metrics.chipsPerDay;
   const list: (TaskOccurrence | EventOccurrence)[] = [...(events ?? []), ...(occurrences ?? [])];
@@ -290,7 +292,18 @@ const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metr
   const visible = overflow ? list.slice(0, max - 1) : list;
   const d = metrics.todayCircle;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={dateKey} onPress={() => onPick(dateKey)} style={[styles.cell, { left: col * colW, width: colW, top: row * rowH, height: rowH }]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={spokenDate(dateKey)}
+      accessibilityValue={{ text: list.length ? `${list.length} ${list.length === 1 ? "item" : "items"}` : "" }}
+      accessibilityHint="Opens the day. Touch and hold to add a task on it."
+      testID={dateKey}
+      onPress={() => onPick(dateKey)}
+      // Touch and hold a day to start a task on it, as Apple Calendar starts an event.
+      onLongPress={onHold ? () => onHold(dateKey) : undefined}
+      delayLongPress={450}
+      style={[styles.cell, { left: col * colW, width: colW, top: row * rowH, height: rowH }]}
+    >
       <View style={[styles.number, { marginTop: metrics.circleTop, width: d, height: d, borderRadius: d / 2 }, isToday && { backgroundColor: colors.red }]}>
         <Text allowFontScaling={false} style={[styles.numberText, { fontSize: metrics.dayNumber, color: isToday ? "#ffffff" : weekend ? colors.gray : colors.label }]}>
           {day}
@@ -313,6 +326,13 @@ const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metr
     </Pressable>
   );
 });
+
+/** "Wednesday, September 23" for VoiceOver, as Apple Calendar reads its days. */
+function spokenDate(key: DateKey): string {
+  const { y, m, d } = parseKey(key);
+  const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${weekday}, ${MONTH_NAMES[m - 1]} ${d}`;
+}
 
 function openChip(o: TaskOccurrence | EventOccurrence, dateKey: DateKey): void {
   const { openDetail } = useSheets.getState();

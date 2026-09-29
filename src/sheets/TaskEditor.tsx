@@ -186,7 +186,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
         <View style={styles.group}>
           <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
             {/* defaultValue, not value: a busy moment in JavaScript must never overwrite what is being typed. */}
-            <TextInput defaultValue={title} onChangeText={setTitle} placeholder={editing ? "Title" : "New Task"} placeholderTextColor={colors.label3} autoCapitalize="sentences" style={[styles.title, { color: colors.label }]} />
+            <TextInput autoFocus={!editing} defaultValue={title} onChangeText={setTitle} placeholder={editing ? "Title" : "New Task"} placeholderTextColor={colors.label3} autoCapitalize="sentences" style={[styles.title, { color: colors.label }]} />
             <TextInput defaultValue={notes} onChangeText={setNotes} placeholder="Notes & URL" placeholderTextColor={colors.label3} multiline style={[styles.notes, { color: colors.label }]} />
             {notes && URL_RE.test(notes) ? (
               <View style={styles.links}>
