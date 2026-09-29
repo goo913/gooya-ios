@@ -4,7 +4,6 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useCallback } from "react";
 import { View } from "react-native";
 import { BottomChrome, TopChrome } from "@/components/Chrome";
-import { pickOption } from "@/components/Form";
 import { useNewItem } from "@/lib/actions";
 import { usePrefs } from "@/store/prefs";
 import { MonthView } from "@/views/MonthView";
@@ -21,15 +20,25 @@ export default function MonthScreen() {
   const newItem = useNewItem();
   const monthDisplay = usePrefs((s) => s.monthDisplay);
   const setMonthDisplay = usePrefs((s) => s.setMonthDisplay);
-  const viewOptions = () =>
-    pickOption(["Month", "List", "Task lists"], monthDisplay === "list" ? "List" : "Month", (_, i) => {
-      if (i === 2) router.push("/lists");
-      else setMonthDisplay(i === 1 ? "list" : "stacked");
-    });
+  // Apple's month menu: the grid ("Details") or the List, plus GOOYA's task lists.
+  const viewMenu = {
+    icon: (monthDisplay === "list" ? "list.bullet.below.rectangle" : "rectangle.grid.1x2") as "rectangle.grid.1x2",
+    groups: [
+      {
+        selection: monthDisplay,
+        choices: [
+          { value: "stacked", label: "Details", icon: "rectangle.grid.1x2" as const },
+          { value: "list", label: "List", icon: "list.bullet.below.rectangle" as const },
+        ],
+        onSelect: (v: string) => setMonthDisplay(v === "list" ? "list" : "stacked"),
+      },
+    ],
+    actions: [{ label: "Task Lists", icon: "checklist" as const, onPress: () => router.push("/lists") }],
+  };
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <MonthView monthKey={monthKey} onPickDay={onPickDay} />
-      <TopChrome back={visible.slice(0, 4)} onBack={() => router.push({ pathname: "/year", params: { year: visible.slice(0, 4) } })} onViewOptions={viewOptions} onAdd={newItem} onSearch={() => router.push("/search")} />
+      <TopChrome back={visible.slice(0, 4)} onBack={() => router.push({ pathname: "/year", params: { year: visible.slice(0, 4) } })} viewMenu={viewMenu} onAdd={newItem} onSearch={() => router.push("/search")} />
       <BottomChrome onSettings={() => router.push("/settings")} onCalendars={() => router.push("/calendars")} />
     </View>
   );

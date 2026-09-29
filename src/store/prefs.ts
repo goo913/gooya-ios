@@ -4,13 +4,21 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 export type PersonFilter = "me" | "other" | "both";
-export type TimelineMode = "two-days" | "one-day" | "me" | "other";
+/** How many days the timeline shows side by side (Apple's Single Day / Multi Day). */
+export type TimelineDays = 1 | 2;
+/** Whose columns the timeline shows. */
+export type TimelinePeople = "both" | "me" | "other";
+/** The day screen as a timeline, or as Apple's List. */
+export type DayDisplay = "timeline" | "list";
 export type MonthDisplay = "stacked" | "list";
 export type AppearancePref = "dark" | "light" | "system";
 
 interface PrefsState {
   filter: PersonFilter;
-  timelineMode: TimelineMode;
+  timelineDays: TimelineDays;
+  timelinePeople: TimelinePeople;
+  dayDisplay: DayDisplay;
+  /** Points per hour at the default Text Size (the pinch zoom); the timeline scales it with Text Size, as Apple does. */
   hourHeight: number;
   monthDisplay: MonthDisplay;
   appearance: AppearancePref;
@@ -18,7 +26,9 @@ interface PrefsState {
   setFilter: (f: PersonFilter) => void;
   setAppearance: (a: AppearancePref) => void;
   setMonthDisplay: (m: MonthDisplay) => void;
-  setTimelineMode: (m: TimelineMode) => void;
+  setTimelineDays: (d: TimelineDays) => void;
+  setTimelinePeople: (p: TimelinePeople) => void;
+  setDayDisplay: (d: DayDisplay) => void;
   setHourHeight: (h: number) => void;
 }
 
@@ -30,13 +40,18 @@ export function applyAppearance(pref: AppearancePref): void {
   Appearance.setColorScheme(pref === "system" ? "unspecified" : pref);
 }
 
+/** Apple's hour at the default Text Size (50 points; 61.7 two steps up). */
+export const DEFAULT_HOUR_HEIGHT = 50;
+
 /** Per-device preferences (remembered on the phone). */
 export const usePrefs = create<PrefsState>()(
   persist(
     (set) => ({
       filter: "me",
-      timelineMode: "two-days",
-      hourHeight: 62,
+      timelineDays: 2,
+      timelinePeople: "both",
+      dayDisplay: "timeline",
+      hourHeight: DEFAULT_HOUR_HEIGHT,
       monthDisplay: "stacked",
       appearance: "dark",
       hydrated: false,
@@ -46,14 +61,30 @@ export const usePrefs = create<PrefsState>()(
         applyAppearance(appearance);
       },
       setMonthDisplay: (monthDisplay) => set({ monthDisplay }),
-      setTimelineMode: (timelineMode) => set({ timelineMode }),
-      setHourHeight: (hourHeight) => set({ hourHeight: Math.min(200, Math.max(28, hourHeight)) }),
+      setTimelineDays: (timelineDays) => set({ timelineDays }),
+      setTimelinePeople: (timelinePeople) => set({ timelinePeople }),
+      setDayDisplay: (dayDisplay) => set({ dayDisplay }),
+      setHourHeight: (hourHeight) => set({ hourHeight: Math.min(190, Math.max(20, hourHeight)) }),
     }),
     {
       name: "gooya-prefs",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: (s) => ({ filter: s.filter, timelineMode: s.timelineMode, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance }),
+      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance }),
+      // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default).
+      migrate: (persisted, version) => {
+        const old = (persisted ?? {}) as Record<string, unknown>;
+        if (version >= 2) return old;
+        const mode = old.timelineMode;
+        const hour = typeof old.hourHeight === "number" ? old.hourHeight : 62;
+        return {
+          ...old,
+          timelineDays: mode === "one-day" ? 1 : 2,
+          timelinePeople: mode === "me" ? "me" : mode === "other" ? "other" : "both",
+          dayDisplay: "timeline",
+          hourHeight: (hour / 62) * DEFAULT_HOUR_HEIGHT,
+        };
+      },
       onRehydrateStorage: () => (state) => {
         applyAppearance(state?.appearance ?? "dark");
         usePrefs.setState({ hydrated: true });

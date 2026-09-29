@@ -1,45 +1,71 @@
-import { addDaysKey, parseKey, startOfDayMs } from "@shared/time";
+import type { DateKey, EventOccurrence, TaskOccurrence } from "@shared/model";
+import { addDaysKey, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { OccurrenceRow } from "@/components/OccurrenceRow";
-import { MONTH_SHORT, WEEKDAY_LONG } from "@/lib/format";
-import { useTasksByDay } from "@/lib/occurrences";
-import { useFilteredPeople } from "@/lib/people";
+import { TaskRing } from "@/components/Chips";
+import { MONTH_SHORT, WEEKDAY_LONG, formatTime } from "@/lib/format";
+import { useEventsByDay, useTasksByDay } from "@/lib/occurrences";
+import { colorHex, useFilteredPeople, usePerson } from "@/lib/people";
+import { setCompleted } from "@/lib/taskOps";
 import { useToday, viewerTz } from "@/lib/useNow";
+import { useData } from "@/store/data";
 import { useNav } from "@/store/nav";
 import { useSheets } from "@/store/sheets";
-import { useColors } from "@/theme";
+import { useColors, useIsDark } from "@/theme";
 
 const PAST_DAYS = 14;
 const FUTURE_DAYS = 120;
 
-/** Apple's List display: upcoming tasks grouped by day. */
-export function ListView() {
+type Item = TaskOccurrence | EventOccurrence;
+
+/** "Tuesday – Sep 29" */
+function dayHeading(key: DateKey): string {
+  const [y, m, d] = key.split("-").map(Number);
+  return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} – ${MONTH_SHORT[m - 1]} ${d}`;
+}
+
+function openItem(o: Item, day: DateKey): void {
+  const { openDetail } = useSheets.getState();
+  if (o.kind === "event") openDetail({ kind: "event", eventId: o.event.id, dateKey: day });
+  else openDetail({ kind: "task", taskId: o.task.id, dateKey: o.dateKey });
+  router.push("/sheet/detail");
+}
+
+/**
+ * Apple Calendar's List: the days that have something, each with its tasks and events in time order (all-day first).
+ * From the month screen it opens two weeks back and scrolls to today; from a day it starts at that day.
+ */
+export function ListView({ from, topInset = 0 }: { from?: DateKey; topInset?: number }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const today = useToday();
   const people = useFilteredPeople();
   const todayNonce = useNav((s) => s.todayNonce);
-  const openEditor = useSheets((s) => s.openEditor);
-  const start = useMemo(() => startOfDayMs(addDaysKey(today, -PAST_DAYS), viewerTz), [today]);
-  const end = useMemo(() => startOfDayMs(addDaysKey(today, FUTURE_DAYS), viewerTz), [today]);
-  const byDay = useTasksByDay(start, end, people, viewerTz);
-  const days = useMemo(() => Array.from(byDay.keys()).filter((k) => k >= addDaysKey(today, -PAST_DAYS)).sort(), [byDay, today]);
+  const first = from ?? addDaysKey(today, -PAST_DAYS);
+  const start = useMemo(() => startOfDayMs(first, viewerTz), [first]);
+  const end = useMemo(() => startOfDayMs(addDaysKey(from ?? today, FUTURE_DAYS), viewerTz), [from, today]);
+  const tasksByDay = useTasksByDay(start, end, people, viewerTz);
+  const eventsByDay = useEventsByDay(start, end, people, viewerTz);
+  const days = useMemo(() => {
+    const keys = new Set<DateKey>([...tasksByDay.keys(), ...eventsByDay.keys()]);
+    return [...keys].filter((k) => k >= first).sort();
+  }, [tasksByDay, eventsByDay, first]);
   const scrollRef = useRef<ScrollView>(null);
   const todayY = useRef(0);
-  const firstFuture = days.find((d) => d >= today);
+  const firstFuture = from ? null : days.find((d) => d >= today);
   useEffect(() => {
     if (todayNonce > 0) scrollRef.current?.scrollTo({ y: todayY.current, animated: true });
   }, [todayNonce]);
   return (
-    <ScrollView ref={scrollRef} style={styles.fill} contentContainerStyle={{ paddingBottom: insets.bottom + 90 }} showsVerticalScrollIndicator={false}>
-      {days.length === 0 ? <Text style={[styles.empty, { color: colors.label2 }]}>No Tasks</Text> : null}
+    <ScrollView ref={scrollRef} style={styles.fill} contentContainerStyle={{ paddingTop: topInset, paddingBottom: insets.bottom + 90 }} showsVerticalScrollIndicator={false}>
+      {days.length === 0 ? <Text style={[styles.empty, { color: colors.label2 }]}>No Events</Text> : null}
       {days.map((day) => {
-        const { y, m, d } = parseKey(day);
-        const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
         const isToday = day === today;
+        const events = eventsByDay.get(day) ?? [];
+        const tasks = tasksByDay.get(day) ?? [];
+        const items: Item[] = [...events, ...tasks].sort((a, b) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.start - b.start));
         return (
           <View
             key={day}
@@ -50,23 +76,8 @@ export function ListView() {
               }
             }}
           >
-            <View style={styles.dayHead}>
-              <Text style={[styles.dayName, { color: isToday ? colors.red : colors.label }]}>{WEEKDAY_LONG[wd]}</Text>
-              <Text style={[styles.dayDate, { color: isToday ? colors.red : colors.label2 }]}>
-                {MONTH_SHORT[m - 1]} {d}
-                {isToday ? " · Today" : ""}
-              </Text>
-            </View>
-            {(byDay.get(day) ?? []).map((occ) => (
-              <OccurrenceRow
-                key={occ.key}
-                occ={occ}
-                onOpen={() => {
-                  openEditor({ kind: "task", task: occ.task, occ });
-                  router.push("/sheet/edit");
-                }}
-              />
-            ))}
+            <Text style={[styles.dayHead, { color: isToday ? colors.red : colors.label, borderBottomColor: colors.separator }]}>{dayHeading(day)}</Text>
+            {items.map((o) => (o.kind === "event" ? <EventRow key={o.key} occ={o} day={day} /> : <TaskRow key={o.key} occ={o} day={day} />))}
           </View>
         );
       })}
@@ -74,10 +85,75 @@ export function ListView() {
   );
 }
 
+function Times({ start, end, allDay }: { start: number; end?: number; allDay: boolean }) {
+  const colors = useColors();
+  if (allDay) return <Text style={[styles.time, { color: colors.label }]}>all-day</Text>;
+  return (
+    <View style={styles.times}>
+      <Text style={[styles.time, { color: colors.label }]}>{formatTime(start, viewerTz)}</Text>
+      {end != null ? <Text style={[styles.time, { color: colors.label2 }]}>{formatTime(end, viewerTz)}</Text> : null}
+    </View>
+  );
+}
+
+function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
+  const colors = useColors();
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
+      <View style={[styles.bar, { backgroundColor: occ.event.color || colors.blue }]} />
+      <View style={styles.text}>
+        <Text numberOfLines={2} style={[styles.title, { color: colors.label }]}>
+          {occ.title}
+        </Text>
+        {occ.event.location ? (
+          <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
+            {occ.event.location}
+          </Text>
+        ) : null}
+      </View>
+      <Times start={occ.start} end={occ.end} allDay={occ.allDay} />
+    </Pressable>
+  );
+}
+
+function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
+  const colors = useColors();
+  const dark = useIsDark();
+  const person = usePerson(occ.task.owner);
+  const list = useData((s) => s.lists.find((l) => l.id === occ.task.listId));
+  const ring = colorHex(person.color, dark);
+  const bangs = ["", "!", "!!", "!!!"][occ.task.priority ?? 0];
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={occ.completed ? "Mark incomplete" : "Mark complete"} hitSlop={10} onPress={() => void setCompleted(occ.task, occ.dateKey, !occ.completed)} style={styles.ring}>
+        <TaskRing color={ring} done={occ.completed} size={22} />
+      </Pressable>
+      <View style={styles.text}>
+        <Text numberOfLines={2} style={[styles.title, { color: occ.completed ? colors.label2 : colors.label }]}>
+          {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
+          {occ.title}
+          {occ.task.flagged ? <Text style={{ color: colors.orange }}> ⚑</Text> : null}
+        </Text>
+        <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
+          {person.name}
+          {list && list.id !== "tasks" ? ` · ${list.name}` : ""}
+        </Text>
+      </View>
+      <Times start={occ.start} allDay={occ.allDay} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   empty: { paddingHorizontal: 16, paddingTop: 64, textAlign: "center", fontSize: 17 },
-  dayHead: { flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 },
-  dayName: { fontSize: 17, fontWeight: "600" },
-  dayDate: { fontSize: 15 },
+  dayHead: { marginHorizontal: 12, paddingHorizontal: 5, paddingTop: 22, paddingBottom: 12, fontSize: 21, fontWeight: "600", borderBottomWidth: StyleSheet.hairlineWidth },
+  row: { marginHorizontal: 12, flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 11, paddingLeft: 5, paddingRight: 4, borderBottomWidth: StyleSheet.hairlineWidth },
+  bar: { width: 3.7, alignSelf: "stretch", borderRadius: 2, marginRight: 2 },
+  ring: { width: 26, alignItems: "center", paddingTop: 1 },
+  text: { flex: 1, minWidth: 0, gap: 2 },
+  title: { fontSize: 17, fontWeight: "600", lineHeight: 22 },
+  sub: { fontSize: 15, lineHeight: 20 },
+  times: { alignItems: "flex-end", gap: 2 },
+  time: { fontSize: 15, lineHeight: 20, fontVariant: ["tabular-nums"], textAlign: "right" },
 });

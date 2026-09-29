@@ -25,21 +25,58 @@ async function davClient(accountId: string) {
   })
 }
 
+/**
+ * App-specific passwords are 16 lowercase letters that Apple shows as xxxx-xxxx-xxxx-xxxx. People type them with or
+ * without the dashes, with spaces, or with a capital first letter; these are the forms worth trying, as typed first.
+ */
+export function appPasswordCandidates(raw: string): string[] {
+  const typed = raw.trim()
+  const letters = typed.replace(/[\s-]/g, '')
+  const out = [typed]
+  if (/^[a-z]{16}$/i.test(letters)) {
+    const lower = letters.toLowerCase()
+    out.push(`${lower.slice(0, 4)}-${lower.slice(4, 8)}-${lower.slice(8, 12)}-${lower.slice(12)}`, lower)
+  }
+  return [...new Set(out)]
+}
+
+/** Whether what was typed has the shape of an app-specific password at all (an Apple Account password usually does not). */
+export const looksLikeAppPassword = (raw: string): boolean => /^[a-z]{16}$/i.test(raw.replace(/[\s-]/g, ''))
+
+const isAuthFailure = (e: unknown) => /401|403|invalid credentials|unauthori[sz]ed/i.test(String((e as Error)?.message ?? e))
+
 /** Connect an iCloud account with an app-specific password; lists calendars. */
-export const appleConnect = onCall({ secrets: SECRETS }, async (req) => {
+export const appleConnect = onCall({ secrets: SECRETS, memory: '512MiB' }, async (req) => {
   const person = personForEmail(req.auth?.token.email)
   if (!person || !req.auth?.token.email_verified) throw new HttpsError('permission-denied', 'not allowed')
   const email = String(req.data?.email ?? '').trim().toLowerCase()
-  const password = String(req.data?.password ?? '').trim()
-  if (!email || !password) throw new HttpsError('invalid-argument', 'email and app-specific password required')
-  let calendars: DAVCalendar[]
+  const typed = String(req.data?.password ?? '')
+  if (!email || !typed.trim()) throw new HttpsError('invalid-argument', 'Enter the email of your Apple Account and an app-specific password.')
+  let calendars: DAVCalendar[] = []
   let homeUrl = ''
-  try {
-    const client = await createDAVClient({ serverUrl: ICLOUD, credentials: { username: email, password }, authMethod: 'Basic', defaultAccountType: 'caldav' })
-    calendars = await client.fetchCalendars()
-    homeUrl = (client as unknown as { account?: { homeUrl?: string } }).account?.homeUrl ?? ''
-  } catch (e) {
-    throw new HttpsError('unauthenticated', `iCloud rejected the sign-in: ${String((e as Error).message ?? e).slice(0, 120)}`)
+  let password = ''
+  let lastError: unknown = null
+  for (const candidate of appPasswordCandidates(typed)) {
+    try {
+      const client = await createDAVClient({ serverUrl: ICLOUD, credentials: { username: email, password: candidate }, authMethod: 'Basic', defaultAccountType: 'caldav' })
+      calendars = await client.fetchCalendars()
+      homeUrl = (client as unknown as { account?: { homeUrl?: string } }).account?.homeUrl ?? ''
+      password = candidate
+      break
+    } catch (e) {
+      lastError = e
+      if (!isAuthFailure(e)) break
+    }
+  }
+  if (!password) {
+    logger.warn('appleConnect: iCloud refused the sign-in', { person: person.key, shape: looksLikeAppPassword(typed) ? 'app-password' : 'other', error: String((lastError as Error)?.message ?? lastError).slice(0, 200) })
+    if (!isAuthFailure(lastError)) throw new HttpsError('unavailable', `iCloud could not be reached (${String((lastError as Error)?.message ?? lastError).slice(0, 120)}). Try again in a minute.`)
+    throw new HttpsError(
+      'unauthenticated',
+      looksLikeAppPassword(typed)
+        ? 'iCloud did not accept this email and app-specific password. Check the email is the one your Apple Account uses (iPhone Settings → your name, at the top), or make a new app-specific password and paste it here.'
+        : 'That is not an app-specific password. iCloud accepts only an app-specific password here: 16 letters like abcd-efgh-ijkl-mnop, made at account.apple.com → Sign-In and Security → App-Specific Passwords. Your Apple Account password will not work.',
+    )
   }
   const accountId = `a_${shortHash(`${person.key}:${email}`, 12)}`
   await secretRef(accountId).set({ source: 'apple', person: person.key, username: email, password: encrypt(password), updatedAt: Date.now() })
@@ -156,7 +193,7 @@ export async function syncAppleAccount(person: PersonKey, accountId: string): Pr
 }
 
 /** iCloud has no push for third parties: poll every 5 minutes. */
-export const pollApple = onSchedule({ schedule: '*/5 * * * *', timeZone: 'America/New_York', secrets: SECRETS, retryCount: 0 }, async () => {
+export const pollApple = onSchedule({ schedule: '*/5 * * * *', timeZone: 'America/New_York', secrets: SECRETS, retryCount: 0, memory: '512MiB' }, async () => {
   for (const person of Object.keys(PEOPLE) as PersonKey[]) {
     const accounts = await accountsRef(person).where('source', '==', 'apple').get()
     for (const a of accounts.docs) await syncAppleAccount(person, a.id)

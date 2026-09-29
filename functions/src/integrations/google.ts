@@ -2,7 +2,8 @@ import { onRequest, onCall, HttpsError } from 'firebase-functions/v2/https'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import { logger } from 'firebase-functions'
-import { google, type calendar_v3 } from 'googleapis'
+// The Calendar API's own small client (the full googleapis package pushed functions past their memory limit).
+import { auth as googleAuth, calendar as googleCalendar, type calendar_v3 } from '@googleapis/calendar'
 import { randomUUID } from 'node:crypto'
 import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
 import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
@@ -33,7 +34,7 @@ const NOTIFY_URL = `${FUNCTIONS_URL}/gcalNotify`
 const SECRETS = [INTEGRATIONS_KEY, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET]
 
 function oauthClient() {
-  return new google.auth.OAuth2(GOOGLE_OAUTH_CLIENT_ID.value().trim(), GOOGLE_OAUTH_CLIENT_SECRET.value().trim(), REDIRECT_URI)
+  return new googleAuth.OAuth2(GOOGLE_OAUTH_CLIENT_ID.value().trim(), GOOGLE_OAUTH_CLIENT_SECRET.value().trim(), REDIRECT_URI)
 }
 
 async function calendarFor(accountId: string): Promise<calendar_v3.Calendar> {
@@ -42,7 +43,7 @@ async function calendarFor(accountId: string): Promise<calendar_v3.Calendar> {
   if (!enc) throw new Error('no refresh token')
   const client = oauthClient()
   client.setCredentials({ refresh_token: decrypt(enc) })
-  return google.calendar({ version: 'v3', auth: client })
+  return googleCalendar({ version: 'v3', auth: client })
 }
 
 /** Step 1: redirect the signed-in person to Google's consent screen (offline access). */
@@ -67,7 +68,7 @@ function returnUrl(target: string, error?: string): string {
 }
 
 /** Step 2: exchange the code, store the refresh token encrypted, list calendars, return to the app. */
-export const googleAuthCallback = onRequest({ secrets: SECRETS, invoker: 'public' }, async (req, res) => {
+export const googleAuthCallback = onRequest({ secrets: SECRETS, invoker: 'public', memory: '512MiB' }, async (req, res) => {
   const state = String(req.query.state ?? '')
   const parts = state.split('.')
   // Older states (before the app existed) have three parts; new ones carry the return target.
@@ -87,11 +88,12 @@ export const googleAuthCallback = onRequest({ secrets: SECRETS, invoker: 'public
     const { tokens } = await client.getToken(code)
     if (!tokens.refresh_token) throw new Error('Google did not return a refresh token; remove GOOYA from your Google account permissions and connect again.')
     client.setCredentials(tokens)
-    const info = await google.oauth2({ version: 'v2', auth: client }).userinfo.get()
+    const info = await client.request<{ email?: string }>({ url: 'https://www.googleapis.com/oauth2/v2/userinfo' })
     const email = (info.data.email ?? '').toLowerCase()
+    if (!email) throw new Error('Google did not share the account email; connect again and allow it.')
     const accountId = `g_${shortHash(`${person}:${email}`, 12)}`
     await secretRef(accountId).set({ source: 'google', person, refreshToken: encrypt(tokens.refresh_token), updatedAt: Date.now() })
-    const cal = google.calendar({ version: 'v3', auth: client })
+    const cal = googleCalendar({ version: 'v3', auth: client })
     const list = await cal.calendarList.list({ minAccessRole: 'reader' })
     const existing = (await accountsRef(person as PersonKey).doc(accountId).get()).data() as AccountDoc | undefined
     const calendars: AccountDoc['calendars'] = {}
@@ -316,7 +318,7 @@ export async function syncGoogleAccount(person: PersonKey, accountId: string): P
 }
 
 /** Push notification from events.watch → sync that calendar. */
-export const gcalNotify = onRequest({ secrets: SECRETS, invoker: 'public' }, async (req, res) => {
+export const gcalNotify = onRequest({ secrets: SECRETS, invoker: 'public', memory: '512MiB' }, async (req, res) => {
   const token = String(req.get('x-goog-channel-token') ?? '')
   const state = String(req.get('x-goog-resource-state') ?? '')
   res.status(200).send('ok')
@@ -334,7 +336,7 @@ export const gcalNotify = onRequest({ secrets: SECRETS, invoker: 'public' }, asy
 })
 
 /** 10-minute fallback poll (incremental, cheap) + watch renewal. */
-export const pollGoogle = onSchedule({ schedule: '*/10 * * * *', timeZone: 'America/New_York', secrets: SECRETS, retryCount: 0 }, async () => {
+export const pollGoogle = onSchedule({ schedule: '*/10 * * * *', timeZone: 'America/New_York', secrets: SECRETS, retryCount: 0, memory: '512MiB' }, async () => {
   for (const person of Object.keys(PEOPLE) as PersonKey[]) {
     const accounts = await accountsRef(person).where('source', '==', 'google').get()
     for (const a of accounts.docs) await syncGoogleAccount(person, a.id)
@@ -508,7 +510,7 @@ export async function pushGoogleEvent(ev: CalendarEvent): Promise<void> {
 }
 
 /** Callable: sync now / disconnect / set directions are done client-side on the account doc; this forces a sync. */
-export const syncNow = onCall({ secrets: SECRETS }, async (req) => {
+export const syncNow = onCall({ secrets: SECRETS, memory: '512MiB', timeoutSeconds: 300 }, async (req) => {
   const person = personForEmail(req.auth?.token.email)
   if (!person || !req.auth?.token.email_verified) throw new HttpsError('permission-denied', 'not allowed')
   const accountId = String(req.data?.accountId ?? '')

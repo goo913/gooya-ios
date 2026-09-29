@@ -91,10 +91,15 @@ const withSceneLifecycle: ConfigPlugin = (config) =>
     },
   );
 
-/** A development build opens straight into the app, without Expo's developer-menu introduction over it. */
+/**
+ * A development build opens straight into the app: no developer-menu introduction or menu at launch, and no floating
+ * Tools button over the screen (it sat on top of sheets' Edit buttons). The menu is still a shake away.
+ */
 const withoutDevMenuIntro: ConfigPlugin = (config) =>
   withInfoPlist(config, (c) => {
     c.modResults.EXDevMenuIsOnboardingFinished = true;
+    c.modResults.EXDevMenuShowsAtLaunch = false;
+    c.modResults.EXDevMenuShowFloatingActionButton = false;
     return c;
   });
 

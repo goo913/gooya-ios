@@ -78,13 +78,16 @@ export default function IntegrationsSheet() {
   };
   const connectApple = async () => {
     if (isMock) return setAppleError("Demo mode: connections are simulated.");
+    if (!appleEmail.trim() || !applePassword.trim()) return setAppleError("Enter your Apple Account email and an app-specific password (steps above).");
     setBusy("apple");
     setAppleError(null);
     try {
-      await httpsCallable(functions, "appleConnect")({ email: appleEmail.trim(), password: applePassword.trim() });
+      await httpsCallable(functions, "appleConnect")({ email: appleEmail.trim(), password: applePassword });
       setApplePassword("");
+      setMessage("iCloud connected. Choose Import, Export or Two-way for each calendar below.");
     } catch (e) {
-      setAppleError(String((e as Error).message ?? e));
+      // The server explains what went wrong in plain words (functions/src/integrations/apple.ts).
+      setAppleError(String((e as Error).message ?? e).replace(/^\[?[\w/-]+\]?\s*/, ""));
     } finally {
       setBusy(null);
     }
@@ -122,19 +125,31 @@ export default function IntegrationsSheet() {
           </Row>
         </Group>
 
-        <Group header="Apple Calendar (iCloud)" footer="Sign in with your Apple ID email and an app-specific password (account.apple.com → Sign-In and Security → App-Specific Passwords). It is stored encrypted on the server and never shown again.">
+        <Group
+          header="Apple Calendar (iCloud)"
+          footer="Apple lets other apps into iCloud Calendar only with an app-specific password, never your Apple Account password. It is stored encrypted on GOOYA's server and never shown again; you can revoke it at account.apple.com at any time."
+        >
           {apple.map((a) => (
             <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void syncNow(a.id)} />
           ))}
-          <TextRow value={appleEmail} onChange={setAppleEmail} placeholder="Apple ID email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="emailAddress" />
-          <TextRow value={applePassword} onChange={setApplePassword} placeholder="App-specific password" secureTextEntry autoCapitalize="none" autoCorrect={false} />
-          <Row label="Connect iCloud" labelColor={colors.blue} onPress={() => void connectApple()}>
-            {busy === "apple" ? <Text style={[styles.small, { color: colors.label2 }]}>…</Text> : null}
-          </Row>
-          {appleError ? <Text style={[styles.error, { color: colors.red }]}>{appleError}</Text> : null}
-          <Row label="Create an app-specific password" onPress={() => void Linking.openURL("https://account.apple.com/account/manage")} chevron>
+          <View style={styles.steps}>
+            {[
+              "Tap “Make an app-specific password” below and sign in to your Apple Account.",
+              "Open Sign-In and Security → App-Specific Passwords → +, name it GOOYA, and tap Create.",
+              "Copy the password Apple shows (16 letters like abcd-efgh-ijkl-mnop) and paste it here with your Apple Account email.",
+            ].map((t, i) => (
+              <Text key={i} style={[styles.step, { color: colors.label }]}>
+                {i + 1}. {t}
+              </Text>
+            ))}
+          </View>
+          <Row label="Make an app-specific password" labelColor={colors.blue} onPress={() => void Linking.openURL("https://account.apple.com/account/manage/section/security")}>
             <Icon name="arrow.up.right" size={16} color={colors.label2} />
           </Row>
+          <TextRow value={appleEmail} onChange={setAppleEmail} placeholder="Apple Account email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="username" />
+          <TextRow value={applePassword} onChange={setApplePassword} placeholder="App-specific password (abcd-efgh-ijkl-mnop)" secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="oneTimeCode" />
+          <Row label={busy === "apple" ? "Connecting…" : "Connect iCloud"} labelColor={colors.blue} onPress={() => void connectApple()} />
+          {appleError ? <Text style={[styles.error, { color: colors.red }]}>{appleError}</Text> : null}
         </Group>
 
         <Group header="Imported events" footer="When the same event arrives from both Apple and Google (same iCalUID, or same title + start + end), show it only once.">

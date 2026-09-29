@@ -31,6 +31,11 @@ const dark = {
   gray: "#8e8e93",
   glassTint: "rgba(48,48,50,0.46)",
   glassRim: "rgba(255,255,255,0.14)",
+  /** The day view's header (under the pills, the week strip, the date): Apple's bar background. */
+  bar: "#0b0b0b",
+  /** A task's block in the timeline (Apple draws scheduled reminders in grey). */
+  taskBlock: "#343436",
+  taskBlockRim: "rgba(255,255,255,0.09)",
 };
 
 const light: typeof dark = {
@@ -60,6 +65,9 @@ const light: typeof dark = {
   gray: "#8e8e93",
   glassTint: "rgba(255,255,255,0.78)",
   glassRim: "rgba(0,0,0,0.1)",
+  bar: "#f7f7f7",
+  taskBlock: "#ebebf0",
+  taskBlockRim: "rgba(0,0,0,0.06)",
 };
 
 export type Colors = typeof dark;
@@ -70,5 +78,3 @@ export function useColors(): Colors {
   return useIsDark() ? dark : light;
 }
 
-/** The pills' height and the chrome's standard measures, as on the web app. */
-export const PILL_H = 45;

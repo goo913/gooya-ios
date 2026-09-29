@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { SFSymbol } from "sf-symbols-typescript";
+import { useMetrics } from "@/lib/metrics";
+import { MenuButton, type MenuAction, type MenuGroup } from "./NativeMenu";
 import { useNav } from "@/store/nav";
 import { GlassGroup, GlassIconButton, GlassPill, PillText } from "./Glass";
 import { Icon } from "./Icon";
@@ -11,34 +14,44 @@ interface TopChromeProps {
   onBack?: () => void;
   onViewOptions?: () => void;
   viewIcon?: "month" | "day";
+  /** The view button's pull-down menu (Apple's "Single Day · Multi Day · List"); replaces onViewOptions. */
+  viewMenu?: { icon: SFSymbol; groups: MenuGroup[]; actions?: MenuAction[] };
   onSearch?: () => void;
   onAdd?: () => void;
   right?: ReactNode;
 }
 
 /** The floating pills over the top of a screen: back on the left, view · search · add on the right. */
-export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", onSearch, onAdd, right }: TopChromeProps) {
+export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", viewMenu, onSearch, onAdd, right }: TopChromeProps) {
   const insets = useSafeAreaInsets();
+  const m = useMetrics();
   return (
-    <View pointerEvents="box-none" style={[styles.top, { top: insets.top + 2 }]}>
-      <View pointerEvents="box-none">
+    <View pointerEvents="box-none" style={[styles.top, { top: insets.top }]}>
+      <View pointerEvents="box-none" style={styles.backSlot}>
         {back ? (
           <GlassPill label="Back" onPress={onBack} style={styles.backPill}>
-            <Icon name="chevron.left" size={22} weight="bold" />
-            <PillText dim>{back}</PillText>
+            {/* The symbol's frame is wider than its glyph: pull the label in so the gap is Apple's 12 points. */}
+            <View style={{ marginRight: -(0.37 * m.backChevron - 5.8) }}>
+              <Icon name="chevron.left" size={m.backChevron} weight="semibold" />
+            </View>
+            <PillText>{back}</PillText>
           </GlassPill>
         ) : null}
       </View>
       {right ?? (
         <GlassGroup>
-          <GlassIconButton label="View options" onPress={onViewOptions}>
-            <Icon name={viewIcon === "day" ? "list.bullet.below.rectangle" : "rectangle.grid.1x2"} size={24} />
+          {viewMenu ? (
+            <MenuButton icon={viewMenu.icon} iconSize={m.viewIcon * 0.8} width={m.barButtonWidths[0]} height={m.barHeight} accessibility="View options" groups={viewMenu.groups} actions={viewMenu.actions} />
+          ) : (
+            <GlassIconButton label="View options" width={m.barButtonWidths[0]} onPress={onViewOptions}>
+              <Icon name={viewIcon === "day" ? "list.bullet.below.rectangle" : "rectangle.grid.1x2"} size={m.viewIcon} />
+            </GlassIconButton>
+          )}
+          <GlassIconButton label="Search" width={m.barButtonWidths[1]} onPress={onSearch}>
+            <Icon name="magnifyingglass" size={m.searchIcon} weight="medium" />
           </GlassIconButton>
-          <GlassIconButton label="Search" onPress={onSearch}>
-            <Icon name="magnifyingglass" size={24} weight="semibold" />
-          </GlassIconButton>
-          <GlassIconButton label="Add" onPress={onAdd}>
-            <Icon name="plus" size={26} />
+          <GlassIconButton label="Add" width={m.barButtonWidths[2]} onPress={onAdd}>
+            <Icon name="plus" size={m.addIcon} weight="medium" />
           </GlassIconButton>
         </GlassGroup>
       )}
@@ -56,23 +69,25 @@ interface BottomChromeProps {
 /** The floating pills over the bottom: Today on the left, calendars · settings on the right. */
 export function BottomChrome({ showToday = true, onCalendars, onSettings, left }: BottomChromeProps) {
   const insets = useSafeAreaInsets();
+  const m = useMetrics();
   const goToday = useNav((s) => s.goToday);
   return (
-    <View pointerEvents="box-none" style={[styles.bottom, { bottom: insets.bottom + 12 }]}>
+    // Apple's bottom bar floats 28 points from the sides and the bottom edge (6 into the home indicator's area).
+    <View pointerEvents="box-none" style={[styles.bottom, { bottom: Math.max(12, insets.bottom - 6) }]}>
       <View pointerEvents="box-none">
         {left ??
           (showToday ? (
-            <GlassPill label="Today" onPress={goToday}>
+            <GlassPill label="Today" onPress={goToday} height={m.bottomBarHeight} style={styles.todayPill}>
               <PillText>Today</PillText>
             </GlassPill>
           ) : null)}
       </View>
-      <GlassGroup>
-        <GlassIconButton label="Calendars" width={55} onPress={onCalendars}>
-          <Icon name="calendar" size={24} />
+      <GlassGroup height={m.bottomBarHeight}>
+        <GlassIconButton label="Calendars" width={54.85} onPress={onCalendars}>
+          <Icon name="calendar" size={27} />
         </GlassIconButton>
-        <GlassIconButton label="Settings" width={55} onPress={onSettings}>
-          <Icon name="gearshape" size={24} />
+        <GlassIconButton label="Settings" width={54.85} onPress={onSettings}>
+          <Icon name="gearshape" size={25} />
         </GlassIconButton>
       </GlassGroup>
     </View>
@@ -80,7 +95,9 @@ export function BottomChrome({ showToday = true, onCalendars, onSettings, left }
 }
 
 const styles = StyleSheet.create({
-  top: { position: "absolute", left: 16, right: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", zIndex: 50 },
-  bottom: { position: "absolute", left: 24, right: 24, flexDirection: "row", justifyContent: "space-between", alignItems: "center", zIndex: 50 },
-  backPill: { paddingLeft: 9, paddingRight: 20 },
+  top: { position: "absolute", left: 16, right: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8, zIndex: 50 },
+  backSlot: { flexShrink: 1 },
+  bottom: { position: "absolute", left: 28, right: 28, flexDirection: "row", justifyContent: "space-between", alignItems: "center", zIndex: 50 },
+  backPill: { paddingLeft: 9, paddingRight: 17.7, gap: 6 },
+  todayPill: { paddingLeft: 17, paddingRight: 16 },
 });

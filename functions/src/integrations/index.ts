@@ -3,8 +3,9 @@ import { logger } from 'firebase-functions'
 import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, type PersonKey } from '../../../shared/people'
 import { INTEGRATIONS_KEY, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, secretRef } from './common'
-import { exportItemToGoogle, pushGoogleEvent } from './google'
-import { exportItemToApple, pushAppleEvent } from './apple'
+import { exportItemToGoogle, pushGoogleEvent, syncGoogleAccount } from './google'
+import { exportItemToApple, pushAppleEvent, syncAppleAccount } from './apple'
+import type { AccountDoc } from './common'
 
 export { googleAuthStart, googleAuthCallback, gcalNotify, pollGoogle, syncNow } from './google'
 export { appleConnect, pollApple } from './apple'
@@ -47,6 +48,36 @@ export const onScheduleExport = onDocumentWritten({ document: 'schedules/{id}', 
   if (!owner || !(owner in PEOPLE)) return
   await exportItemToGoogle(owner, 'schedule', event.params.id, schedule)
   await exportItemToApple(owner, 'schedule', event.params.id, schedule)
+})
+
+/** What decides what an account syncs: each calendar's direction and the two export switches. */
+function syncShape(acc: AccountDoc | undefined): string {
+  if (!acc) return ''
+  const dirs = Object.entries(acc.calendars ?? {})
+    .map(([id, c]) => `${id}=${c.direction}`)
+    .sort()
+    .join(',')
+  return `${dirs}|${acc.exportTasks !== false}|${acc.exportSchedules !== false}`
+}
+
+/**
+ * A calendar switched to Import, Export or Two-way (or an export switch changed) syncs right away, instead of at the
+ * next poll up to 10 minutes later. The sync's own writes (sync tokens, lastSync) leave the shape alone, so they do not
+ * trigger another one.
+ */
+export const onAccountChanged = onDocumentWritten({ document: 'integrations/{person}/accounts/{accountId}', secrets: SECRETS, memory: '512MiB', timeoutSeconds: 300 }, async (event) => {
+  const { person, accountId } = event.params
+  if (!(person in PEOPLE)) return
+  const before = event.data?.before?.data() as AccountDoc | undefined
+  const after = event.data?.after?.data() as AccountDoc | undefined
+  if (!after || syncShape(before) === syncShape(after)) return
+  if (!Object.values(after.calendars ?? {}).some((c) => c.direction !== 'off')) return
+  try {
+    if (after.source === 'google') await syncGoogleAccount(person as PersonKey, accountId)
+    else await syncAppleAccount(person as PersonKey, accountId)
+  } catch (e) {
+    logger.error('sync after account change failed', { person, accountId, error: String(e) })
+  }
 })
 
 /** Disconnecting an account removes its secret and imported events. */

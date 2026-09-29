@@ -13,7 +13,7 @@ import { env } from "@/lib/env";
 import { tzAbbrev } from "@/lib/format";
 import { useMe, usePerson } from "@/lib/people";
 import { forgetPushToken, notificationsAllowed, refreshPushToken, requestNotifications } from "@/lib/push";
-import { usePrefs, type AppearancePref } from "@/store/prefs";
+import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref } from "@/store/prefs";
 import { useSession } from "@/store/session";
 import { useColors, useIsDark } from "@/theme";
 
@@ -123,7 +123,7 @@ export default function SettingsSheet() {
           <Row label="Second time gutter">
             <Switch label="Second time gutter" value={mine.settings.secondGutter} onChange={(v) => saveSetting("secondGutter", v)} />
           </Row>
-          <Row label="Reset zoom" onPress={() => setHourHeight(62)} chevron />
+          <Row label="Reset zoom" onPress={() => setHourHeight(DEFAULT_HOUR_HEIGHT)} chevron />
         </Group>
 
         <Group header="Tasks" footer="When off, completed tasks are hidden in the month, timeline, lists, search and the widget (the Completed list and the search filter still show them).">

@@ -1,42 +1,83 @@
 import type { EventOccurrence, TaskOccurrence } from "@shared/model";
+import { useId } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { mix, tintText } from "@/lib/color";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
+import { mix } from "@/lib/color";
+import { useMetrics } from "@/lib/metrics";
 import { usePersonColor } from "@/lib/people";
 import { useColors, useIsDark } from "@/theme";
-import { SourceBadge } from "./SourceBadge";
 
-/** A task on a month cell or the all-day strip: the owner's ring (filled when done) and the title. */
-export function TaskChip({ occ }: { occ: TaskOccurrence }) {
-  const colors = useColors();
-  const color = usePersonColor(occ.task.owner);
+/**
+ * Month-view chips, as Apple Calendar draws them: a short rounded bar the width of the day, the title clipped at the
+ * right edge with a fade (never "…"), a Reminders-style ring for tasks (a ring with a dot once done, the title dimmed),
+ * and the calendar's colour for imported events.
+ */
+
+/** Fades the end of a clipped title into the chip's own colour. */
+function EdgeFade({ color, height }: { color: string; height: number }) {
+  const id = `fade${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
-    <View style={[styles.chip, { backgroundColor: colors.fill3 }]}>
-      <View style={[styles.ring, { borderColor: color, backgroundColor: occ.completed ? color : "transparent" }]} />
-      <Text numberOfLines={1} style={[styles.chipText, { color: occ.completed ? colors.label3 : colors.label }]}>
-        {occ.title}
-      </Text>
+    <Svg pointerEvents="none" width={10} height={height} style={styles.fade}>
+      <Defs>
+        <LinearGradient id={id} x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0" stopColor={color} stopOpacity={0} />
+          <Stop offset="1" stopColor={color} stopOpacity={1} />
+        </LinearGradient>
+      </Defs>
+      <Rect x={0} y={0} width={10} height={height} fill={`url(#${id})`} />
+    </Svg>
+  );
+}
+
+/** A Reminders ring: empty while open, a ring with a dot once completed. */
+export function TaskRing({ color, done, size }: { color: string; done: boolean; size: number }) {
+  const stroke = Math.max(1.5, size * 0.14);
+  const dot = size * 0.52;
+  return (
+    <View style={{ width: size, height: size, borderRadius: size / 2, borderWidth: stroke, borderColor: color, alignItems: "center", justifyContent: "center" }}>
+      {done ? <View style={{ width: dot, height: dot, borderRadius: dot / 2, backgroundColor: color }} /> : null}
     </View>
   );
 }
 
-/** Imported event chip: tinted with the source calendar's colour plus a small source badge. */
+/** A task on a month cell or the all-day strip: the owner's ring and the title. */
+export function TaskChip({ occ }: { occ: TaskOccurrence }) {
+  const colors = useColors();
+  const dark = useIsDark();
+  const m = useMetrics();
+  const color = usePersonColor(occ.task.owner);
+  const bg = dark ? "#2c2c2e" : "#e9e9ee";
+  return (
+    <View style={[styles.chip, { height: m.chipHeight, borderRadius: m.chipRadius, backgroundColor: bg, paddingLeft: 2.3, gap: 4.8 * m.grid }]}>
+      <TaskRing color={color} done={occ.completed} size={m.chipRing} />
+      <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="clip" style={[styles.text, { fontSize: m.chipText, color: occ.completed ? colors.label2 : colors.label }]}>
+        {occ.title}
+      </Text>
+      <EdgeFade color={bg} height={m.chipHeight} />
+    </View>
+  );
+}
+
+/** An imported event: tinted with its calendar's colour, the title in that colour. */
 export function EventChip({ occ }: { occ: EventOccurrence }) {
   const colors = useColors();
   const dark = useIsDark();
-  const c = occ.event.color;
-  const text = tintText(c, dark);
+  const m = useMetrics();
+  const c = occ.event.color || colors.blue;
+  const bg = dark ? mix(c, "#000000", 0.27) : mix(c, "#ffffff", 0.2);
+  const text = dark ? mix(c, "#ffffff", 0.08) : mix(c, "#000000", 0.25);
   return (
-    <View style={[styles.chip, { backgroundColor: mix(c, colors.bg3, dark ? 0.32 : 0.22), paddingRight: 4 }]}>
-      <Text numberOfLines={1} style={[styles.chipText, { color: text, flex: 1 }]}>
+    <View style={[styles.chip, { height: m.chipHeight, borderRadius: m.chipRadius, backgroundColor: bg, paddingLeft: 2.7 }]}>
+      <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="clip" style={[styles.text, { fontSize: m.chipText, color: text }]}>
         {occ.title}
       </Text>
-      <SourceBadge source={occ.event.source} size={10} color={text} />
+      <EdgeFade color={bg} height={m.chipHeight} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  chip: { height: 18, width: "100%", flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 5, paddingLeft: 4, paddingRight: 3 },
-  ring: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
-  chipText: { fontSize: 13, fontWeight: "600", lineHeight: 15, flexShrink: 1 },
+  chip: { width: "100%", flexDirection: "row", alignItems: "center", overflow: "hidden" },
+  text: { fontWeight: "600", flexShrink: 1, flexGrow: 1 },
+  fade: { position: "absolute", right: 0, top: 0 },
 });

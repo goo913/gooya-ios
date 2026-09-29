@@ -3,6 +3,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { onDocumentWritten } from 'firebase-functions/v2/firestore'
 import { logger } from 'firebase-functions'
 import { initializeApp } from 'firebase-admin/app'
+import { getFirestore } from 'firebase-admin/firestore'
 import { normalizeTask } from '../../shared/normalize'
 import type { Task } from '../../shared/model'
 import { rebuildQueueForTask, sendDueAlerts, extendQueues } from './alerts'
@@ -10,6 +11,8 @@ import { notifyTaskAdded } from './notify'
 
 setGlobalOptions({ region: 'us-east1', maxInstances: 5, memory: '256MiB' })
 initializeApp()
+// Optional fields left undefined (a calendar's first sync token, say) are simply not written, instead of failing the write.
+getFirestore().settings({ ignoreUndefinedProperties: true })
 
 /** Keep the alert queue in sync with every task change; notify on additions by the other person. */
 export const onTaskWritten = onDocumentWritten('tasks/{taskId}', async (event) => {
