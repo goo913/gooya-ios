@@ -38,8 +38,15 @@ TestFlight alone is not a way to distribute for good: every build stops working 
 ## Part 2: TestFlight, for you and 은비
 
 1. **Create the app record:** App Store Connect (as HyberTec LLC) → **Apps** → **+** → **New App**: Platforms **iOS**; Name **GOOYA** (if Apple says the name is taken, use **GOOYA 구야**); Primary Language **English (U.S.)**; Bundle ID **com.hybertec.gooya** (it is in the list once a build has been signed; if not, register it at https://developer.apple.com/account/resources/identifiers → + → App IDs, with **Push Notifications** ticked); SKU **gooya**; User Access **Full Access** → **Create**.
+
+   ⚠️ The list also offers **com.hybertec.gooya.widget**: that is the Home Screen widget, which travels inside the app. Never pick it for the app record, nor in Firebase. (It happened once: App Store Connect and Firebase both pointed at the widget, which is why the APNs key could not be uploaded. Both were corrected on 2026-09-29.)
 2. Click the app → **App Information** → the **General Information** box shows **Apple ID**, a ten-digit number. Put it into `.publish/appstore.json` as `"appleId": "6740123456"`.
-3. **Push notifications need an APNs key** (once): https://developer.apple.com/account/resources/authkeys/list (as HyberTec LLC) → **+** → name `GOOYA push`, tick **Apple Push Notifications service (APNs)** → Continue → Register → **Download** (once only). Then Firebase console → project **gooya-37d79** → **Project settings** (gear) → **Cloud Messaging** → under **Apple app configuration**, the iOS app **GOOYA iPhone** → **APNs Authentication Key** → **Upload**: the .p8 file, the Key ID shown on Apple's page, and the Team ID `YSK7CHH56P`. Without this, the app installs fine but alerts never arrive on iPhones.
+3. **Push notifications need an APNs key** (once): https://developer.apple.com/account/resources/authkeys/list (as HyberTec LLC) → **+** → name `GOOYA push`, tick **Apple Push Notifications service (APNs)** → Continue → Register → **Download** (once only). Then:
+   1. Open https://console.firebase.google.com/project/gooya-37d79/settings/cloudmessaging (Firebase console → project **gooya-37d79** → the gear → **Project settings** → the **Cloud Messaging** tab, the second tab across the top; the **General** tab has no upload button).
+   2. Scroll to **Apple app configuration**. The app must read **GOOYA iPhone · com.hybertec.gooya** (not `.widget`).
+   3. Under **APNs Authentication Key**, click **Upload** → choose the `.p8` file → **Key ID**: the ten characters in the file's name (`AuthKey_<KEY ID>.p8`) → **Team ID**: `YSK7CHH56P` → **Upload**.
+
+   Without this, the app installs fine but alerts never arrive on iPhones. The key serves both TestFlight/App Store and `npm run iphone` builds.
 4. **Upload the first build:** `npm run publish:iphone`. It raises the build number in `release.json`, builds, signs and uploads (15–25 minutes), and ends with `✓ Uploaded GOOYA 1.0.0 (build 2) to App Store Connect`. Commit `release.json` afterwards (ask Claude Code, or it goes with the next change).
 5. **Export compliance:** the app says it uses only standard HTTPS encryption, so no question appears. If one does, answer **No** to non-exempt encryption.
 6. **Add 은비 as an internal tester** (no Apple review, builds within minutes):
