@@ -82,7 +82,7 @@ export default function RootLayout() {
             <Stack.Screen name="sheet/detail" options={page} />
             <Stack.Screen name="sheet/list" options={{ ...small, sheetAllowedDetents: [0.6, 1] }} />
             <Stack.Screen name="sheet/tags" options={{ ...small, sheetAllowedDetents: [0.55, 1] }} />
-            <Stack.Screen name="calendars" options={{ ...small, sheetAllowedDetents: "fitToContents" }} />
+            <Stack.Screen name="calendars" options={page} />
           </Stack.Protected>
         </Stack>
       )}

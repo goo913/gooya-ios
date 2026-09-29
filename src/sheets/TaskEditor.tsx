@@ -181,12 +181,13 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
       <DetailsBar title={editing ? "Details" : "New Task"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />
-      <ScrollView keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {topBar}
         <View style={styles.group}>
           <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
-            <TextInput value={title} onChangeText={setTitle} placeholder={editing ? "Title" : "New Task"} placeholderTextColor={colors.label3} autoCapitalize="sentences" style={[styles.title, { color: colors.label }]} />
-            <TextInput value={notes} onChangeText={setNotes} placeholder="Notes & URL" placeholderTextColor={colors.label3} multiline style={[styles.notes, { color: colors.label }]} />
+            {/* defaultValue, not value: a busy moment in JavaScript must never overwrite what is being typed. */}
+            <TextInput defaultValue={title} onChangeText={setTitle} placeholder={editing ? "Title" : "New Task"} placeholderTextColor={colors.label3} autoCapitalize="sentences" style={[styles.title, { color: colors.label }]} />
+            <TextInput defaultValue={notes} onChangeText={setNotes} placeholder="Notes & URL" placeholderTextColor={colors.label3} multiline style={[styles.notes, { color: colors.label }]} />
             {notes && URL_RE.test(notes) ? (
               <View style={styles.links}>
                 <LinkifiedNotes text={notes} color={colors.label2} linkColor={colors.blue} />

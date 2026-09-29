@@ -1,20 +1,20 @@
-import type { DateKey, Schedule, TaskOccurrence } from "@shared/model";
-import { describeRule, expandTask, occurrenceDays } from "@shared/recurrence";
-import { addDaysKey, parseHHmm, parseKey, startOfDayMs } from "@shared/time";
+import type { DateKey, EventOccurrence, Schedule, TaskOccurrence } from "@shared/model";
+import { dedupeEvents, describeRule, eventDays, expandEvent, expandTask, occurrenceDays } from "@shared/recurrence";
+import { addDaysKey, parseHHmm, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "@/components/Icon";
-import { OccurrenceRow } from "@/components/OccurrenceRow";
 import { Segmented } from "@/components/Segmented";
-import { MONTH_SHORT, WEEKDAY_LONG, formatHM } from "@/lib/format";
+import { formatHM } from "@/lib/format";
 import { useShowCompleted } from "@/lib/occurrences";
-import { usePerson, usePersonColor } from "@/lib/people";
+import { useMe, usePerson, usePersonColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
+import { EventRow, TaskRow, dayHeading } from "@/views/ListView";
 
 const MAX_RESULTS = 200;
 const matches = (hay: string | undefined, needle: string): boolean => !!hay && hay.toLowerCase().includes(needle);
@@ -27,15 +27,21 @@ export default function SearchScreen() {
   const showCompleted = useShowCompleted();
   const tasks = useData((s) => s.tasks);
   const schedules = useData((s) => s.schedules);
+  const allEvents = useData((s) => s.events);
+  const avoidDuplicates = usePerson(useMe()).settings.avoidDuplicates;
+  // The same event from two calendars once, as in the calendar views (Settings → Integrations → Avoid duplicates).
+  const events = useMemo(() => {
+    const live = allEvents.filter((e) => !e.deleted).sort((a, b) => (a.source === b.source ? 0 : a.source === "google" ? -1 : 1));
+    return avoidDuplicates ? dedupeEvents(live) : live;
+  }, [allEvents, avoidDuplicates]);
   const today = useToday();
   const openDetail = useSheets((s) => s.openDetail);
-  const openEditor = useSheets((s) => s.openEditor);
   const needle = q.trim().toLowerCase();
   const results = useMemo(() => {
     if (!needle) return null;
     const from = startOfDayMs(addDaysKey(today, -365), viewerTz);
     const to = startOfDayMs(addDaysKey(today, 365), viewerTz);
-    const byDay = new Map<DateKey, TaskOccurrence[]>();
+    const byDay = new Map<DateKey, (TaskOccurrence | EventOccurrence)[]>();
     let count = 0;
     for (const t of tasks) {
       const tagHit = (t.tags ?? []).some((tag) => matches(`#${tag}`, needle) || matches(tag, needle));
@@ -52,21 +58,32 @@ export default function SearchScreen() {
       }
       if (count >= MAX_RESULTS) break;
     }
+    // Imported calendar events too (not in the Completed filter: events are not completed).
+    if (filter === "all") {
+      for (const ev of events) {
+        if (!(matches(ev.title, needle) || matches(ev.notes, needle) || matches(ev.location, needle))) continue;
+        for (const occ of expandEvent(ev, from, to)) {
+          if (!matches(occ.title, needle) && !matches(ev.notes, needle) && !matches(ev.location, needle)) continue;
+          const day = eventDays(occ, viewerTz)[0];
+          let list = byDay.get(day);
+          if (!list) byDay.set(day, (list = []));
+          list.push(occ);
+          if (++count >= MAX_RESULTS * 2) break;
+        }
+      }
+    }
+    for (const list of byDay.values()) list.sort((a, b) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.start - b.start));
     const days = Array.from(byDay.keys()).sort();
     const upcoming = days.filter((d) => d >= today);
     const past = days.filter((d) => d < today).reverse();
     return { days: [...upcoming, ...past], byDay, schedules: schedules.filter((s) => matches(s.title, needle)) };
-  }, [needle, tasks, schedules, today, filter, showCompleted]);
-  const openTask = (occ: TaskOccurrence) => {
-    openEditor({ kind: "task", task: occ.task, occ });
-    router.push("/sheet/edit");
-  };
+  }, [needle, tasks, schedules, events, today, filter, showCompleted]);
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg, paddingTop: insets.top + 10 }]}>
       <View style={styles.bar}>
         <View style={[styles.field, { backgroundColor: colors.fill3 }]}>
           <Icon name="magnifyingglass" size={17} color={colors.label2} />
-          <TextInput value={q} onChangeText={setQ} placeholder="Search" placeholderTextColor={colors.label3} autoFocus returnKeyType="search" clearButtonMode="while-editing" style={[styles.input, { color: colors.label }]} />
+          <TextInput defaultValue={q} onChangeText={setQ} placeholder="Search" placeholderTextColor={colors.label3} autoFocus returnKeyType="search" clearButtonMode="while-editing" style={[styles.input, { color: colors.label }]} />
         </View>
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <Text style={[styles.cancel, { color: colors.blue }]}>Cancel</Text>
@@ -82,9 +99,9 @@ export default function SearchScreen() {
           onChange={setFilter}
         />
       </View>
-      <ScrollView keyboardDismissMode="on-drag" contentContainerStyle={{ paddingBottom: insets.bottom + 20 }} showsVerticalScrollIndicator={false}>
+      <ScrollView keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: insets.bottom + 20 }} showsVerticalScrollIndicator={false}>
         {results === null ? (
-          <Text style={[styles.hint, { color: colors.label2 }]}>Search tasks and schedules for 구야 and 은비.</Text>
+          <Text style={[styles.hint, { color: colors.label2 }]}>Search tasks, schedules and calendar events for 구야 and 은비.</Text>
         ) : results.days.length === 0 && results.schedules.length === 0 ? (
           <Text style={[styles.hint, { color: colors.label2, fontSize: 17 }]}>No Results</Text>
         ) : (
@@ -105,20 +122,14 @@ export default function SearchScreen() {
               </View>
             ) : null}
             {results.days.map((day) => {
-              const { y, m, d } = parseKey(day);
-              const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
               const isToday = day === today;
               return (
                 <View key={day}>
-                  <View style={styles.dayHead}>
-                    <Text style={[styles.dayName, { color: isToday ? colors.red : colors.label }]}>{WEEKDAY_LONG[wd]}</Text>
-                    <Text style={[styles.dayDate, { color: isToday ? colors.red : colors.label2 }]}>
-                      {MONTH_SHORT[m - 1]} {d}, {y}
-                    </Text>
-                  </View>
-                  {results.byDay.get(day)!.map((occ) => (
-                    <OccurrenceRow key={occ.key} occ={occ} onOpen={() => openTask(occ)} />
-                  ))}
+                  <Text style={[styles.dayHead, { color: isToday ? colors.red : colors.label, borderBottomColor: colors.separator }]}>
+                    {dayHeading(day)}
+                    {day.slice(0, 4) !== today.slice(0, 4) ? `, ${day.slice(0, 4)}` : ""}
+                  </Text>
+                  {results.byDay.get(day)!.map((occ) => (occ.kind === "event" ? <EventRow key={occ.key} occ={occ} day={day} /> : <TaskRow key={occ.key} occ={occ} day={day} />))}
                 </View>
               );
             })}
@@ -160,9 +171,7 @@ const styles = StyleSheet.create({
   seg: { paddingHorizontal: 16, paddingBottom: 8 },
   hint: { paddingHorizontal: 24, paddingTop: 64, textAlign: "center", fontSize: 15 },
   section: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6, fontSize: 13, fontWeight: "600" },
-  dayHead: { flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 },
-  dayName: { fontSize: 17, fontWeight: "600" },
-  dayDate: { fontSize: 15 },
+  dayHead: { marginHorizontal: 12, paddingHorizontal: 5, paddingTop: 22, paddingBottom: 12, fontSize: 21, fontWeight: "600", borderBottomWidth: StyleSheet.hairlineWidth },
   schedRow: { marginLeft: 16, paddingRight: 16, paddingVertical: 10, flexDirection: "row", alignItems: "center", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   schedIcon: { width: 74, textAlign: "right", fontSize: 24 },
   schedBar: { width: 4, height: 34, borderRadius: 2 },

@@ -102,7 +102,7 @@ export function TextRow({ value, onChange, placeholder, leading, style, ...rest 
   return (
     <View style={[styles.textRow, style]}>
       {leading}
-      <TextInput value={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor={colors.label3} style={[styles.input, { color: colors.label }]} {...rest} />
+      <TextInput defaultValue={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor={colors.label3} style={[styles.input, { color: colors.label }]} {...rest} />
     </View>
   );
 }

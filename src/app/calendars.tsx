@@ -1,87 +1,157 @@
 import { PERSON_KEYS, type PersonKey } from "@shared/people";
 import { router } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import type { ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { GlassCapsule } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
-import { Segmented } from "@/components/Segmented";
-import { BarButton, SheetBar } from "@/components/SheetHeader";
+import { patchSettings } from "@/lib/db";
 import { colorHex, peopleForFilter, useMe, usePerson } from "@/lib/people";
-import { usePrefs, type PersonFilter } from "@/store/prefs";
+import { useData } from "@/store/data";
+import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark } from "@/theme";
 
-type SegValue = "gooya" | "eunbi" | "both";
-
-/** Which people's items show (the month, lists and search). */
+/**
+ * Apple Calendar's Calendars sheet: whose items show (the month, lists and search; the day view has its own menu),
+ * each imported Google or iCloud calendar with its own tick, and completed tasks shown or not.
+ */
 export default function CalendarsSheet() {
   const colors = useColors();
   const dark = useIsDark();
+  const insets = useSafeAreaInsets();
   const me = useMe();
+  const mine = usePerson(me);
   const filter = usePrefs((s) => s.filter);
   const setFilter = usePrefs((s) => s.setFilter);
+  const hidden = usePrefs((s) => s.hiddenCalendars);
+  const toggleCalendar = usePrefs((s) => s.toggleCalendar);
+  const accounts = useData((s) => s.accounts);
   const gooya = usePerson("gooya");
   const eunbi = usePerson("eunbi");
   const included = peopleForFilter(me, filter);
-  const segValue: SegValue = filter === "both" ? "both" : included[0];
-  const fromSeg = (v: SegValue): PersonFilter => (v === "both" ? "both" : v === me ? "me" : "other");
-  const toggle = (key: PersonKey) => {
+  const togglePerson = (key: PersonKey) => {
     const on = included.includes(key);
     if (on && included.length === 1) return;
     const next = on ? included.filter((k) => k !== key) : [...included, key];
     setFilter(next.length === 2 ? "both" : next[0] === me ? "me" : "other");
   };
+  const imported = accounts
+    .map((a) => ({ account: a, calendars: Object.entries(a.calendars ?? {}).filter(([, c]) => c.direction === "import" || c.direction === "both") }))
+    .filter((g) => g.calendars.length > 0);
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <SheetBar title="Calendars" right={<BarButton onPress={() => router.back()}>Done</BarButton>} />
-      <View style={styles.body}>
-        <Segmented<SegValue>
-          options={[
-            { value: "gooya", label: gooya.name },
-            { value: "eunbi", label: eunbi.name },
-            { value: "both", label: "둘 다" },
-          ]}
-          value={segValue}
-          onChange={(v) => setFilter(fromSeg(v))}
-        />
-        <Text style={[styles.header, { color: colors.label2 }]}>SHOW</Text>
-        <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
+      <View style={styles.top}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={() => router.back()} hitSlop={6}>
+          <GlassCapsule style={styles.round}>
+            <Icon name="xmark" size={19} weight="semibold" color={colors.label} />
+          </GlassCapsule>
+        </Pressable>
+        <Text style={[styles.title, { color: colors.label }]}>Calendars</Text>
+        <View style={styles.round} />
+      </View>
+      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }} showsVerticalScrollIndicator={false}>
+        <SectionHeader>People</SectionHeader>
+        <Card>
           {PERSON_KEYS.map((key, i) => {
             const p = key === "gooya" ? gooya : eunbi;
-            const on = included.includes(key);
             return (
-              <Pressable key={key} onPress={() => toggle(key)} style={[styles.row, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator }]}>
-                <View style={[styles.dot, { backgroundColor: colorHex(p.color, dark) }]} />
-                <Text style={[styles.name, { color: colors.label }]}>
-                  {p.name}
-                  {key === me ? <Text style={{ color: colors.label2 }}> · me</Text> : null}
-                </Text>
-                {on ? <Icon name="checkmark" size={18} color={colors.blue} weight="semibold" /> : null}
-              </Pressable>
+              <CheckRow key={key} first={i === 0} color={colorHex(p.color, dark)} checked={included.includes(key)} onPress={() => togglePerson(key)} title={p.name} subtitle={key === me ? "Me" : undefined} />
             );
           })}
-        </View>
-        <Text style={[styles.foot, { color: colors.label2 }]}>Applies to the month, lists and search. Day views have their own switch. Remembered on this phone.</Text>
-        <Pressable
-          onPress={() => {
-            router.back();
-            setTimeout(() => router.push("/settings"), 350);
-          }}
-          style={[styles.settings, { backgroundColor: colors.bg3 }]}
-        >
-          <Text style={[styles.settingsText, { color: colors.blue }]}>Settings</Text>
-        </Pressable>
-      </View>
+        </Card>
+        <Text style={[styles.foot, { color: colors.label2 }]}>The month, lists and search. The day view has its own choice in its view menu.</Text>
+
+        {imported.map(({ account, calendars }) => (
+          <View key={account.id}>
+            <SectionHeader>{account.source === "google" ? "Google" : "iCloud"}</SectionHeader>
+            <Card>
+              {calendars.map(([calId, c], i) => (
+                <CheckRow
+                  key={calId}
+                  first={i === 0}
+                  color={c.color}
+                  checked={!hidden.includes(`${account.id}:${calId}`)}
+                  onPress={() => toggleCalendar(`${account.id}:${calId}`)}
+                  title={c.name}
+                  subtitle={account.email !== c.name ? account.email : undefined}
+                />
+              ))}
+            </Card>
+          </View>
+        ))}
+
+        <Card style={styles.gap}>
+          <View style={styles.row}>
+            <Text style={[styles.rowTitle, { color: colors.label, flex: 1 }]}>Show Completed Tasks</Text>
+            <View style={styles.switchBox}>
+              <Switch value={mine.settings.showCompleted !== false} onValueChange={(v) => void patchSettings(me, { showCompleted: v })} />
+            </View>
+          </View>
+        </Card>
+
+        <Card style={styles.gap}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add Calendar"
+            onPress={() => {
+              router.back();
+              setTimeout(() => router.push("/integrations"), 350);
+            }}
+            style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.fill4 }]}
+          >
+            <Icon name="calendar.badge.plus" size={22} color={colors.label} />
+            <Text style={[styles.rowTitle, { color: colors.label, flex: 1 }]}>Add Calendar</Text>
+            <Icon name="chevron.right" size={14} weight="semibold" color={colors.label3} />
+          </Pressable>
+        </Card>
+      </ScrollView>
     </View>
+  );
+}
+
+function SectionHeader({ children }: { children: ReactNode }) {
+  const colors = useColors();
+  return <Text style={[styles.section, { color: colors.label2 }]}>{children}</Text>;
+}
+
+function Card({ children, style }: { children: ReactNode; style?: object }) {
+  const colors = useColors();
+  return <View style={[styles.card, { backgroundColor: colors.bg3 }, style]}>{children}</View>;
+}
+
+/** A row with Apple's round tick in the calendar's (or person's) colour. */
+function CheckRow({ color, checked, onPress, title, subtitle, first }: { color: string; checked: boolean; onPress: () => void; title: string; subtitle?: string; first: boolean }) {
+  const colors = useColors();
+  return (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={title}
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.fill4 }]}
+    >
+      <View style={[styles.check, checked ? { backgroundColor: color } : { borderWidth: 2, borderColor: colors.label3 }]}>{checked ? <Icon name="checkmark" size={13} weight="bold" color="#ffffff" /> : null}</View>
+      <View style={[styles.rowText, !first && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator }]}>
+        <Text style={[styles.rowTitle, { color: colors.label }]}>{title}</Text>
+        {subtitle ? <Text style={[styles.rowSub, { color: colors.label2 }]}>{subtitle}</Text> : null}
+      </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  body: { paddingHorizontal: 16, paddingBottom: 32 },
-  header: { marginTop: 20, fontSize: 13, letterSpacing: 0.3 },
-  card: { marginTop: 8, borderRadius: 12, overflow: "hidden" },
-  row: { height: 46, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 },
-  dot: { width: 12, height: 12, borderRadius: 6 },
-  name: { flex: 1, fontSize: 17 },
-  foot: { marginTop: 12, paddingHorizontal: 4, fontSize: 13, lineHeight: 17 },
-  settings: { marginTop: 20, height: 46, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  settingsText: { fontSize: 17 },
+  top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 15, paddingBottom: 6 },
+  round: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  title: { fontSize: 17, fontWeight: "600" },
+  section: { marginTop: 18, marginBottom: 8, paddingHorizontal: 32, fontSize: 17, fontWeight: "600" },
+  card: { marginHorizontal: 16, borderRadius: 26, overflow: "hidden" },
+  gap: { marginTop: 24 },
+  row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 14, paddingLeft: 16, paddingRight: 18 },
+  check: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  rowText: { flex: 1, alignSelf: "stretch", justifyContent: "center", paddingVertical: 14 },
+  rowTitle: { fontSize: 17 },
+  rowSub: { fontSize: 15, marginTop: 1 },
+  switchBox: { height: 52, justifyContent: "center" },
+  foot: { marginTop: 8, paddingHorizontal: 32, fontSize: 13, lineHeight: 17 },
 });

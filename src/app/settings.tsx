@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Alert, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DestructiveButton, Group, Row, Switch, ValueRow, pickOption } from "@/components/Form";
 import { Segmented } from "@/components/Segmented";
-import { BarButton, SheetBar } from "@/components/SheetHeader";
+import { CloseButton, SheetBar } from "@/components/SheetHeader";
 import { EARLY_REMINDERS } from "@/lib/alerts";
 import { signOutUser } from "@/lib/auth";
 import { patchSettings, patchUser } from "@/lib/db";
@@ -54,11 +54,11 @@ export default function SettingsSheet() {
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <SheetBar title="Settings" right={<BarButton onPress={() => router.back()}>Done</BarButton>} />
-      <ScrollView keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <SheetBar title="Settings" left={<CloseButton onPress={() => router.back()} />} />
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Group header="Me" footer={`Signed in as ${user?.email ?? PEOPLE[me].email}`}>
           <Row label="Name">
-            <TextInput value={name} onChangeText={setName} onBlur={() => name.trim() && name.trim() !== mine.name && save({ name: name.trim() })} style={[styles.input, { color: colors.label }]} textAlign="right" />
+            <TextInput defaultValue={name} onChangeText={setName} onBlur={() => name.trim() && name.trim() !== mine.name && save({ name: name.trim() })} style={[styles.input, { color: colors.label }]} textAlign="right" />
           </Row>
           <ValueRow label="Time Zone" value={`${mine.timezone.replace("_", " ")} (${tzAbbrev(mine.timezone)})`} options={zones.map((z) => `${z.replace("_", " ")} (${tzAbbrev(z)})`)} onPick={(_, i) => save({ timezone: zones[i] })} title="Time Zone" />
           <Row label="Color" accessibilityLabel="My color">

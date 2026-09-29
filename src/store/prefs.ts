@@ -22,6 +22,8 @@ interface PrefsState {
   hourHeight: number;
   monthDisplay: MonthDisplay;
   appearance: AppearancePref;
+  /** Imported calendars hidden on this phone ("accountId:calendarId"), as Apple's Calendars sheet unticks them. */
+  hiddenCalendars: string[];
   hydrated: boolean;
   setFilter: (f: PersonFilter) => void;
   setAppearance: (a: AppearancePref) => void;
@@ -30,6 +32,7 @@ interface PrefsState {
   setTimelinePeople: (p: TimelinePeople) => void;
   setDayDisplay: (d: DayDisplay) => void;
   setHourHeight: (h: number) => void;
+  toggleCalendar: (id: string) => void;
 }
 
 /**
@@ -54,6 +57,7 @@ export const usePrefs = create<PrefsState>()(
       hourHeight: DEFAULT_HOUR_HEIGHT,
       monthDisplay: "stacked",
       appearance: "dark",
+      hiddenCalendars: [],
       hydrated: false,
       setFilter: (filter) => set({ filter }),
       setAppearance: (appearance) => {
@@ -65,12 +69,13 @@ export const usePrefs = create<PrefsState>()(
       setTimelinePeople: (timelinePeople) => set({ timelinePeople }),
       setDayDisplay: (dayDisplay) => set({ dayDisplay }),
       setHourHeight: (hourHeight) => set({ hourHeight: Math.min(190, Math.max(20, hourHeight)) }),
+      toggleCalendar: (id) => set((s) => ({ hiddenCalendars: s.hiddenCalendars.includes(id) ? s.hiddenCalendars.filter((c) => c !== id) : [...s.hiddenCalendars, id] })),
     }),
     {
       name: "gooya-prefs",
       version: 2,
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance }),
+      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance, hiddenCalendars: s.hiddenCalendars }),
       // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default).
       migrate: (persisted, version) => {
         const old = (persisted ?? {}) as Record<string, unknown>;

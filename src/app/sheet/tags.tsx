@@ -40,7 +40,7 @@ export default function TagsSheet() {
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
       <SheetBar title="Tags" right={<BarButton onPress={() => router.back()}>Done</BarButton>} />
-      <ScrollView keyboardDismissMode="interactive" contentContainerStyle={styles.content}>
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
         <View style={styles.chips}>
           {value.map((t) => (
             <Pressable key={t} onPress={() => change(value.filter((x) => x !== t))} style={[styles.chip, { backgroundColor: withAlpha(colors.blue, 0.15) }]}>

@@ -16,13 +16,15 @@ interface TopChromeProps {
   viewIcon?: "month" | "day";
   /** The view button's pull-down menu (Apple's "Single Day · Multi Day · List"); replaces onViewOptions. */
   viewMenu?: { icon: SFSymbol; groups: MenuGroup[]; actions?: MenuAction[] };
+  /** Without the view button (Apple's year screen has only search and add). */
+  hideView?: boolean;
   onSearch?: () => void;
   onAdd?: () => void;
   right?: ReactNode;
 }
 
 /** The floating pills over the top of a screen: back on the left, view · search · add on the right. */
-export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", viewMenu, onSearch, onAdd, right }: TopChromeProps) {
+export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", viewMenu, hideView, onSearch, onAdd, right }: TopChromeProps) {
   const insets = useSafeAreaInsets();
   const m = useMetrics();
   return (
@@ -40,7 +42,8 @@ export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", vie
       </View>
       {right ?? (
         <GlassGroup>
-          {viewMenu ? (
+          {/* No view button without something for it to do (a dead button is worse than none). */}
+          {hideView || (!viewMenu && !onViewOptions) ? null : viewMenu ? (
             <MenuButton icon={viewMenu.icon} iconSize={m.viewIcon * 0.8} width={m.barButtonWidths[0]} height={m.barHeight} accessibility="View options" groups={viewMenu.groups} actions={viewMenu.actions} />
           ) : (
             <GlassIconButton label="View options" width={m.barButtonWidths[0]} onPress={onViewOptions}>
@@ -61,13 +64,15 @@ export function TopChrome({ back, onBack, onViewOptions, viewIcon = "month", vie
 
 interface BottomChromeProps {
   showToday?: boolean;
+  /** What Today does (by default: scroll the current view to today). */
+  onToday?: () => void;
   onCalendars?: () => void;
   onSettings?: () => void;
   left?: ReactNode;
 }
 
 /** The floating pills over the bottom: Today on the left, calendars · settings on the right. */
-export function BottomChrome({ showToday = true, onCalendars, onSettings, left }: BottomChromeProps) {
+export function BottomChrome({ showToday = true, onToday, onCalendars, onSettings, left }: BottomChromeProps) {
   const insets = useSafeAreaInsets();
   const m = useMetrics();
   const goToday = useNav((s) => s.goToday);
@@ -77,7 +82,7 @@ export function BottomChrome({ showToday = true, onCalendars, onSettings, left }
       <View pointerEvents="box-none">
         {left ??
           (showToday ? (
-            <GlassPill label="Today" onPress={goToday} height={m.bottomBarHeight} style={styles.todayPill}>
+            <GlassPill label="Today" onPress={onToday ?? goToday} height={m.bottomBarHeight} style={styles.todayPill}>
               <PillText>Today</PillText>
             </GlassPill>
           ) : null)}

@@ -330,7 +330,16 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
             <View key={p} style={{ width: pageW, flexDirection: "row" }}>
               {dates.map((date, di) => (
                 <View key={date} style={[styles.dateCol, di > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
-                  <Text allowFontScaling={false} numberOfLines={1} style={[styles.dateTitle, { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 }]}>
+                  <Text
+                    allowFontScaling={false}
+                    numberOfLines={1}
+                    style={[
+                      styles.dateTitle,
+                      { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 },
+                      // One day: centred on the whole screen, as Apple's title is, not on the column right of the hours.
+                      days === 1 && { marginLeft: -gutterW, paddingLeft: 0 },
+                    ]}
+                  >
                     {days === 1 ? formatDayTitle(date) : formatColumnHeader(date)}
                   </Text>
                   {people.length > 1 ? (
@@ -631,7 +640,17 @@ const TaskPill = memo(function TaskPill({ seg, info, hourH, metrics, dark, color
     [onPanStart, onPanUpdate, onPanEnd],
   );
   /* eslint-enable react-hooks/refs */
-  const tap = useMemo(() => Gesture.Tap().runOnJS(true).onEnd(() => onTap(o)), [onTap, o]);
+  // A tap on the ring completes the task (its own button handles that); anywhere else on the block opens it.
+  const ringZone = 3 + metrics.taskRing + 8;
+  const tap = useMemo(
+    () =>
+      Gesture.Tap()
+        .runOnJS(true)
+        .onEnd((e) => {
+          if (e.x > ringZone) onTap(o);
+        }),
+    [onTap, o, ringZone],
+  );
   const gesture = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
   const startMin = preview?.startMin ?? seg.startMin;
   const top = (startMin / 60) * hourH;

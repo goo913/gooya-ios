@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useData } from '@/store/data'
+import { usePrefs } from '@/store/prefs'
 import type { PersonKey } from '@shared/people'
 import type { DateKey, EventOccurrence, ScheduleOccurrence, TaskOccurrence } from '@shared/model'
 import { dedupeEvents, eventDays, expandEvent, expandSchedule, expandTask, occurrenceDays } from '@shared/recurrence'
@@ -59,7 +60,8 @@ export function useScheduleOccurrences(start: number, end: number, people: Perso
 
 /** Imported calendar events for people within [start, end), deduped when the setting is on. */
 export function useEventOccurrences(start: number, end: number, people: PersonKey[]): EventOccurrence[] {
-  const events = useData(useShallow((s) => s.events.filter((e) => people.includes(e.owner) && !e.deleted)))
+  const hidden = usePrefs((s) => s.hiddenCalendars)
+  const events = useData(useShallow((s) => s.events.filter((e) => people.includes(e.owner) && !e.deleted && !hidden.includes(`${e.accountId}:${e.calendarId}`))))
   const me = useMe()
   const avoidDuplicates = usePerson(me).settings.avoidDuplicates
   return useMemo(() => {

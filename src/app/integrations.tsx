@@ -10,7 +10,7 @@ import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DestructiveButton, Group, Row, Switch, TextRow } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Segmented";
-import { BarButton, SheetBar } from "@/components/SheetHeader";
+import { CloseButton, SheetBar } from "@/components/SheetHeader";
 import { SourceBadge } from "@/components/SourceBadge";
 import { deleteAccount, newId, patchAccount, patchSettings, patchUser } from "@/lib/db";
 import { env } from "@/lib/env";
@@ -40,6 +40,8 @@ export default function IntegrationsSheet() {
   const [appleEmail, setAppleEmail] = useState("");
   const [applePassword, setApplePassword] = useState("");
   const [appleError, setAppleError] = useState<string | null>(null);
+  /** Bumped after a successful connection, so the password field starts empty again. */
+  const [appleForm, setAppleForm] = useState(0);
   const token = mine.doc?.widgetToken ?? null;
   const google = accounts.filter((a) => a.source === "google");
   const apple = accounts.filter((a) => a.source === "apple");
@@ -84,6 +86,7 @@ export default function IntegrationsSheet() {
     try {
       await httpsCallable(functions, "appleConnect")({ email: appleEmail.trim(), password: applePassword });
       setApplePassword("");
+      setAppleForm((n) => n + 1);
       setMessage("iCloud connected. Choose Import, Export or Two-way for each calendar below.");
     } catch (e) {
       // The server explains what went wrong in plain words (functions/src/integrations/apple.ts).
@@ -108,8 +111,8 @@ export default function IntegrationsSheet() {
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <SheetBar title="Integrations" right={<BarButton onPress={() => router.back()}>Done</BarButton>} />
-      <ScrollView keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <SheetBar title="Integrations" left={<CloseButton onPress={() => router.back()} />} />
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {message ? (
           <View style={styles.group}>
             <Text style={[styles.message, { backgroundColor: colors.bg3, color: colors.label }]}>{message}</Text>
@@ -147,7 +150,7 @@ export default function IntegrationsSheet() {
             <Icon name="arrow.up.right" size={16} color={colors.label2} />
           </Row>
           <TextRow value={appleEmail} onChange={setAppleEmail} placeholder="Apple Account email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="username" />
-          <TextRow value={applePassword} onChange={setApplePassword} placeholder="App-specific password (abcd-efgh-ijkl-mnop)" secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="oneTimeCode" />
+          <TextRow key={`password-${appleForm}`} value={applePassword} onChange={setApplePassword} placeholder="App-specific password (abcd-efgh-ijkl-mnop)" secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="oneTimeCode" />
           <Row label={busy === "apple" ? "Connecting…" : "Connect iCloud"} labelColor={colors.blue} onPress={() => void connectApple()} />
           {appleError ? <Text style={[styles.error, { color: colors.red }]}>{appleError}</Text> : null}
         </Group>

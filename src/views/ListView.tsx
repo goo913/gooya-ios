@@ -21,7 +21,7 @@ const FUTURE_DAYS = 120;
 type Item = TaskOccurrence | EventOccurrence;
 
 /** "Tuesday – Sep 29" */
-function dayHeading(key: DateKey): string {
+export function dayHeading(key: DateKey): string {
   const [y, m, d] = key.split("-").map(Number);
   return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} – ${MONTH_SHORT[m - 1]} ${d}`;
 }
@@ -96,7 +96,7 @@ function Times({ start, end, allDay }: { start: number; end?: number; allDay: bo
   );
 }
 
-function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
+export function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
   const colors = useColors();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
@@ -116,7 +116,7 @@ function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
   );
 }
 
-function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
+export function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
   const colors = useColors();
   const dark = useIsDark();
   const person = usePerson(occ.task.owner);

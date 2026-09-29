@@ -5,10 +5,10 @@ import { PERSON_KEYS, type PersonKey } from "@shared/people";
 import { buildRuleBody, parseRuleFields } from "@shared/recurrence";
 import { addDaysKey, minutesOf } from "@shared/time";
 import { useMemo, useState, type ReactNode } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/components/Form";
 import { Segmented } from "@/components/Segmented";
-import { BarButton, SheetBar } from "@/components/SheetHeader";
+import { DetailsBar } from "@/components/SheetHeader";
 import { dateFromHHmm, dateFromKey, hhmmFromDate, keyFromDate } from "@/lib/dates";
 import { deleteSchedule, newId, saveSchedule } from "@/lib/db";
 import { formatMediumDate } from "@/lib/format";
@@ -120,16 +120,8 @@ export function ScheduleEditor({ schedule, dayOnly, initialOwner, initialDate, i
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <SheetBar
-        title={dayOnly ? formatMediumDate(dayOnly, false) : editing ? "Edit Schedule" : "New Schedule"}
-        left={<BarButton onPress={onClose}>Cancel</BarButton>}
-        right={
-          <BarButton onPress={() => void save()} disabled={!valid || busy} bold>
-            {editing ? "Done" : "Add"}
-          </BarButton>
-        }
-      />
-      <ScrollView keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <DetailsBar title={dayOnly ? formatMediumDate(dayOnly, false) : editing ? "Edit Schedule" : "New Schedule"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {topBar}
         {!dayOnly ? (
           <Group>
@@ -153,6 +145,8 @@ export function ScheduleEditor({ schedule, dayOnly, initialOwner, initialDate, i
 
         <Group footer={dayOnly ? "Changes apply to this day only." : undefined}>
           <TextRow
+            // A preset (Work, Sleep…) fills in the title: the row starts again with it.
+            key={editing ? "title" : `title-${kind}`}
             value={title}
             onChange={setTitle}
             placeholder="Title"
@@ -193,7 +187,11 @@ export function ScheduleEditor({ schedule, dayOnly, initialOwner, initialDate, i
 
             <Group header="Color" footer={color ? undefined : `Uses ${ownerInfo.name}’s colour.`}>
               <Row label="Color">
-                {color ? <BarButton onPress={() => setColor(null)}>Use owner’s</BarButton> : null}
+                {color ? (
+                  <Pressable accessibilityRole="button" onPress={() => setColor(null)} hitSlop={8}>
+                    <Text style={{ color: colors.blue, fontSize: 17 }}>Use owner’s</Text>
+                  </Pressable>
+                ) : null}
                 <Host matchContents style={styles.colorHost}>
                   <ColorPicker selection={color ?? (dark ? ownerInfo.hexDark : ownerInfo.hexLight)} supportsOpacity={false} onSelectionChange={(c) => setColor(c.slice(0, 7))} />
                 </Host>

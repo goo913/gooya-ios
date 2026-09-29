@@ -84,7 +84,8 @@ export function startMockData(): void {
     };
   };
   const events: CalendarEvent[] = [
-    ev("gooya", "google", "Design review", d(0), "13:00", "14:00", { rrule: "FREQ=WEEKLY;BYDAY=MO", location: "Zoom" }),
+    // Weekly on today's weekday, so the sample calendar always has an event today.
+    ev("gooya", "google", "Design review", d(0), "13:00", "14:00", { rrule: `FREQ=WEEKLY;BYDAY=${["SU", "MO", "TU", "WE", "TH", "FR", "SA"][new Date(`${d(0)}T12:00:00Z`).getUTCDay()]}`, location: "Zoom" }),
     ev("gooya", "google", "Design review", d(0), "13:00", "14:00", { source: "apple", accountId: "a_demo", calendarName: "Family", color: "#ff9230", editable: false }),
     ev("gooya", "apple", "추석", d(3), null, null, { iCalUID: "chuseok@demo" }),
     ev("eunbi", "google", "1:1 with manager", d(1), "15:00", "15:30", { iCalUID: "one@demo" }),

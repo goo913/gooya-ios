@@ -5,7 +5,7 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { DestructiveButton, Group, Row, TextRow } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { LIST_ICON_NAMES, ListBadge, listSymbol } from "@/components/ListIcons";
-import { BarButton, SheetBar } from "@/components/SheetHeader";
+import { DetailsBar } from "@/components/SheetHeader";
 import { deleteList, newId, saveList } from "@/lib/db";
 import { useMe } from "@/lib/people";
 import { useData } from "@/store/data";
@@ -44,16 +44,8 @@ export default function ListEditSheet() {
   };
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <SheetBar
-        title={list ? "Edit List" : "New List"}
-        left={<BarButton onPress={() => router.back()}>Cancel</BarButton>}
-        right={
-          <BarButton onPress={() => void save()} disabled={!name.trim()} bold>
-            Done
-          </BarButton>
-        }
-      />
-      <ScrollView keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content}>
+      <DetailsBar title={list ? "Edit List" : "New List"} onCancel={() => router.back()} onDone={() => void save()} doneLabel="Done" doneDisabled={!name.trim()} />
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content}>
         <View style={styles.center}>
           <ListBadge icon={icon} color={color} size={84} />
         </View>
