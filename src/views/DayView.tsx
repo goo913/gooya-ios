@@ -8,7 +8,7 @@ import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View, useWindo
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EventChip, TaskChip, TaskRing } from "@/components/Chips";
-import { mix, tintText } from "@/lib/color";
+import { mix, readableTint, tintText } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { useMetrics, type Metrics } from "@/lib/metrics";
 import { useEventOccurrences, useScheduleOccurrences, useTaskOccurrences } from "@/lib/occurrences";
@@ -269,7 +269,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
             { label: "Delete All Future Tasks", destructive: true, onSelect: () => void deleteTaskScope(task, occ, "future") },
             { label: "Delete All Tasks", destructive: true, onSelect: () => void deleteTaskScope(task, occ, "all") },
           ]
-        : [{ label: "Delete Task", destructive: true, onSelect: () => void deleteTaskScope(task, occ, "all") }];
+        : [{ label: task.source === "apple-reminders" ? "Delete Reminder" : "Delete Task", destructive: true, onSelect: () => void deleteTaskScope(task, occ, "all") }];
       sheet([
         { label: occ.completed ? "Mark Incomplete" : "Mark Complete", onSelect: () => void setCompleted(task, occ.dateKey, !occ.completed) },
         { label: "Details", onSelect: () => actions.editTask(occ) },
@@ -548,7 +548,7 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   const c = seg.occ.event.color || colors.blue;
   const top = (seg.startMin / 60) * hourH;
   const height = Math.max(metrics.eventTitle * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
-  const text = dark ? mix(c, "#ffffff", 0.85) : mix(c, "#000000", 0.7);
+  const text = readableTint(c, dark);
   const titleH = metrics.eventTitle * 1.25;
   const timeH = metrics.eventTime * 1.3;
   // As many title lines as fit, keeping one line for the time when there is room for it (never a half-cut line).

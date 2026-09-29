@@ -149,6 +149,14 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       "@react-native-firebase/messaging",
       ...(iosUrlScheme ? [["@react-native-google-signin/google-signin", { iosUrlScheme }] as [string, unknown]] : []),
       ["expo-notifications", { color: "#0a84ff" }],
+      // Apple Reminders on this iPhone, shown in GOOYA and kept in step (src/lib/reminders.ts).
+      [
+        "expo-calendar",
+        {
+          remindersPermission: "GOOYA shows your reminders on its calendar for you and 은비, and completes or changes them when you do in GOOYA.",
+          calendarPermission: "GOOYA reads your calendars on this iPhone only when you ask it to.",
+        },
+      ],
       // The Home Screen widget: a WidgetKit extension written in Swift, from targets/widget.
       ...(APP_GROUP ? [["@bacons/apple-targets", { appleTeamId: APPLE_TEAM_ID }] as [string, unknown]] : []),
     ],

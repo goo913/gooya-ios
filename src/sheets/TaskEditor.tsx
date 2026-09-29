@@ -156,10 +156,15 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   };
   const remove = async (scope: EditScope | "all") => {
     if (!task) return;
-    await deleteTaskScope(task, occ ?? null, scope);
-    onClose();
+    if (await deleteTaskScope(task, occ ?? null, scope)) onClose();
   };
   const askDelete = () => {
+    if (task?.source === "apple-reminders") {
+      ActionSheetIOS.showActionSheetWithOptions({ message: "This also deletes it from Apple Reminders.", options: ["Delete Reminder", "Cancel"], cancelButtonIndex: 1, destructiveButtonIndex: 0 }, (i) => {
+        if (i === 0) void remove("all");
+      });
+      return;
+    }
     if (!task?.rrule) return void remove("all");
     ActionSheetIOS.showActionSheetWithOptions(
       { title: "This is a repeating task.", options: ["Delete This Task Only", "Delete All Future Tasks", "Delete All Tasks", "Cancel"], cancelButtonIndex: 3, destructiveButtonIndex: [0, 1, 2] },
@@ -319,7 +324,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
           <ValueRow icon="exclamationmark" label="Priority" value={PRIORITIES.find((p) => p.value === priority)?.label ?? "None"} options={PRIORITIES.map((p) => p.label)} title="Priority" onPick={(_, i) => setPriority(PRIORITIES[i].value)} />
         </Group>
 
-        {editing ? <DestructiveButton onPress={askDelete}>Delete Task</DestructiveButton> : null}
+        {editing ? <DestructiveButton onPress={askDelete}>{task?.source === "apple-reminders" ? "Delete Reminder" : "Delete Task"}</DestructiveButton> : null}
       </ScrollView>
     </View>
   );

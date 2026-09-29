@@ -1,12 +1,13 @@
 import { getIdToken } from "@react-native-firebase/auth";
 import { httpsCallable } from "@react-native-firebase/functions";
 import type { SyncDirection } from "@shared/model";
-import type { PersonKey } from "@shared/people";
+import { otherPerson, type PersonKey } from "@shared/people";
 import * as Clipboard from "expo-clipboard";
 import { router, useLocalSearchParams } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useMemo, useState } from "react";
 import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
+import { CheckRow } from "@/components/CheckRow";
 import { DestructiveButton, Group, Row, Switch, TextRow } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Segmented";
@@ -17,6 +18,7 @@ import { env } from "@/lib/env";
 import { auth, functions } from "@/lib/firebase";
 import { isMock } from "@/lib/mock";
 import { useMe, usePerson } from "@/lib/people";
+import { setReminderListIncluded, setRemindersEnabled, syncReminders, useReminders } from "@/lib/reminders";
 import { useData, type IntegrationAccount } from "@/store/data";
 import { useColors } from "@/theme";
 
@@ -32,6 +34,8 @@ export default function IntegrationsSheet() {
   const colors = useColors();
   const me = useMe();
   const mine = usePerson(me);
+  const other = usePerson(otherPerson(me));
+  const rem = useReminders();
   const accounts = useData((s) => s.accounts);
   const params = useLocalSearchParams<{ error?: string; integrations?: string }>();
   const [message, setMessage] = useState<string | null>(params.integrations === "google" ? (params.error ? `Google: ${params.error}` : "Google Calendar connected.") : null);
@@ -106,7 +110,6 @@ export default function IntegrationsSheet() {
   };
   const feedUrl = useMemo(() => (token ? `${env.functionsUrl}/icsFeed?token=${token}` : ""), [token]);
   const webcal = feedUrl.replace(/^https:/, "webcal:");
-  const remindersUrl = `${env.functionsUrl}/remindersImport`;
   const copyIcon = (what: string) => (copied === what ? <Icon name="checkmark" size={16} color={colors.green} weight="bold" /> : <Icon name="doc.on.doc" size={16} color={colors.label2} />);
 
   return (
@@ -161,31 +164,33 @@ export default function IntegrationsSheet() {
           </Row>
         </Group>
 
-        <Group header="Apple Reminders" footer="Apple has no server API for Reminders, so an iOS Shortcut sends them to GOOYA (one-way). Imported reminders land in the “Apple Reminders” list.">
-          <View style={styles.steps}>
-            {[
-              "Open Shortcuts → + and name it “GOOYA Reminders”.",
-              "Add “Find Reminders”: filter Is Completed is false.",
-              "Add “Repeat with Each” → inside, “Get Details of Reminders” (Title, Notes, Due Date, Is Completed, List, Priority, Is Flagged, URL) and build a Dictionary with keys id, title, notes, dueDate, completed, list, priority, flagged, url.",
-              "After the loop, “Get Contents of URL”: the endpoint below, Method POST, Request Body JSON with token = your token, full = true, reminders = the list of dictionaries.",
-              "In Automation, add Time of Day automations (e.g. 8:00, 13:00, 19:00) that run this shortcut, with Run Immediately on.",
-            ].map((t, i) => (
-              <Text key={i} style={[styles.step, { color: colors.label }]}>
-                {i + 1}. {t}
-              </Text>
-            ))}
-          </View>
-          <Row label="Endpoint URL" onPress={() => void copy("endpoint", remindersUrl)}>
-            <Text numberOfLines={1} style={[styles.small, { color: colors.label2, flexShrink: 1 }]}>
-              {remindersUrl.replace("https://", "")}
-            </Text>
-            {copyIcon("endpoint")}
+        <Group
+          header="Apple Reminders"
+          footer={`Your reminders from this iPhone show in GOOYA’s “Apple Reminders” list, for you and ${other.name}. Complete, rename or re-date one in GOOYA and it changes in Reminders too. They come in whenever you open GOOYA.`}
+        >
+          <Row label="Show My Reminders">
+            <Switch label="Show my reminders" value={rem.enabled} onChange={(v) => void setRemindersEnabled(v)} />
           </Row>
-          <Row label="Token" onPress={() => void ensureToken().then((t) => copy("token", t))}>
-            <Text style={[styles.small, { color: colors.label2 }]}>{token ? `${token.slice(0, 6)}…${token.slice(-4)}` : "Tap to create"}</Text>
-            {copyIcon("token")}
-          </Row>
+          {rem.enabled ? (
+            <Row label={rem.syncing ? "Syncing…" : "Sync Now"} labelColor={colors.blue} onPress={() => void syncReminders(true)}>
+              {rem.lastSync ? (
+                <Text style={[styles.small, { color: colors.label2 }]}>
+                  {rem.lastCount} open · {new Date(rem.lastSync).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                </Text>
+              ) : null}
+            </Row>
+          ) : null}
+          {rem.access === "denied" ? <Row label="Allow Reminders in Settings" labelColor={colors.blue} onPress={() => void Linking.openSettings()} chevron /> : null}
+          {rem.lastError ? <Text style={[styles.error, { color: colors.red, paddingTop: 10 }]}>{rem.lastError}</Text> : null}
         </Group>
+
+        {rem.enabled && rem.lists.length > 1 ? (
+          <Group header="Reminders lists" footer="Only the ticked lists show in GOOYA.">
+            {rem.lists.map((l) => (
+              <CheckRow key={l.id} color={l.color} checked={!rem.excluded.includes(l.id)} title={l.title} onPress={() => setReminderListIncluded(l.id, rem.excluded.includes(l.id))} />
+            ))}
+          </Group>
+        ) : null}
 
         <Group header="Subscription feed" footer="A private read-only calendar of your tasks and schedules. Subscribe from Apple Calendar or Google Calendar (From URL). Zero setup; works even if the two-way sync ever breaks.">
           <Row label="webcal:// URL" onPress={() => void ensureToken().then((t) => copy("feed", `webcal://${env.functionsUrl.replace("https://", "")}/icsFeed?token=${t}`))}>

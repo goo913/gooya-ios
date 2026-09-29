@@ -9,6 +9,8 @@ The first time it makes the native project (`npx expo prebuild`), fetches the li
 
 Sign in with Google (goochoi913@gmail.com or evapark7147@gmail.com; any other account is refused). Notifications: allow them when asked (Settings → Notifications in the app turns them on later).
 
+**Apple Reminders:** Settings (the gear) → Calendar integrations → Apple Reminders → turn on **Show My Reminders** → **Allow** when iOS asks. Your reminders appear in the “Apple Reminders” list and on the calendar (for both of you), and completing, renaming or re-dating one in GOOYA changes it in Reminders. It syncs whenever GOOYA opens; **Sync Now** does it on the spot. Pick which Reminders lists show under **Reminders lists**. (No Shortcut is needed any more.)
+
 **The widget:** touch and hold an empty spot on the Home Screen → **Edit** (top left) → **Add Widget** → search **GOOYA** → pick a size → **Add Widget**. Small: today (or what is next). Medium: today's date and schedules, then the week's tasks. Large: the month with a dot per person and day, then the next tasks. It also offers Lock Screen sizes. Touch and hold the widget → **Edit Widget** → **Show** picks both of you, only you or only 은비. It updates within seconds of a change in the app, and on its own every half hour (from the server, so 은비's additions show up with the app closed).
 
 ## On the iPhone Simulator

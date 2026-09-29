@@ -21,7 +21,8 @@ export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; 
     <View style={[styles.row, { borderBottomColor: colors.separator }]}>
       <Pressable onPress={onOpen} style={styles.main}>
         <View style={styles.time}>
-          <Text style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>{occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}</Text>
+          {/* A task without a date has no time to show (Apple Reminders shows nothing there either). */}
+          <Text style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>{!occ.task.dueDate ? "" : occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}</Text>
           {showDate ? <Text style={[styles.date, { color: colors.label3 }]}>{showDate}</Text> : null}
         </View>
         <View style={[styles.bar, { backgroundColor: color }]} />

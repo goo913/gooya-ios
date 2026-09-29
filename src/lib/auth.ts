@@ -7,6 +7,7 @@ import { auth, db } from "./firebase";
 import { signInWithGoogle, signOutOfGoogle } from "./googleSignIn";
 import { isMock, mockMe } from "./mock";
 import { refreshPushToken } from "./push";
+import { startRemindersSync } from "./reminders";
 import { clearWidget } from "./widget";
 
 export async function signIn(): Promise<void> {
@@ -68,6 +69,7 @@ export function initAuth(): void {
   if (isMock) {
     useSession.getState().setReady(null, mockMe);
     startData();
+    startRemindersSync();
     return;
   }
   onAuthStateChanged(auth, (user) => {
@@ -83,6 +85,7 @@ export function initAuth(): void {
     }
     useSession.getState().setReady(user, person.key);
     startData();
+    startRemindersSync();
     void ensureUserDoc(person.key, user);
     void refreshPushToken(person.key);
   });

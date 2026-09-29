@@ -43,6 +43,38 @@ export function withAlpha(c: string, alpha: number): string {
   return `rgba(${Math.round(x.r)},${Math.round(x.g)},${Math.round(x.b)},${alpha})`;
 }
 
+function toHsl({ r, g, b }: RGBA): { h: number; s: number; l: number } {
+  const [R, G, B] = [r / 255, g / 255, b / 255];
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = max === R ? (G - B) / d + (G < B ? 6 : 0) : max === G ? (B - R) / d + 2 : (R - G) / d + 4;
+  return { h: h / 6, s, l };
+}
+
+function fromHsl(h: number, s: number, l: number): string {
+  if (s === 0) return toHex({ r: l * 255, g: l * 255, b: l * 255, a: 1 });
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = (t: number) => {
+    const x = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+    return x < 1 / 6 ? p + (q - p) * 6 * x : x < 1 / 2 ? q : x < 2 / 3 ? p + (q - p) * (2 / 3 - x) * 6 : p;
+  };
+  return toHex({ r: f(h + 1 / 3) * 255, g: f(h) * 255, b: f(h - 1 / 3) * 255, a: 1 });
+}
+
+/**
+ * A calendar's colour as text on its own tinted block, as Apple Calendar draws event titles: the colour itself, made
+ * light enough to read in dark mode (or dark enough in light mode). Dark calendar colours (indigo, navy) need it.
+ */
+export function readableTint(base: string, dark: boolean): string {
+  const { h, s, l } = toHsl(parseColor(base));
+  return fromHsl(h, s, dark ? Math.max(l, 0.6) : Math.min(l, 0.38));
+}
+
 /** The text tint over a coloured fill: a bright tint in dark mode, a deep one in light mode. */
 export function tintText(base: string, dark: boolean): string {
   return dark ? mix(base, "#ffffff", 0.58) : mix(base, "#000000", 0.58);

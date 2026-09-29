@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import type { ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { CheckRow } from "@/components/CheckRow";
 import { GlassCapsule } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
 import { patchSettings } from "@/lib/db";
@@ -55,7 +56,7 @@ export default function CalendarsSheet() {
           {PERSON_KEYS.map((key, i) => {
             const p = key === "gooya" ? gooya : eunbi;
             return (
-              <CheckRow key={key} first={i === 0} color={colorHex(p.color, dark)} checked={included.includes(key)} onPress={() => togglePerson(key)} title={p.name} subtitle={key === me ? "Me" : undefined} />
+              <CheckRow key={key} divider={i > 0} color={colorHex(p.color, dark)} checked={included.includes(key)} onPress={() => togglePerson(key)} title={p.name} subtitle={key === me ? "Me" : undefined} />
             );
           })}
         </Card>
@@ -68,7 +69,7 @@ export default function CalendarsSheet() {
               {calendars.map(([calId, c], i) => (
                 <CheckRow
                   key={calId}
-                  first={i === 0}
+                  divider={i > 0}
                   color={c.color}
                   checked={!hidden.includes(`${account.id}:${calId}`)}
                   onPress={() => toggleCalendar(`${account.id}:${calId}`)}
@@ -119,26 +120,6 @@ function Card({ children, style }: { children: ReactNode; style?: object }) {
   return <View style={[styles.card, { backgroundColor: colors.bg3 }, style]}>{children}</View>;
 }
 
-/** A row with Apple's round tick in the calendar's (or person's) colour. */
-function CheckRow({ color, checked, onPress, title, subtitle, first }: { color: string; checked: boolean; onPress: () => void; title: string; subtitle?: string; first: boolean }) {
-  const colors = useColors();
-  return (
-    <Pressable
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
-      accessibilityLabel={title}
-      onPress={onPress}
-      style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.fill4 }]}
-    >
-      <View style={[styles.check, checked ? { backgroundColor: color } : { borderWidth: 2, borderColor: colors.label3 }]}>{checked ? <Icon name="checkmark" size={13} weight="bold" color="#ffffff" /> : null}</View>
-      <View style={[styles.rowText, !first && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator }]}>
-        <Text style={[styles.rowTitle, { color: colors.label }]}>{title}</Text>
-        {subtitle ? <Text style={[styles.rowSub, { color: colors.label2 }]}>{subtitle}</Text> : null}
-      </View>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 15, paddingBottom: 6 },
@@ -148,10 +129,7 @@ const styles = StyleSheet.create({
   card: { marginHorizontal: 16, borderRadius: 26, overflow: "hidden" },
   gap: { marginTop: 24 },
   row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 14, paddingLeft: 16, paddingRight: 18 },
-  check: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  rowText: { flex: 1, alignSelf: "stretch", justifyContent: "center", paddingVertical: 14 },
   rowTitle: { fontSize: 17 },
-  rowSub: { fontSize: 15, marginTop: 1 },
   switchBox: { height: 52, justifyContent: "center" },
   foot: { marginTop: 8, paddingHorizontal: 32, fontSize: 13, lineHeight: 17 },
 });

@@ -8,11 +8,24 @@ import { personFromWidgetToken, shortHash } from './common'
 
 export const REMINDERS_LIST_ID = 'apple-reminders'
 
+function isZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
 interface IncomingReminder {
   id: string
   title: string
   notes?: string
+  /** An instant (the Shortcut's "Due Date"); the app sends dueDate/dueTime instead. */
   due?: string | null
+  /** The due day and time on the phone's clock (the iPhone app), time null for a date-only reminder. */
+  dueDate?: string | null
+  dueTime?: string | null
   completed?: boolean
   list?: string
   priority?: number
@@ -21,17 +34,18 @@ interface IncomingReminder {
 }
 
 /**
- * POST /remindersImport  { token, full?: boolean, reminders: [...] }
- * One-way Apple Reminders → GOOYA, fed by an iOS Shortcut. Reminders become
- * tasks in the "Apple Reminders" list; when `full` is true, tasks from this
- * source that are missing from the payload are removed.
+ * POST /remindersImport  { token, full?: boolean, timezone?: string, reminders: [...] }
+ * Apple Reminders → GOOYA, sent by the iPhone app (src/lib/reminders.ts reads Reminders with EventKit; changes made in
+ * GOOYA go back to Reminders from the phone). Reminders become tasks in the "Apple Reminders" list; when `full` is
+ * true, tasks from this source that are missing from the payload are removed. `timezone` is the phone's, which the
+ * reminders' dueDate/dueTime are on.
  */
 export const remindersImport = onRequest({ cors: true, invoker: 'public', memory: '256MiB' }, async (req, res) => {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'POST JSON' })
     return
   }
-  const body = (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body) as { token?: string; full?: boolean; reminders?: IncomingReminder[] }
+  const body = (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body) as { token?: string; full?: boolean; timezone?: string; reminders?: IncomingReminder[] }
   const person = await personFromWidgetToken(String(body.token ?? req.query.token ?? ''))
   if (!person) {
     res.status(403).json({ error: 'invalid token' })
@@ -39,7 +53,9 @@ export const remindersImport = onRequest({ cors: true, invoker: 'public', memory
   }
   const incoming = Array.isArray(body.reminders) ? body.reminders : []
   const db = getFirestore()
-  const tz = ((await db.collection('users').doc(person).get()).data()?.timezone as string) || PEOPLE[person].timezone
+  const personTz = ((await db.collection('users').doc(person).get()).data()?.timezone as string) || PEOPLE[person].timezone
+  const phoneTz = typeof body.timezone === 'string' && isZone(body.timezone) ? body.timezone : null
+  const tz = phoneTz ?? personTz
   const listRef = db.collection('lists').doc(REMINDERS_LIST_ID)
   if (!(await listRef.get()).exists) {
     await listRef.set({ name: 'Apple Reminders', color: '#ff4245', icon: 'checkmark', order: 99, createdBy: person, createdAt: Date.now(), updatedAt: Date.now() })
@@ -61,7 +77,10 @@ export const remindersImport = onRequest({ cors: true, invoker: 'public', memory
     seen.add(r.id)
     let dueDate: string | null = null
     let dueTime: string | null = null
-    if (r.due) {
+    if (r.dueDate !== undefined) {
+      dueDate = typeof r.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate) ? r.dueDate : null
+      dueTime = dueDate && typeof r.dueTime === 'string' && /^\d{2}:\d{2}$/.test(r.dueTime) ? r.dueTime : null
+    } else if (r.due) {
       const ms = Date.parse(r.due)
       if (!Number.isNaN(ms)) {
         dueDate = keyInZone(ms, tz)

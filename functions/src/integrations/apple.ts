@@ -182,6 +182,7 @@ export async function syncAppleAccount(person: PersonKey, accountId: string): Pr
       }
       for (const d of existing.docs) if (!keep.has(d.id) && !d.get('dirty')) batch.delete(d.ref)
       await batch.commit()
+      logger.info('apple calendar fetched', { person, accountId, calendar: cfg.name, objects: objects.length, events: keep.size })
       await accRef.set({ calendars: { [calId]: { ctag: cal.ctag ?? null, lastSync: Date.now() } } }, { merge: true })
     }
     if (Object.values(acc.calendars ?? {}).some((c) => c.direction === 'export' || c.direction === 'both')) await exportToApple(person, accountId)

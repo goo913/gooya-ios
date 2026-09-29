@@ -15,7 +15,9 @@ import { deleteSchedule } from "@/lib/db";
 import { MONTH_SHORT, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { colorHex, usePerson } from "@/lib/people";
 import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
+import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
+import { reminderIdOf } from "@shared/reminders";
 import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
@@ -155,12 +157,14 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
     closeDetail();
     router.back();
   };
+  const fromReminders = !!reminderIdOf(task);
   const remove = () => {
-    const options = task.rrule ? ["Delete This Task Only", "Delete All Future Tasks", "Delete All Tasks", "Cancel"] : ["Delete Task", "Cancel"];
-    ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex: options.length - 1, destructiveButtonIndex: options.map((_, i) => i).slice(0, -1) }, (i) => {
+    const options = fromReminders ? ["Delete Reminder", "Cancel"] : task.rrule ? ["Delete This Task Only", "Delete All Future Tasks", "Delete All Tasks", "Cancel"] : ["Delete Task", "Cancel"];
+    const message = fromReminders ? "This also deletes it from Apple Reminders." : undefined;
+    ActionSheetIOS.showActionSheetWithOptions({ options, message, cancelButtonIndex: options.length - 1, destructiveButtonIndex: options.map((_, i) => i).slice(0, -1) }, (i) => {
       if (i === options.length - 1) return;
       const scope = !task.rrule ? "all" : i === 0 ? "this" : i === 1 ? "future" : "all";
-      void deleteTaskScope(task, occ, scope).then(done);
+      void deleteTaskScope(task, occ, scope).then((deleted) => deleted && done());
     });
   };
   const time = occ.allDay ? null : formatTime(occ.start, viewerTz);
@@ -199,6 +203,7 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
         </View>
       </Fact>
       <Fact label="List">{list?.name ?? "Tasks"}</Fact>
+      {fromReminders ? <Fact label="From">{`${reminderOwnerName(task) ?? owner.name}’s Apple Reminders${task.tags?.[0] ? ` · ${task.externalRefs?.[0]?.calendarId || task.tags[0]}` : ""}`}</Fact> : null}
       {task.earlyReminders?.length ? <Fact label="Early Reminder">{earlyReminderLabel(task.earlyReminders[0])}</Fact> : null}
       {task.tags?.length ? <Fact label="Tags">{task.tags.map((t) => `#${t}`).join("  ")}</Fact> : null}
       {occ.notes ? (
@@ -222,7 +227,7 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
       ) : null}
       <View style={styles.actions}>
         <ActionButton label={occ.completed ? "Mark as Incomplete" : "Mark as Completed"} onPress={() => void setCompleted(task, occ.dateKey, !occ.completed)} />
-        <ActionButton label="Delete Task" destructive onPress={remove} />
+        <ActionButton label={fromReminders ? "Delete Reminder" : "Delete Task"} destructive onPress={remove} />
       </View>
     </View>
   );

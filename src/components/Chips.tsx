@@ -2,7 +2,7 @@ import type { EventOccurrence, TaskOccurrence } from "@shared/model";
 import { useId } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
-import { mix } from "@/lib/color";
+import { mix, readableTint } from "@/lib/color";
 import { useMetrics } from "@/lib/metrics";
 import { usePersonColor } from "@/lib/people";
 import { useColors, useIsDark } from "@/theme";
@@ -65,7 +65,7 @@ export function EventChip({ occ }: { occ: EventOccurrence }) {
   const m = useMetrics();
   const c = occ.event.color || colors.blue;
   const bg = dark ? mix(c, "#000000", 0.27) : mix(c, "#ffffff", 0.2);
-  const text = dark ? mix(c, "#ffffff", 0.85) : mix(c, "#000000", 0.75);
+  const text = readableTint(c, dark);
   return (
     <View style={[styles.chip, { height: m.chipHeight, borderRadius: m.chipRadius, backgroundColor: bg, paddingLeft: 2.7 }]}>
       <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="clip" style={[styles.text, { fontSize: m.chipText, color: text }]}>
