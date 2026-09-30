@@ -6,7 +6,7 @@ import { createDAVClient, type DAVCalendar, type DAVCalendarObject } from 'tsdav
 import { createHash, randomUUID } from 'node:crypto'
 import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
 import { deletedInCalendar, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange } from '../../../shared/calendarCopy'
-import { normalizeSchedule, normalizeTask } from '../../../shared/normalize'
+import { normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
 import { INTEGRATIONS_KEY, accountsRef, decrypt, encrypt, eventDocId, eventsRef, exporting, importing, secretRef, shortHash, twoWay, type AccountDoc, type CalendarConfig } from './common'
 import { scheduleToVevent, taskToVevent, wrapCalendar } from './ics'
@@ -360,7 +360,10 @@ async function ensureAppleExportCalendar(person: PersonKey, accountId: string, c
   return made
 }
 
-/** Items of the person that belong in iCloud's GOOYA calendar. Their Apple Reminders are in Apple Calendar already. */
+/**
+ * Items of the person that belong in iCloud's GOOYA calendar: GOOYA's own tasks. Never routines, and not Apple Reminders
+ * (they are in Apple Calendar already).
+ */
 async function wantedInApple(person: PersonKey, acc: AccountDoc): Promise<Map<string, string>> {
   const db = getFirestore()
   const want = new Map<string, string>()
@@ -372,10 +375,6 @@ async function wantedInApple(person: PersonKey, acc: AccountDoc): Promise<Map<st
       const v = taskToVevent(t)
       if (v) want.set(`task:${t.id}`, wrapCalendar('GOOYA', [v]))
     }
-  }
-  if (acc.exportSchedules === true) {
-    const schedules = await db.collection('schedules').where('owner', '==', person).get()
-    for (const d of schedules.docs) want.set(`schedule:${d.id}`, wrapCalendar('GOOYA', [scheduleToVevent(normalizeSchedule(d.id, d.data() as Record<string, unknown>))]))
   }
   return want
 }
@@ -430,7 +429,8 @@ export async function exportItemToApple(person: PersonKey, kind: 'task' | 'sched
       const t = item as Task
       const v = t.source === 'gooya' && taskIsCopied(t) ? taskToVevent(t) : null
       ics = v ? wrapCalendar('GOOYA', [v]) : null
-    } else if (item && kind === 'schedule' && acc.exportSchedules === true) ics = wrapCalendar('GOOYA', [scheduleToVevent(item as Schedule)])
+    }
+    // Routines are never copied: a copy left from before is taken out.
     const stateRef = exportStateRef(person, a.id)
     try {
       const written = (await stateRef.get()).get(new FieldPath('items', key)) as Written | undefined
@@ -465,10 +465,13 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
   const first = !acc.exportCtag
   const objects = await client.fetchCalendarObjects({ calendar })
   const db = getFirestore()
-  const [tasksSnap, schedulesSnap] = await Promise.all([db.collection('tasks').where('owner', '==', person).get(), db.collection('schedules').where('owner', '==', person).get()])
+  // Only what GOOYA copies there now can be changed or deleted from there (not routines or reminders from before).
+  const tasksSnap = await db.collection('tasks').where('owner', '==', person).get()
   const items = new Map<string, Task | Schedule>()
-  for (const d of tasksSnap.docs) items.set(`task:${d.id}`, normalizeTask(d.id, d.data() as Record<string, unknown>))
-  for (const d of schedulesSnap.docs) items.set(`schedule:${d.id}`, normalizeSchedule(d.id, d.data() as Record<string, unknown>))
+  for (const d of tasksSnap.docs) {
+    const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
+    if (t.source === 'gooya') items.set(`task:${d.id}`, t)
+  }
   const seen = new Set<string>()
   const etags: Record<string, Written | FieldValue> = {}
   const now = Date.now()

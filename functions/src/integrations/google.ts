@@ -7,7 +7,7 @@ import { auth as googleAuth, calendar as googleCalendar, type calendar_v3 } from
 import { createHash, randomUUID } from 'node:crypto'
 import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
 import { deletedInCalendar, scheduleChangeFromCopy, scheduleOccurrenceChange, scheduleTitle, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type CalendarCopy } from '../../../shared/calendarCopy'
-import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
+import { normalizeEvent, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
 import { addDaysKey, fieldsInZone, keyInZone, pad2, zonedMs } from '../../../shared/time'
 import {
@@ -583,20 +583,21 @@ async function upsertGoogleEvent(cal: calendar_v3.Calendar, calendarId: string, 
 
 const deleteGoogleEvent = (cal: calendar_v3.Calendar, calendarId: string, key: string) => withBackoff(() => cal.events.delete({ calendarId, eventId: googleEventIdFor(key) })).catch(gone)
 
-/** Items of the person that belong in the GOOYA calendar, as Google events. */
+/**
+ * Items of the person that belong in the GOOYA calendar, as Google events: GOOYA's own tasks. Never routines (work,
+ * sleep: background, not appointments), and not Apple Reminders (Apple Calendar shows those already, so a copy in
+ * Google would show twice there).
+ */
 async function wantedInGoogle(person: PersonKey, acc: AccountDoc): Promise<Map<string, calendar_v3.Schema$Event>> {
   const db = getFirestore()
   const want = new Map<string, calendar_v3.Schema$Event>()
   if (acc.exportTasks === true) {
     const tasks = await db.collection('tasks').where('owner', '==', person).get()
     for (const d of tasks.docs) {
-      const body = taskToGoogle(normalizeTask(d.id, d.data() as Record<string, unknown>))
+      const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
+      const body = t.source === 'gooya' ? taskToGoogle(t) : null
       if (body) want.set(`task:${d.id}`, body)
     }
-  }
-  if (acc.exportSchedules === true) {
-    const schedules = await db.collection('schedules').where('owner', '==', person).get()
-    for (const d of schedules.docs) want.set(`schedule:${d.id}`, scheduleToGoogle(normalizeSchedule(d.id, d.data() as Record<string, unknown>)))
   }
   return want
 }
@@ -650,7 +651,8 @@ export async function exportItemToGoogle(person: PersonKey, kind: 'task' | 'sche
     if (!exporting(acc) || !acc.exportCalendarId) continue
     const on = kind === 'task' ? acc.exportTasks === true : acc.exportSchedules === true
     const key = `${kind}:${id}`
-    const body = !item || !on ? null : kind === 'task' ? taskToGoogle(item as Task) : scheduleToGoogle(item as Schedule)
+    // Routines are never copied (a copy left from before is taken out); reminders neither (see wantedInGoogle).
+    const body = !item || !on || kind !== 'task' || (item as Task).source !== 'gooya' ? null : taskToGoogle(item as Task)
     const stateRef = exportStateRef(person, a.id)
     try {
       const written = (await stateRef.get()).get(new FieldPath('items', key)) as string | undefined
@@ -720,10 +722,14 @@ async function syncGoogleExport(person: PersonKey, accountId: string, cal: calen
 
 async function applyGoogleCopies(person: PersonKey, accountId: string, cal: calendar_v3.Calendar, calendarId: string, items: calendar_v3.Schema$Event[]): Promise<void> {
   const db = getFirestore()
-  const [tasksSnap, schedulesSnap] = await Promise.all([db.collection('tasks').where('owner', '==', person).get(), db.collection('schedules').where('owner', '==', person).get()])
+  // Only what GOOYA copies there now can be changed or deleted from there: a copy GOOYA took out itself (a routine, a
+  // reminder, from before) comes back as deleted and must not delete the item.
+  const tasksSnap = await db.collection('tasks').where('owner', '==', person).get()
   const byEventId = new Map<string, { kind: 'task' | 'schedule'; item: Task | Schedule }>()
-  for (const d of tasksSnap.docs) byEventId.set(googleEventIdFor(`task:${d.id}`), { kind: 'task', item: normalizeTask(d.id, d.data() as Record<string, unknown>) })
-  for (const d of schedulesSnap.docs) byEventId.set(googleEventIdFor(`schedule:${d.id}`), { kind: 'schedule', item: normalizeSchedule(d.id, d.data() as Record<string, unknown>) })
+  for (const d of tasksSnap.docs) {
+    const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
+    if (t.source === 'gooya') byEventId.set(googleEventIdFor(`task:${d.id}`), { kind: 'task', item: t })
+  }
   const now = Date.now()
   const stateRef = exportStateRef(person, accountId)
   /**
