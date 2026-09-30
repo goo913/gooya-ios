@@ -13,11 +13,12 @@ import { earlyReminderLabel } from "@/lib/alerts";
 import { mix } from "@/lib/color";
 import { deleteSchedule } from "@/lib/db";
 import { MONTH_SHORT, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
-import { colorHex, usePerson } from "@/lib/people";
+import { colorHex, useMe, usePerson, useTaskColor } from "@/lib/people";
 import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
 import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
 import { reminderIdOf } from "@shared/reminders";
+import { plainNotes } from "@shared/calendarCopy";
 import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
@@ -147,8 +148,8 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
   const occ = useTaskOccurrence(task, dateKey);
   const openEditor = useSheets((s) => s.openEditor);
   const closeDetail = useSheets((s) => s.closeDetail);
+  const ring = useTaskColor(task ?? { owner: owner.key, listId: "" });
   if (!task || !occ) return <Missing what="task" />;
-  const ring = colorHex(owner.color, dark);
   const edit = () => {
     openEditor({ kind: "task", task, occ });
     router.replace("/sheet/edit");
@@ -318,6 +319,9 @@ function ScheduleDetail({ scheduleId, dateKey }: { scheduleId: string; dateKey: 
 function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }) {
   const colors = useColors();
   const event = useData((s) => s.events.find((e) => e.id === eventId));
+  const calendarConfig = useData((s) => s.accounts.find((a) => a.id === event?.accountId)?.calendars?.[event?.calendarId ?? ""]);
+  const me = useMe();
+  const openEditor = useSheets((s) => s.openEditor);
   const owner = usePerson(event?.owner ?? "gooya");
   const occ = useMemo(() => {
     if (!event) return null;
@@ -331,14 +335,26 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   const when = occ.allDay ? "all-day" : `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)}`;
   const startMin = occ.allDay ? 0 : minutesSinceMidnight(occ.start, viewerTz);
   const endMin = startMin + (occ.end - occ.start) / 60000;
+  // One occurrence can have its own place and notes.
+  const ov = event.overrides?.[occ.dateKey];
+  const location = ov?.location ?? event.location;
+  const notes = plainNotes(ov?.notes ?? event.notes);
+  const where = event.source === "google" ? "Google Calendar" : "iCloud";
+  const edit = event.editable
+    ? () => {
+        openEditor({ kind: "event", event, eventOcc: occ });
+        router.replace("/sheet/edit");
+      }
+    : undefined;
   return (
     <View>
-      <Top />
+      <Top onEdit={edit} />
+      {event.pushError ? <Text style={[styles.pushError, { color: colors.red }]}>Your last change couldn’t be saved to {where}, so this is {where}’s version: {event.pushError}</Text> : null}
       <View style={styles.barTitle}>
         <View style={[styles.titleBar, { backgroundColor: color }]} />
         <View style={styles.barTitleText}>
           <Text style={[styles.eventTitle, { color: colors.label }]}>{occ.title}</Text>
-          {event.location ? <Text style={[styles.whenText, { color: colors.label2 }]}>{event.location}</Text> : null}
+          {location ? <Text style={[styles.whenText, { color: colors.label2 }]}>{location}</Text> : null}
           <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(occ.dateKey)}</Text>
           <Text style={[styles.whenText, { color: colors.label2 }]}>{when}</Text>
           {event.rrule ? (
@@ -357,10 +373,10 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         </View>
       </Fact>
       <Fact label="Person">{owner.name}</Fact>
-      {event.notes ? (
+      {notes ? (
         <Fact label="Notes">
           <Text selectable style={[styles.notes, { color: colors.label2 }]}>
-            {event.notes}
+            {notes}
           </Text>
         </Fact>
       ) : null}
@@ -376,7 +392,15 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         </MiniTimeline>
       ) : null}
       <Text style={[styles.foot, { color: colors.label3 }]}>
-        {event.editable ? "Change it in the calendar it came from; the change reaches GOOYA within minutes." : "Imported read-only from the calendar it came from."}
+        {event.dirty
+          ? `Saving to ${where}…`
+          : event.editable
+            ? `Two-way with ${where}: change or delete it here or there, and the other one follows.`
+            : event.owner !== me
+              ? `From ${owner.name}’s ${where}.`
+              : calendarConfig?.writable === false
+                ? `Imported from ${where}. This calendar can’t be changed from other apps.`
+                : `Imported from ${where}. Set this calendar to Two-way in Settings → Calendar integrations to change it here.`}
       </Text>
     </View>
   );
@@ -409,6 +433,7 @@ const styles = StyleSheet.create({
   barTitleText: { flex: 1, gap: 2 },
   eventTitle: { fontSize: 27, fontWeight: "700", lineHeight: 33, marginBottom: 4 },
   fact: { paddingHorizontal: 30, marginTop: 20, gap: 3 },
+  pushError: { paddingHorizontal: 22, marginTop: 8, fontSize: 15, lineHeight: 20 },
   factLabel: { fontSize: 15, fontWeight: "600" },
   factValue: { fontSize: 17, lineHeight: 22 },
   notes: { fontSize: 17, lineHeight: 22 },

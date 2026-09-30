@@ -28,6 +28,7 @@ export default function ListEditSheet() {
     const now = Date.now();
     const newListId = list?.id ?? newId();
     await saveList({
+      ...list,
       id: newListId,
       name: name.trim(),
       color,

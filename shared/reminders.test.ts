@@ -1,88 +1,231 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Task } from './model'
-import { baselineOf, planReminderSync, reminderFields, toImport, type DeviceReminder } from './reminders'
+import type { Task, TaskList } from './model'
+import { applePriority, applyReminderImport, baselineOf, gooyaPriority, mergeIntoTask, planReminderSync, reminderFields, toImport, type DeviceReminder } from './reminders'
 
 function reminder(extra: Partial<DeviceReminder> = {}): DeviceReminder {
-  return { id: 'r1', title: 'Pick up package', notes: '', url: '', location: '', dueDate: '2026-09-29', dueTime: '15:00', completed: false, list: 'Reminders', ...extra }
+  return { id: 'r1', title: 'Pick up package', notes: '', url: '', dueDate: '2026-09-29', dueTime: '15:00', completed: false, list: 'Errands', listId: 'L1', priority: 0, ...extra }
 }
+
+const list = (id: string, extra: Partial<TaskList> = {}): TaskList => ({ id, name: id, color: '#ff9500', icon: 'list', order: 100, createdBy: 'gooya', createdAt: 0, updatedAt: 0, ...extra })
+/** gooya's two Reminders lists (Errands = L1, School = L2) and GOOYA's own "Tasks" list. */
+const LISTS = [
+  list('rl_errands', { name: 'Errands', source: 'apple-reminders', owner: 'gooya', externalId: 'L1' }),
+  list('rl_school', { name: 'School', source: 'apple-reminders', owner: 'gooya', externalId: 'L2' }),
+  list('rl_eunbi', { name: 'Eunbi', source: 'apple-reminders', owner: 'eunbi', externalId: 'E1' }),
+  list('tasks', { name: 'Tasks' }),
+]
 
 /** The task the server made from a reminder, then possibly changed in GOOYA. */
 function taskFrom(r: DeviceReminder, extra: Partial<Task> = {}): Task {
   const f = reminderFields(r)
   return {
-    id: 'ar_1', owner: 'gooya', createdBy: 'gooya', listId: 'apple-reminders', title: f.title, notes: f.notes, dueDate: f.dueDate, dueTime: f.dueTime,
+    id: 'ar_1', owner: 'gooya', createdBy: 'gooya', listId: 'rl_errands', title: f.title, notes: f.notes, dueDate: f.dueDate, dueTime: f.dueTime,
     timezone: 'America/New_York', rrule: null, exdates: [], overrides: {}, completed: f.completed, completedDates: [], earlyReminders: [], tags: [],
-    flagged: false, priority: 0, source: 'apple-reminders', externalRefs: [{ source: 'apple-reminders', accountId: 'gooya', calendarId: 'Reminders', externalId: r.id, updatedAt: 0 }],
+    flagged: false, priority: f.priority, source: 'apple-reminders', externalRefs: [{ source: 'apple-reminders', accountId: 'gooya', calendarId: 'L1', externalId: r.id, updatedAt: 0 }],
     createdAt: 0, updatedAt: 0, ...extra,
   } as Task
 }
 
+const gooyaTask = (extra: Partial<Task> = {}): Task =>
+  ({ ...taskFrom(reminder()), id: 't9', title: 'Buy stamps', source: 'gooya', externalRefs: [], dueTime: '10:00', ...extra }) as Task
+
 test('the first sync takes everything from the iPhone', () => {
   const r = reminder()
-  const { reminders, changes } = planReminderSync([r], [taskFrom(r, { completed: true, title: 'Other' })], {}, 'gooya')
-  assert.deepEqual(changes, [])
-  assert.deepEqual(reminders, [r])
+  const plan = planReminderSync([r], [taskFrom(r, { completed: true, title: 'Other' })], {}, 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [])
+  assert.deepEqual(plan.reminders, [r])
 })
 
 test('completing in GOOYA completes the reminder', () => {
   const r = reminder()
-  const base = baselineOf([r])
-  const { reminders, changes } = planReminderSync([r], [taskFrom(r, { completed: true })], base, 'gooya')
-  assert.deepEqual(changes, [{ id: 'r1', completed: true }])
-  assert.equal(reminders[0].completed, true)
+  const plan = planReminderSync([r], [taskFrom(r, { completed: true })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [{ id: 'r1', completed: true }])
+  assert.equal(plan.reminders[0].completed, true)
 })
 
 test('completing in Reminders wins when GOOYA did not change', () => {
   const r = reminder()
-  const base = baselineOf([r])
-  const done = { ...r, completed: true }
-  const { reminders, changes } = planReminderSync([done], [taskFrom(r)], base, 'gooya')
-  assert.deepEqual(changes, [])
-  assert.equal(reminders[0].completed, true)
+  const plan = planReminderSync([{ ...r, completed: true }], [taskFrom(r)], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [])
+  assert.equal(plan.reminders[0].completed, true)
 })
 
 test('a change on both sides keeps the iPhone’s', () => {
   const r = reminder()
-  const base = baselineOf([r])
-  const phone = { ...r, title: 'Pick up the parcel' }
-  const { reminders, changes } = planReminderSync([phone], [taskFrom(r, { title: 'Get package' })], base, 'gooya')
-  assert.deepEqual(changes, [])
-  assert.equal(reminders[0].title, 'Pick up the parcel')
+  const plan = planReminderSync([{ ...r, title: 'Pick up the parcel' }], [taskFrom(r, { title: 'Get package' })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [])
+  assert.equal(plan.reminders[0].title, 'Pick up the parcel')
 })
 
-test('renaming and re-dating in GOOYA go back to the reminder', () => {
-  const r = reminder()
-  const base = baselineOf([r])
-  const { changes } = planReminderSync([r], [taskFrom(r, { title: 'Pick up package at 4', dueDate: '2026-09-30', dueTime: null })], base, 'gooya')
-  assert.deepEqual(changes, [{ id: 'r1', title: 'Pick up package at 4', dueDate: '2026-09-30', dueTime: null }])
+test('renaming and re-dating in GOOYA go back to the reminder (5 PM → 10 AM)', () => {
+  const r = reminder({ dueTime: '17:00' })
+  const plan = planReminderSync([r], [taskFrom(r, { title: 'Pick up package at 4', dueTime: '10:00' })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [{ id: 'r1', title: 'Pick up package at 4', dueDate: '2026-09-29', dueTime: '10:00' }])
+  assert.equal(plan.reminders[0].dueTime, '10:00')
 })
 
 test('a date cleared in GOOYA is not sent (Reminders keeps it)', () => {
   const r = reminder()
-  const base = baselineOf([r])
-  const { changes, reminders } = planReminderSync([r], [taskFrom(r, { dueDate: null, dueTime: null })], base, 'gooya')
-  assert.deepEqual(changes, [])
-  assert.equal(reminders[0].dueDate, '2026-09-29')
+  const plan = planReminderSync([r], [taskFrom(r, { dueDate: null, dueTime: null })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [])
+  assert.equal(plan.reminders[0].dueDate, '2026-09-29')
 })
 
 test('notes edited in GOOYA go back without the reminder’s link', () => {
   const r = reminder({ notes: 'Front desk', url: 'https://ups.example/123' })
-  const base = baselineOf([r])
-  const { changes } = planReminderSync([r], [taskFrom(r, { notes: 'Back door\nhttps://ups.example/123' })], base, 'gooya')
-  assert.deepEqual(changes, [{ id: 'r1', notes: 'Back door' }])
+  const plan = planReminderSync([r], [taskFrom(r, { notes: 'Back door\nhttps://ups.example/123' })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [{ id: 'r1', notes: 'Back door' }])
+})
+
+test('priority both ways', () => {
+  assert.equal(gooyaPriority(1), 3)
+  assert.equal(gooyaPriority(5), 2)
+  assert.equal(gooyaPriority(9), 1)
+  assert.equal(applePriority(3), 1)
+  const r = reminder()
+  const plan = planReminderSync([r], [taskFrom(r, { priority: 3 })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [{ id: 'r1', priority: 1 }])
 })
 
 test('the other person’s tasks never change my reminders', () => {
   const r = reminder()
-  const base = baselineOf([r])
-  const { changes } = planReminderSync([r], [taskFrom(r, { owner: 'eunbi', completed: true })], base, 'gooya')
-  assert.deepEqual(changes, [])
+  const plan = planReminderSync([r], [taskFrom(r, { owner: 'eunbi', completed: true })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [])
+})
+
+test('moving a task to another of my Reminders lists moves the reminder', () => {
+  const r = reminder()
+  const plan = planReminderSync([r], [taskFrom(r, { listId: 'rl_school' })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.changes, [{ id: 'r1', listId: 'L2' }])
+  assert.equal(plan.reminders[0].listId, 'L2')
+  assert.equal(plan.reminders[0].list, 'School')
+})
+
+test('a task still in the old single "Apple Reminders" list stays where Reminders has it', () => {
+  const r = reminder()
+  const plan = planReminderSync([r], [taskFrom(r, { listId: 'apple-reminders' })], baselineOf([r]), 'gooya', [...LISTS, list('apple-reminders')])
+  assert.deepEqual(plan.changes, [])
+  assert.deepEqual(plan.unlink, [])
+  assert.deepEqual(plan.deletes, [])
+})
+
+test('moving a task to one of GOOYA’s own lists takes it out of Reminders', () => {
+  const r = reminder()
+  const plan = planReminderSync([r], [taskFrom(r, { listId: 'tasks' })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.unlink, [{ taskId: 'ar_1', reminderId: 'r1' }])
+  assert.deepEqual(plan.reminders, [])
+})
+
+test('a task deleted in GOOYA deletes its reminder, unless the reminder changed on the phone meanwhile', () => {
+  const r = reminder()
+  assert.deepEqual(planReminderSync([r], [], baselineOf([r]), 'gooya', LISTS).deletes, ['r1'])
+  const changed = planReminderSync([{ ...r, title: 'Changed on the phone' }], [], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(changed.deletes, [])
+  assert.equal(changed.reminders.length, 1)
+  // Never seen before: a new reminder, not a deleted task.
+  assert.deepEqual(planReminderSync([r], [], {}, 'gooya', LISTS).deletes, [])
+})
+
+test('a task made in GOOYA in one of my Reminders lists becomes a reminder there', () => {
+  const plan = planReminderSync([], [gooyaTask({ listId: 'rl_school', priority: 2 })], {}, 'gooya', LISTS)
+  assert.deepEqual(plan.creates, [{ taskId: 't9', listId: 'L2', title: 'Buy stamps', notes: '', dueDate: '2026-09-29', dueTime: '10:00', completed: false, priority: 5 }])
+  // In GOOYA's own list, or in someone else's Reminders list: it stays in GOOYA.
+  assert.deepEqual(planReminderSync([], [gooyaTask({ listId: 'tasks' })], {}, 'gooya', LISTS).creates, [])
+  assert.deepEqual(planReminderSync([], [gooyaTask({ listId: 'rl_eunbi' })], {}, 'gooya', LISTS).creates, [])
+})
+
+test('a reminder made for a task is not made twice while GOOYA has not heard of it', () => {
+  const made = reminder({ id: 'new1', title: 'Buy stamps', listId: 'L2' })
+  const plan = planReminderSync([made], [gooyaTask({ listId: 'rl_school' })], {}, 'gooya', LISTS, { t9: 'new1' })
+  assert.deepEqual(plan.creates, [])
+  assert.deepEqual(plan.reminders, [made])
+})
+
+test('read-only lists are never written', () => {
+  const r = reminder()
+  const plan = planReminderSync([r], [taskFrom(r, { completed: true })], baselineOf([r]), 'gooya', LISTS, {}, new Set(['L2']))
+  assert.deepEqual(plan.changes, [])
+  assert.equal(plan.reminders[0].completed, false)
+  assert.deepEqual(planReminderSync([r], [], baselineOf([r]), 'gooya', LISTS, {}, new Set(['L2'])).deletes, [])
 })
 
 test('what the server receives', () => {
   assert.deepEqual(toImport(reminder({ notes: 'n', url: 'https://x.example', dueTime: null })), {
-    id: 'r1', title: 'Pick up package', notes: 'n', url: 'https://x.example', dueDate: '2026-09-29', dueTime: null, completed: false, list: 'Reminders',
+    id: 'r1', title: 'Pick up package', notes: 'n', url: 'https://x.example', dueDate: '2026-09-29', dueTime: null, completed: false, list: 'Errands', listId: 'L1', priority: 0,
   })
   assert.deepEqual(toImport(reminder({ dueDate: null, dueTime: '15:00' })).dueTime, null)
+})
+
+test('the server keeps a change GOOYA made after the phone looked', () => {
+  const base = { title: 'A', notes: '', dueDate: '2026-09-29', dueTime: '17:00', completed: false, priority: 0 as const, gooyaListId: 'rl_errands' }
+  // Someone moved it to 10:00 in GOOYA a moment ago; the phone, not knowing, sends 17:00 unchanged.
+  const current = { title: 'A', notes: '', dueDate: '2026-09-29', dueTime: '10:00', completed: false, priority: 0 as const, listId: 'rl_errands' }
+  const { fields, kept } = mergeIntoTask(current, { ...base }, base)
+  assert.equal(fields.dueTime, '10:00')
+  assert.deepEqual(kept, ['due'])
+  // The phone changed the title: the phone's title, GOOYA's time.
+  const both = mergeIntoTask(current, { ...base, title: 'B' }, base)
+  assert.equal(both.fields.title, 'B')
+  assert.equal(both.fields.dueTime, '10:00')
+  // No base (an older app): the phone's version.
+  assert.equal(mergeIntoTask(current, { ...base }, null).fields.dueTime, '17:00')
+  // A task in the old single list moves to its Reminders list.
+  assert.equal(mergeIntoTask({ ...current, listId: 'apple-reminders' }, { ...base }, base).fields.listId, 'rl_errands')
+})
+
+const hash = (s: string, n: number) => Buffer.from(s).toString('hex').slice(0, n)
+
+test('the phone’s lists become GOOYA lists, and reminders tasks in them', () => {
+  const out = applyReminderImport('gooya', [], [], { lists: [{ id: 'L1', title: 'Errands', color: '#FF9500', writable: true, isDefault: true }], reminders: [toImport(reminder())], full: true, timezone: 'America/New_York' }, 5, hash)
+  assert.equal(out.lists.length, 1)
+  assert.deepEqual({ ...out.lists[0], id: 'x' }, { id: 'x', name: 'Errands', color: '#ff9500', icon: 'list', order: 100, createdBy: 'gooya', createdAt: 5, updatedAt: 5, source: 'apple-reminders', owner: 'gooya', externalId: 'L1', readOnly: false, isDefault: true })
+  assert.equal(out.created, 1)
+  assert.equal(out.tasks[0].fields.listId, out.lists[0].id)
+  assert.equal(out.tasks[0].fields.dueTime, '15:00')
+})
+
+test('nothing is written when nothing changed', () => {
+  const lists = applyReminderImport('gooya', [], [], { lists: [{ id: 'L1', title: 'Errands', color: '#ff9500', writable: true, isDefault: false }], reminders: [], full: true, timezone: 'UTC' }, 5, hash).lists
+  const r = reminder()
+  const task = taskFrom(r, { listId: lists[0].id, externalRefs: [{ source: 'apple-reminders', accountId: 'gooya', calendarId: 'L1', externalId: 'r1' }] })
+  const out = applyReminderImport('gooya', [task], lists, { lists: [{ id: 'L1', title: 'Errands', color: '#ff9500', writable: true, isDefault: false }], reminders: [toImport(r, { base: reminderFields(r) })], full: true, timezone: 'America/New_York' }, 9, hash)
+  assert.deepEqual(out.tasks, [])
+  assert.deepEqual(out.lists, [])
+  assert.deepEqual(out.deleteTasks, [])
+})
+
+test('a reminder made from a GOOYA task takes that task over; unlinked and deleted ones', () => {
+  const lists = applyReminderImport('gooya', [], [], { lists: [{ id: 'L2', title: 'School', color: '#34c759', writable: true, isDefault: false }], reminders: [], full: true, timezone: 'UTC' }, 5, hash).lists
+  const own = gooyaTask({ listId: lists[0].id })
+  const gone = taskFrom(reminder({ id: 'old' }), { id: 'ar_old' })
+  const leaving = taskFrom(reminder({ id: 'r7' }), { id: 'ar_7' })
+  const made = reminder({ id: 'new1', title: 'Buy stamps', listId: 'L2', dueTime: '10:00' })
+  const out = applyReminderImport('gooya', [own, gone, leaving], lists, { lists: [{ id: 'L2', title: 'School', color: '#34c759', writable: true, isDefault: false }], reminders: [toImport(made, { taskId: 't9' })], unlink: ['ar_7'], full: true, timezone: 'UTC' }, 9, hash)
+  const takeover = out.tasks.find((t) => t.id === 't9')!
+  assert.equal(takeover.create, false)
+  assert.equal(takeover.fields.source, 'apple-reminders')
+  assert.equal(takeover.fields.externalRefs?.[0].externalId, 'new1')
+  assert.deepEqual(out.tasks.find((t) => t.id === 'ar_7')?.fields, { source: 'gooya', externalRefs: [], updatedAt: 9 })
+  assert.deepEqual(out.deleteTasks, ['ar_old'])
+})
+
+test('an older app (no lists) keeps using the single Apple Reminders list', () => {
+  const out = applyReminderImport('gooya', [], [], { reminders: [{ id: 'r1', title: 'A', completed: false, list: 'Errands', dueDate: null, dueTime: null }], full: true, timezone: 'UTC' }, 5, hash)
+  assert.equal(out.tasks[0].fields.listId, 'apple-reminders')
+  assert.deepEqual(out.lists, [])
+  assert.deepEqual(out.deleteLists, [])
+})
+
+test('a reminder that got a new id when it moved stays the same task', () => {
+  const lists = applyReminderImport('gooya', [], [], { lists: [{ id: 'L1', title: 'Errands', color: '#ff9500', writable: true, isDefault: false }, { id: 'X9', title: 'Work', color: '#007aff', writable: true, isDefault: false }], reminders: [], full: true, timezone: 'UTC' }, 5, hash).lists
+  const r = reminder()
+  const task = taskFrom(r, { listId: lists[0].id })
+  const movedTo = reminder({ id: 'r1-new', listId: 'X9' })
+  const out = applyReminderImport('gooya', [task], lists, { lists: [{ id: 'L1', title: 'Errands', color: '#ff9500', writable: true, isDefault: false }, { id: 'X9', title: 'Work', color: '#007aff', writable: true, isDefault: false }], reminders: [toImport(movedTo, { taskId: 'ar_1' })], full: true, timezone: 'UTC' }, 9, hash)
+  assert.deepEqual(out.deleteTasks, [])
+  assert.equal(out.tasks.length, 1)
+  assert.equal(out.tasks[0].id, 'ar_1')
+  assert.equal(out.tasks[0].fields.externalRefs?.[0].externalId, 'r1-new')
+  assert.equal(out.tasks[0].fields.listId, lists[1].id)
 })

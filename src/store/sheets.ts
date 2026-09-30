@@ -1,9 +1,12 @@
 import { create } from 'zustand'
 import type { PersonKey } from '@shared/people'
-import type { DateKey, Schedule, Task, TaskOccurrence } from '@shared/model'
+import type { CalendarEvent, DateKey, EventOccurrence, Schedule, Task, TaskOccurrence } from '@shared/model'
 
 export interface EditorRequest {
-  kind: 'task' | 'schedule'
+  kind: 'task' | 'schedule' | 'event'
+  /** An event of a two-way calendar, and the occurrence opened. */
+  event?: CalendarEvent
+  eventOcc?: EventOccurrence
   task?: Task
   /** The occurrence being edited (effective, override-aware values). */
   occ?: TaskOccurrence

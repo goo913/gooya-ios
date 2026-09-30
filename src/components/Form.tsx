@@ -1,4 +1,4 @@
-import { Children, type ReactNode } from "react";
+import { Children, isValidElement, type ReactNode } from "react";
 import { ActionSheetIOS, Pressable, StyleSheet, Switch as RNSwitch, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from "react-native";
 import { WEEKDAY_LETTERS } from "@/lib/format";
 import { useColors } from "@/theme";
@@ -39,19 +39,20 @@ interface RowProps {
   accessibilityLabel?: string;
 }
 
-/** 44pt row: label at left, control at right. */
+/** 44pt row: label at left, control at right. A label next to a switch wraps (large text) instead of running under it. */
 export function Row({ label, icon, iconColor, detail, children, onPress, chevron, dim, labelColor, accessibilityLabel }: RowProps) {
   const colors = useColors();
+  const beside = isValidElement(children) && children.type === Switch;
   const body = (
     <>
       {icon ? <Icon name={icon as never} size={22} color={iconColor ?? colors.label2} /> : null}
       {label != null ? (
-        <View style={styles.labelWrap}>
+        <View style={beside ? styles.labelWraps : styles.labelWrap}>
           {typeof label === "string" ? <Text style={[styles.label, { color: labelColor ?? colors.label }]}>{label}</Text> : label}
           {detail ? typeof detail === "string" ? <Text style={[styles.detail, { color: colors.blue }]}>{detail}</Text> : detail : null}
         </View>
       ) : null}
-      <View style={styles.right}>{children}</View>
+      <View style={beside ? styles.rightFixed : styles.right}>{children}</View>
       {chevron ? <Icon name="chevron.right" size={14} color={colors.label3} weight="semibold" /> : null}
     </>
   );
@@ -149,6 +150,8 @@ const styles = StyleSheet.create({
   row: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 },
   dim: { opacity: 0.4 },
   labelWrap: { flexShrink: 0 },
+  labelWraps: { flexShrink: 1, paddingVertical: 10 },
+  rightFixed: { flexGrow: 1, flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
   label: { fontSize: 17 },
   detail: { fontSize: 15, lineHeight: 18 },
   right: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 6 },

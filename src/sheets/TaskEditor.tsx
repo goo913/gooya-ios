@@ -2,6 +2,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { DEFAULT_LIST_ID, type DateKey, type HHmm, type Priority, type Task, type TaskOccurrence } from "@shared/model";
 import { PERSON_KEYS, type PersonKey } from "@shared/people";
 import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPresetKey } from "@shared/recurrence";
+import { isReminderList } from "@shared/reminders";
 import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey } from "@shared/time";
 import { router } from "expo-router";
 import { useMemo, useState, type ReactNode } from "react";
@@ -105,7 +106,9 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const [customEarly, setCustomEarly] = useState(customInitially);
   const [customEarlyAmount, setCustomEarlyAmount] = useState(customInitially ? (initialEarly! % 1440 === 0 ? initialEarly! / 1440 : initialEarly! % 60 === 0 ? initialEarly! / 60 : initialEarly!) : 10);
   const [customEarlyUnit, setCustomEarlyUnit] = useState<(typeof UNITS)[number]>(customInitially ? (initialEarly! % 1440 === 0 ? "days" : initialEarly! % 60 === 0 ? "hours" : "minutes") : "minutes");
-  const [listId, setListId] = useState(task?.listId ?? initialListId ?? DEFAULT_LIST_ID);
+  // A new task goes to the owner's default Reminders list when they sync Reminders: it becomes a reminder too.
+  const defaultListFor = (p: PersonKey) => lists.find((l) => isReminderList(l) && l.owner === p && l.isDefault && !l.readOnly)?.id ?? DEFAULT_LIST_ID;
+  const [listId, setListId] = useState(task?.listId ?? initialListId ?? defaultListFor(task?.owner ?? initialOwner ?? me));
   const [tags, setTags] = useState<string[]>(task?.tags ?? []);
   const [flagged, setFlagged] = useState(!!task?.flagged);
   const [priority, setPriority] = useState<Priority>(task?.priority ?? 0);
@@ -114,12 +117,24 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const setTagPicker = usePickers((s) => s.setTags);
 
   const list = lists.find((l) => l.id === listId) ?? lists[0];
+  const inReminders = isReminderList(list);
+  const readOnly = !!(inReminders && list?.readOnly);
+  // A Reminders list is one person's: the task is theirs. Switching the person takes the task to their lists.
+  const pickList = (id: string) => {
+    setListId(id);
+    const l = lists.find((x) => x.id === id);
+    if (isReminderList(l) && l?.owner) setOwner(l.owner);
+  };
+  const pickOwner = (p: PersonKey) => {
+    setOwner(p);
+    if (inReminders && list?.owner !== p) setListId(defaultListFor(p));
+  };
   const rrule = useMemo(() => {
     if (repeatKey === "custom") return buildRuleBody({ freq: customFreq, interval: customInterval, weekdays: customFreq === "weekly" ? customDays : [] });
     return REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null;
   }, [repeatKey, customFreq, customInterval, customDays]);
   const earlyMinutes = customEarly ? Math.max(1, customEarlyAmount) * (customEarlyUnit === "days" ? 1440 : customEarlyUnit === "hours" ? 60 : 1) : early;
-  const valid = title.trim().length > 0 && (repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0);
+  const valid = title.trim().length > 0 && (repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !readOnly;
 
   const fields = (): TaskFields => ({
     owner,
@@ -129,7 +144,8 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     dueDate: dateOn ? dueDate : null,
     dueTime: dateOn && timeOn ? dueTime : null,
     timezone: dateOn && timeOn ? (task && task.dueTime === dueTime && task.dueDate === dueDate ? task.timezone : viewerTz) : task?.timezone || viewerTz,
-    rrule: dateOn ? rrule : null,
+    // Repeating is set in the Reminders app for a reminder; GOOYA does not send a repeat there.
+    rrule: dateOn && !inReminders ? rrule : null,
     earlyReminders: dateOn && earlyMinutes != null && earlyMinutes > 0 ? [earlyMinutes] : [],
     tags,
     flagged,
@@ -159,7 +175,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     if (await deleteTaskScope(task, occ ?? null, scope)) onClose();
   };
   const askDelete = () => {
-    if (task?.source === "apple-reminders") {
+    if (task?.source === "apple-reminders" || inReminders) {
       ActionSheetIOS.showActionSheetWithOptions({ message: "This also deletes it from Apple Reminders.", options: ["Delete Reminder", "Cancel"], cancelButtonIndex: 1, destructiveButtonIndex: 0 }, (i) => {
         if (i === 0) void remove("all");
       });
@@ -203,9 +219,10 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
 
         <Group>
           <Row label="For">
-            <Segmented<PersonKey> options={people} value={owner} onChange={setOwner} style={{ width: 170 }} />
+            <Segmented<PersonKey> options={people} value={owner} onChange={pickOwner} style={{ width: 170 }} />
           </Row>
         </Group>
+        {readOnly ? <Text style={[styles.readOnly, { color: colors.label2 }]}>{list?.name} is read-only in Reminders (a subscribed or shared list), so this can be changed only where it comes from.</Text> : null}
 
         <SectionTitle>Date & Time</SectionTitle>
         <Group>
@@ -255,9 +272,19 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
           ) : null}
         </Group>
 
-        <Group footer={dateOn ? (timeOn ? "Alerts at the due time; early reminders fire before it." : "Date-only tasks alert at 9:00 AM.") : undefined}>
-          <ValueRow icon="repeat" label="Repeat" dim={!dateOn} value={repeatLabel} options={repeatLabels} title="Repeat" onPick={(_, i) => setRepeatKey(i < REPEAT_PRESETS.length ? REPEAT_PRESETS[i].key : "custom")} />
-          {dateOn && repeatKey === "custom" ? (
+        <Group
+          footer={
+            !dateOn
+              ? undefined
+              : inReminders
+                ? `Reminders alerts ${timeOn ? "at the due time" : "on the day"}; an early reminder comes from GOOYA. A repeat is set in the Reminders app.`
+                : timeOn
+                  ? "Alerts at the due time; early reminders fire before it."
+                  : "Date-only tasks alert at 9:00 AM."
+          }
+        >
+          <ValueRow icon="repeat" label="Repeat" dim={!dateOn || inReminders} value={inReminders ? "Never" : repeatLabel} options={repeatLabels} title="Repeat" onPick={(_, i) => setRepeatKey(i < REPEAT_PRESETS.length ? REPEAT_PRESETS[i].key : "custom")} />
+          {dateOn && !inReminders && repeatKey === "custom" ? (
             <View>
               <ValueRow label="Frequency" value={FREQ_LABELS[FREQS.indexOf(customFreq)]} options={FREQ_LABELS} onPick={(_, i) => setCustomFreq(FREQS[i])} />
               <ValueRow label="Every" value={`${customInterval} ${customFreq === "daily" ? "day(s)" : customFreq === "weekly" ? "week(s)" : customFreq === "monthly" ? "month(s)" : "year(s)"}`} options={Array.from({ length: 12 }, (_, i) => String(i + 1))} onPick={(_, i) => setCustomInterval(i + 1)} />
@@ -299,7 +326,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
             }
             chevron
             onPress={() => {
-              setListPicker({ value: listId, onPick: setListId });
+              setListPicker({ value: listId, onPick: pickList });
               router.push("/sheet/list");
             }}
           >
@@ -324,13 +351,14 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
           <ValueRow icon="exclamationmark" label="Priority" value={PRIORITIES.find((p) => p.value === priority)?.label ?? "None"} options={PRIORITIES.map((p) => p.label)} title="Priority" onPick={(_, i) => setPriority(PRIORITIES[i].value)} />
         </Group>
 
-        {editing ? <DestructiveButton onPress={askDelete}>{task?.source === "apple-reminders" ? "Delete Reminder" : "Delete Task"}</DestructiveButton> : null}
+        {editing && !readOnly ? <DestructiveButton onPress={askDelete}>{task?.source === "apple-reminders" || inReminders ? "Delete Reminder" : "Delete Task"}</DestructiveButton> : null}
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  readOnly: { paddingHorizontal: 32, marginTop: -8, fontSize: 15, lineHeight: 20 },
   fill: { flex: 1 },
   content: { gap: 20, paddingBottom: 60, paddingTop: 4 },
   group: { paddingHorizontal: 16 },

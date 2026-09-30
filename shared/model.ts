@@ -73,6 +73,19 @@ export interface TaskList {
   createdBy: PersonKey
   createdAt: number
   updatedAt: number
+  /**
+   * 'apple-reminders' for a list that is one of a person's Reminders lists on their iPhone: its tasks are that person's
+   * reminders, kept in step both ways. Unset for GOOYA's own lists, which both people share.
+   */
+  source?: 'apple-reminders'
+  /** Whose Reminders list it is. */
+  owner?: PersonKey
+  /** The Reminders list's id on that iPhone (EventKit calendar identifier). */
+  externalId?: string
+  /** Reminders does not let apps change this list (a subscribed or shared-for-viewing list). */
+  readOnly?: boolean
+  /** The list new reminders go to on that iPhone. */
+  isDefault?: boolean
 }
 
 export const DEFAULT_LIST_ID = 'tasks'
@@ -185,13 +198,19 @@ export const DEFAULT_SETTINGS: UserSettings = {
   defaultAlertAllDay: null,
 }
 
-/** Direction of sync for one external calendar. */
-export type SyncDirection = 'off' | 'import' | 'export' | 'both'
+/**
+ * What GOOYA does with one Google or iCloud calendar: nothing, show its events (import), or show them and let them be
+ * changed in GOOYA with the changes going back (both). Copying GOOYA's own tasks and schedules out is per account
+ * (exportTasks / exportSchedules), not per calendar.
+ */
+export type SyncDirection = 'off' | 'import' | 'both'
 
 export interface EventOverride {
   title?: string
   start?: number
   end?: number
+  notes?: string
+  location?: string
   cancelled?: boolean
 }
 
@@ -231,6 +250,8 @@ export interface CalendarEvent {
   dirty?: boolean
   /** Tombstone after a local delete on a two-way calendar. */
   deleted?: boolean
+  /** Why the last change made in GOOYA could not be saved to the calendar (GOOYA shows the calendar's version again). */
+  pushError?: string
 }
 
 export interface EventOccurrence {

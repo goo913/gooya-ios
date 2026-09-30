@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { mix, readableTint } from "@/lib/color";
 import { useMetrics } from "@/lib/metrics";
-import { usePersonColor } from "@/lib/people";
+import { useTaskColor } from "@/lib/people";
 import { useColors, useIsDark } from "@/theme";
 
 /**
@@ -40,12 +40,12 @@ export function TaskRing({ color, done, size }: { color: string; done: boolean; 
   );
 }
 
-/** A task on a month cell or the all-day strip: the owner's ring and the title. */
-export function TaskChip({ occ }: { occ: TaskOccurrence }) {
+/** A task on a month cell or the all-day strip: the ring (owner's or list's colour) and the title. */
+export function TaskChip({ occ, shown }: { occ: TaskOccurrence; shown?: number }) {
   const colors = useColors();
   const dark = useIsDark();
   const m = useMetrics();
-  const color = usePersonColor(occ.task.owner);
+  const color = useTaskColor(occ.task, shown);
   const bg = dark ? "#2c2c2e" : "#e9e9ee";
   return (
     <View style={[styles.chip, { height: m.chipHeight, borderRadius: m.chipRadius, backgroundColor: bg, paddingLeft: 2.3, gap: 4.8 * m.grid }]}>

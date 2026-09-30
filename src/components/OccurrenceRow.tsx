@@ -1,7 +1,7 @@
 import type { TaskOccurrence } from "@shared/model";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { formatTime } from "@/lib/format";
-import { usePersonColor, usePerson } from "@/lib/people";
+import { usePerson, useTaskColor } from "@/lib/people";
 import { setCompleted } from "@/lib/taskOps";
 import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
@@ -14,7 +14,7 @@ const BANGS = ["", "!", "!!", "!!!"];
 export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; onOpen: () => void; showDate?: string }) {
   const colors = useColors();
   const person = usePerson(occ.task.owner);
-  const color = usePersonColor(occ.task.owner);
+  const color = useTaskColor(occ.task);
   const list = useData((s) => s.lists.find((l) => l.id === occ.task.listId));
   const firstNote = occ.notes.split("\n").find((l) => l.trim()) ?? "";
   return (

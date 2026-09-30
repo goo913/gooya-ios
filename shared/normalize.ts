@@ -77,6 +77,9 @@ export function normalizeList(id: string, d: Data): TaskList {
     createdBy: isPersonKey(d.createdBy) ? d.createdBy : 'gooya',
     createdAt: num(d.createdAt),
     updatedAt: num(d.updatedAt),
+    ...(d.source === 'apple-reminders'
+      ? { source: 'apple-reminders' as const, owner: isPersonKey(d.owner) ? d.owner : undefined, externalId: str(d.externalId), readOnly: !!d.readOnly, isDefault: !!d.isDefault }
+      : {}),
   }
 }
 
@@ -145,5 +148,6 @@ export function normalizeEvent(id: string, d: Data): CalendarEvent {
     updatedAt: num(d.updatedAt),
     dirty: !!d.dirty,
     deleted: !!d.deleted,
+    ...(typeof d.pushError === 'string' && d.pushError ? { pushError: d.pushError } : {}),
   }
 }

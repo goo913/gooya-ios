@@ -187,12 +187,13 @@ function nativeFingerprint(env) {
     if (fs.existsSync(p)) h.update(fs.readFileSync(p));
   }
   if (fs.existsSync(PLIST)) h.update(fs.readFileSync(PLIST));
-  // The widget's Swift code and settings (targets/) are compiled into the app.
-  const targets = path.join(root, "targets");
-  if (fs.existsSync(targets)) {
-    for (const f of fs.readdirSync(targets, { recursive: true }).map(String).sort()) {
-      const file = path.join(targets, f);
-      if (fs.statSync(file).isFile()) h.update(`${f}\n`).update(fs.readFileSync(file));
+  // The widget's Swift code and settings (targets/) and GOOYA's own native modules (modules/) are compiled into the app.
+  for (const dir of ["targets", "modules"]) {
+    const base = path.join(root, dir);
+    if (!fs.existsSync(base)) continue;
+    for (const f of fs.readdirSync(base, { recursive: true }).map(String).sort()) {
+      const file = path.join(base, f);
+      if (fs.statSync(file).isFile()) h.update(`${dir}/${f}\n`).update(fs.readFileSync(file));
     }
   }
   for (const key of ["APP_ID", "APPLE_TEAM_ID", "APPLE_PERSONAL_TEAM", "GOOGLE_SERVICES_PLIST"]) h.update(`${key}=${env[key] ?? ""}\n`);
@@ -309,7 +310,9 @@ async function iphoneSim() {
   const log = logFile(`metro-${mode}.log`);
   const out = fs.openSync(log, "w");
   // One bundle per load (no lazy chunks): the development client otherwise keeps stale chunks across relaunches.
-  const metro = spawn(bin("expo"), ["start", "--port", String(METRO_PORT), "--clear"], { env: { ...env, CI: "1", EXPO_NO_TELEMETRY: "1", EXPO_NO_METRO_LAZY: "1" }, stdio: ["ignore", out, out] });
+  // Not in CI mode: that turns file watching off, and edits would never reach the app. No terminal is attached, so it
+  // asks nothing either way.
+  const metro = spawn(bin("expo"), ["start", "--port", String(METRO_PORT), "--clear"], { env: { ...env, EXPO_NO_TELEMETRY: "1", EXPO_NO_METRO_LAZY: "1" }, stdio: ["ignore", out, out] });
   let up = false;
   for (let i = 0; i < 60 && !up; i++) {
     up = await responds(`http://127.0.0.1:${METRO_PORT}/status`);

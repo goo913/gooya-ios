@@ -1,11 +1,11 @@
 import type { DateKey, HHmm, Priority, Task, TaskOccurrence, TaskOverride } from '@shared/model'
 import type { PersonKey } from '@shared/people'
 import { withUntil } from '@shared/recurrence'
-import { reminderIdOf } from '@shared/reminders'
+import { isReminderList, reminderIdOf } from '@shared/reminders'
 import { addDaysKey } from '@shared/time'
-import { Alert } from 'react-native'
+import { useData } from '@/store/data'
 import { deleteTask, newId, patchTask, saveTask } from './db'
-import { deleteReminderOf, reminderOwnerName, syncRemindersSoon } from './reminders'
+import { deleteReminderOf, syncRemindersSoon } from './reminders'
 
 export type EditScope = 'this' | 'future'
 
@@ -42,9 +42,20 @@ export function makeTask(fields: TaskFields, createdBy: PersonKey): Task {
   }
 }
 
+/**
+ * Whether a change to this task has to reach Apple Reminders: it is one of its owner's reminders, or it is in (or
+ * moves to or from) one of their Reminders lists. The owner's iPhone takes it there (src/lib/reminders.ts).
+ */
+function touchesReminders(task: Pick<Task, 'source' | 'externalRefs' | 'listId'>, listId?: string): boolean {
+  if (reminderIdOf(task)) return true
+  const lists = useData.getState().lists
+  return [task.listId, listId].some((id) => id && isReminderList(lists.find((l) => l.id === id)))
+}
+
 export async function createTask(fields: TaskFields, createdBy: PersonKey): Promise<Task> {
   const task = makeTask(fields, createdBy)
   await saveTask(task)
+  if (touchesReminders(task)) syncRemindersSoon()
   return task
 }
 
@@ -52,8 +63,7 @@ export async function createTask(fields: TaskFields, createdBy: PersonKey): Prom
 export async function setCompleted(task: Task, dateKey: DateKey | null, completed: boolean): Promise<void> {
   if (!task.rrule || !dateKey) {
     await patchTask(task.id, { completed })
-    // A task from Apple Reminders: complete the reminder too (on its owner's iPhone).
-    if (reminderIdOf(task)) syncRemindersSoon()
+    if (touchesReminders(task)) syncRemindersSoon()
     return
   }
   const set = new Set(task.completedDates ?? [])
@@ -65,7 +75,7 @@ export async function setCompleted(task: Task, dateKey: DateKey | null, complete
 /** Apply edited fields with Apple's "this only / future" semantics. */
 export async function applyTaskEdit(task: Task, occ: TaskOccurrence | null, fields: TaskFields, scope: EditScope): Promise<void> {
   await applyEdit(task, occ, fields, scope)
-  if (reminderIdOf(task)) syncRemindersSoon()
+  if (touchesReminders(task, fields.listId)) syncRemindersSoon()
 }
 
 async function applyEdit(task: Task, occ: TaskOccurrence | null, fields: TaskFields, scope: EditScope): Promise<void> {
@@ -118,17 +128,13 @@ async function splitSeries(task: Task, fromKey: DateKey, fields: TaskFields): Pr
   })
 }
 
-/** Delete an occurrence, the future, or the whole task. False when it was not deleted (someone else's reminder). */
+/** Delete an occurrence, the future, or the whole task. */
 export async function deleteTaskScope(task: Task, occ: TaskOccurrence | null, scope: EditScope | 'all'): Promise<boolean> {
-  if (reminderIdOf(task)) {
-    // From Apple Reminders: deleting it here deletes the reminder, as Apple Calendar's "Delete Reminder" does. The
-    // other person's reminders can only be deleted on their iPhone (here they would just come back).
-    const result = await deleteReminderOf(task)
-    if (result === 'not-mine') {
-      const name = reminderOwnerName(task) ?? 'the other person'
-      Alert.alert('From Apple Reminders', `This comes from ${name}’s Apple Reminders, so it can be deleted only in Reminders on ${name}’s iPhone. You can complete it here.`)
-      return false
-    }
+  const whole = !task.rrule || scope === 'all' || !occ || (scope === 'future' && (!task.dueDate || occ.dateKey <= task.dueDate))
+  if (whole && touchesReminders(task)) {
+    // One of someone's Apple Reminders: deleting it here deletes the reminder, as Apple Calendar's "Delete Reminder"
+    // does: right away on its owner's iPhone, otherwise by their iPhone the next time GOOYA runs there.
+    await deleteReminderOf(task)
     await deleteTask(task.id)
     return true
   }

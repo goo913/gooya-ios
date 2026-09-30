@@ -2,42 +2,42 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { Task, TaskList } from "@shared/model";
 import { PEOPLE } from "@shared/people";
 import {
-  REMINDERS_LIST_ID,
+  LEGACY_REMINDERS_LIST_ID,
   REMINDERS_SOURCE,
+  applyReminderImport,
   baselineOf,
+  gooyaPriority,
+  isReminderList,
   planReminderSync,
-  reminderFields,
   reminderIdOf,
   toImport,
+  type DeviceList,
   type DeviceReminder,
   type ReminderFields,
+  type ReminderPlan,
 } from "@shared/reminders";
-import { deviceTimeZone, fieldsInZone, keyInZone, zonedMs } from "@shared/time";
-import * as Calendar from "expo-calendar";
+import { deviceTimeZone } from "@shared/time";
 import { AppState } from "react-native";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useData } from "@/store/data";
 import { useSession } from "@/store/session";
+import * as Native from "../../modules/gooya-reminders";
 import { newId, patchUser } from "./db";
 import { env } from "./env";
 import { isMock } from "./mock";
 
 /**
- * Apple Reminders ⇄ GOOYA from the iPhone itself (no Shortcut): the app reads the reminders on this phone with
- * EventKit, sends them to the server's remindersImport (they become tasks in the "Apple Reminders" list, for both
- * people), and writes back what was changed in GOOYA since the last sync (completed, renamed, re-dated, notes).
- * shared/reminders.ts decides which side wins.
+ * Apple Reminders ⇄ GOOYA from the iPhone itself: the app reads this phone's Reminders with EventKit (the GooyaReminders
+ * native module), takes GOOYA's changes to them (completed, renamed, re-dated, notes, priority, moved to another list,
+ * deleted), makes reminders for tasks made in GOOYA in a Reminders list, and sends the result to the server's
+ * remindersImport, where each Reminders list is a GOOYA list of this person. shared/reminders.ts decides which side wins.
  *
- * It runs when the app opens or comes back to the front (at most every 10 seconds), a moment after a reminder is changed
- * in GOOYA, and on Sync Now. Only the phone whose owner turned it on does this.
+ * It runs when the app opens or comes back to the front, when something changes in Reminders while GOOYA is open, a
+ * moment after a reminder is changed in GOOYA, and on Sync Now. Only the phone whose owner turned it on does this.
  */
 
-export interface ReminderListInfo {
-  id: string;
-  title: string;
-  color: string;
-}
+export type ReminderListInfo = DeviceList & { source?: string };
 
 interface RemindersState {
   /** Turned on in Settings → Calendar integrations on this phone. */
@@ -46,9 +46,13 @@ interface RemindersState {
   excluded: string[];
   /** What GOOYA and this phone last agreed on, per reminder id. */
   baseline: Record<string, ReminderFields>;
+  /** Reminders this phone made for GOOYA tasks, until GOOYA has taken them over (task id → reminder id). */
+  links: Record<string, string>;
   lastSync: number | null;
   lastCount: number;
   lastError: string | null;
+  /** Changes GOOYA could not make in Reminders at the last sync (a read-only list, a reminder gone). */
+  problems: string[];
   /** "denied" once the person said no to Reminders access (Settings → GOOYA turns it on again). */
   access: "granted" | "denied" | "undetermined";
   syncing: boolean;
@@ -61,18 +65,34 @@ export const useReminders = create<RemindersState>()(
       enabled: false,
       excluded: [],
       baseline: {},
+      links: {},
       lastSync: null,
       lastCount: 0,
       lastError: null,
+      problems: [],
       access: "undetermined",
       syncing: false,
       lists: [],
     }),
     {
       name: "gooya-reminders",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: (s) => ({ enabled: s.enabled, excluded: s.excluded, baseline: s.baseline, lastSync: s.lastSync, lastCount: s.lastCount, lastError: s.lastError, access: s.access, lists: s.lists }),
+      // Version 1 (expo-calendar) had the same reminder ids and a baseline without list and priority; those two are
+      // filled in from the phone at the next sync.
+      migrate: (persisted) => ({ links: {}, problems: [], ...(persisted as Partial<RemindersState>) }) as RemindersState,
+      partialize: (s) => ({
+        enabled: s.enabled,
+        excluded: s.excluded,
+        baseline: s.baseline,
+        links: s.links,
+        lastSync: s.lastSync,
+        lastCount: s.lastCount,
+        lastError: s.lastError,
+        problems: s.problems,
+        access: s.access,
+        lists: s.lists,
+      }),
     },
   ),
 );
@@ -80,107 +100,37 @@ export const useReminders = create<RemindersState>()(
 const COMPLETED_DAYS = 30;
 const MIN_GAP_MS = 10_000;
 
-function asString(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
-
-function readReminder(r: Calendar.ExpoCalendarReminder, lists: Map<string, string>, tz: string): DeviceReminder | null {
-  if (!r.id) return null;
-  let dueDate: DeviceReminder["dueDate"] = null;
-  let dueTime: DeviceReminder["dueTime"] = null;
-  const due = r.dueDate ? new Date(r.dueDate).getTime() : NaN;
-  if (!Number.isNaN(due)) {
-    dueDate = keyInZone(due, tz);
-    const f = fieldsInZone(due, tz);
-    // EventKit gives a date-only reminder at midnight.
-    dueTime = r.allDay || (f.h === 0 && f.min === 0) ? null : `${String(f.h).padStart(2, "0")}:${String(f.min).padStart(2, "0")}`;
-  }
+function deviceReminder(r: Native.NativeReminder): DeviceReminder {
   return {
     id: r.id,
-    title: asString(r.title).trim() || "(No title)",
-    notes: asString(r.notes),
-    url: asString(r.url),
-    location: asString(r.location),
-    dueDate,
-    dueTime,
-    completed: !!r.completed,
-    list: lists.get(r.calendarId ?? "") ?? "Reminders",
+    title: r.title.trim() || "(No title)",
+    notes: r.notes,
+    url: r.url,
+    dueDate: r.dueDate,
+    dueTime: r.dueDate ? r.dueTime : null,
+    completed: r.completed,
+    list: r.list,
+    listId: r.listId,
+    priority: r.priority,
   };
+}
+
+function setAccess(status: string): boolean {
+  useReminders.setState({ access: status === "granted" ? "granted" : status === "denied" || status === "restricted" ? "denied" : "undetermined" });
+  return status === "granted";
 }
 
 /** Asks for Reminders access (the system prompt, once). */
 export async function requestRemindersAccess(): Promise<boolean> {
-  const { status } = await Calendar.requestRemindersPermissions();
-  useReminders.setState({ access: status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined" });
-  return status === "granted";
-}
-
-async function hasAccess(): Promise<boolean> {
-  const { status } = await Calendar.getRemindersPermissions();
-  useReminders.setState({ access: status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined" });
-  return status === "granted";
-}
-
-async function reminderCalendars(): Promise<Calendar.ExpoCalendar[]> {
-  return Calendar.getCalendars(Calendar.EntityTypes.REMINDER);
+  const granted = await Native.requestAccess();
+  return setAccess(granted ? "granted" : Native.authorization());
 }
 
 /** The Reminders lists on this phone (for choosing which ones GOOYA shows). */
 export async function loadReminderLists(): Promise<ReminderListInfo[]> {
-  const calendars = await reminderCalendars();
-  const lists = calendars.map((c) => ({ id: c.id, title: c.title ?? "Reminders", color: c.color ?? "#ff9500" })).sort((a, b) => a.title.localeCompare(b.title));
+  const lists = (await Native.lists()).sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.title.localeCompare(b.title));
   useReminders.setState({ lists });
   return lists;
-}
-
-/** The phone's reminders (open ones, and those completed in the last 30 days), with the objects to save changes on. */
-async function readDeviceReminders(): Promise<{ reminders: DeviceReminder[]; objects: Map<string, Calendar.ExpoCalendarReminder> }> {
-  const tz = deviceTimeZone();
-  const calendars = await reminderCalendars();
-  const lists = calendars.map((c) => ({ id: c.id, title: c.title ?? "Reminders", color: c.color ?? "#ff9500" })).sort((a, b) => a.title.localeCompare(b.title));
-  useReminders.setState({ lists });
-  const { excluded } = useReminders.getState();
-  const names = new Map(lists.map((l) => [l.id, l.title]));
-  const now = new Date();
-  const since = new Date(now.getTime() - COMPLETED_DAYS * 86_400_000);
-  const reminders: DeviceReminder[] = [];
-  const objects = new Map<string, Calendar.ExpoCalendarReminder>();
-  for (const cal of calendars) {
-    if (excluded.includes(cal.id)) continue;
-    const [open, done] = await Promise.all([cal.listReminders(null, null, Calendar.ReminderStatus.INCOMPLETE), cal.listReminders(since, now, Calendar.ReminderStatus.COMPLETED)]);
-    for (const r of [...open, ...done]) {
-      const d = readReminder(r, names, tz);
-      if (!d || objects.has(d.id)) continue;
-      objects.set(d.id, r);
-      reminders.push(d);
-    }
-  }
-  return { reminders, objects };
-}
-
-/** Saves GOOYA's changes to the reminders on this phone. */
-async function writeBack(changes: ReturnType<typeof planReminderSync>["changes"], objects: Map<string, Calendar.ExpoCalendarReminder>): Promise<void> {
-  const tz = deviceTimeZone();
-  for (const c of changes) {
-    const reminder = objects.get(c.id);
-    if (!reminder) continue;
-    const details: Partial<Calendar.ModifiableReminderProperties> & { allDay?: boolean } = {};
-    if (c.title !== undefined) details.title = c.title;
-    if (c.completed !== undefined) {
-      details.completed = c.completed;
-      if (c.completed) details.completionDate = new Date().toISOString();
-    }
-    if (c.notes !== undefined) details.notes = c.notes;
-    if (c.dueDate) {
-      details.dueDate = new Date(zonedMs(c.dueDate, c.dueTime ?? "00:00", tz)).toISOString();
-      details.allDay = !c.dueTime;
-    }
-    try {
-      await reminder.update(details);
-    } catch {
-      // The reminder was deleted on the phone meanwhile: the import below leaves it out.
-    }
-  }
 }
 
 async function ensureToken(): Promise<string | null> {
@@ -193,57 +143,135 @@ async function ensureToken(): Promise<string | null> {
   return next;
 }
 
+/** Demo mode's stand-in for the server's short hashes (list and task ids). */
+function demoHash(s: string, n: number): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, "0").repeat(4).slice(0, n);
+}
+
+interface ImportBody {
+  full: boolean;
+  timezone: string;
+  lists: DeviceList[];
+  reminders: ReturnType<typeof toImport>[];
+  unlink: string[];
+}
+
 /** Demo mode has no server: the reminders become tasks right here, by the server's rules. */
-function importLocally(reminders: DeviceReminder[]): void {
+function importLocally(body: ImportBody): { kept: number } {
   const me = useSession.getState().me ?? "gooya";
-  const now = Date.now();
-  useData.setState((s) => {
-    const mine = new Map<string, Task>();
-    for (const t of s.tasks) {
-      const id = t.owner === me ? reminderIdOf(t) : null;
-      if (id) mine.set(id, t);
-    }
-    const others = s.tasks.filter((t) => !(t.owner === me && reminderIdOf(t)));
-    const imported = reminders.map((r): Task => {
-      const f = reminderFields(r);
-      const prev = mine.get(r.id);
-      return {
-        id: prev?.id ?? `ar_${r.id}`,
-        owner: me,
-        createdBy: me,
-        listId: REMINDERS_LIST_ID,
-        title: f.title,
-        notes: f.notes,
-        dueDate: f.dueDate,
-        dueTime: f.dueTime,
-        timezone: deviceTimeZone(),
-        rrule: null,
-        exdates: [],
-        overrides: {},
-        completed: f.completed,
-        completedDates: [],
-        earlyReminders: [],
-        tags: r.list ? [r.list.toLowerCase().replace(/\s+/g, "-")] : [],
-        flagged: false,
-        priority: 0,
-        source: REMINDERS_SOURCE,
-        externalRefs: [{ source: REMINDERS_SOURCE, accountId: me, calendarId: r.list, externalId: r.id, updatedAt: now }],
-        createdAt: prev?.createdAt ?? now,
-        updatedAt: now,
-      } as Task;
-    });
-    const lists: TaskList[] = s.lists.some((l) => l.id === REMINDERS_LIST_ID)
-      ? s.lists
-      : [...s.lists, { id: REMINDERS_LIST_ID, name: "Apple Reminders", color: "#ff4245", icon: "checkmark", order: 99, createdBy: me, createdAt: now, updatedAt: now }];
-    return { tasks: [...others, ...imported], lists };
+  const { tasks, lists } = useData.getState();
+  const out = applyReminderImport(me, tasks.filter((t) => t.owner === me), lists, body, Date.now(), demoHash);
+  const listsNext = [...lists.filter((l) => l.id !== LEGACY_REMINDERS_LIST_ID && !out.deleteLists.includes(l.id) && !out.lists.some((n) => n.id === l.id)), ...out.lists];
+  const tasksNext = tasks.filter((t) => !out.deleteTasks.includes(t.id));
+  for (const w of out.tasks) {
+    const i = tasksNext.findIndex((t) => t.id === w.id);
+    if (i >= 0) tasksNext[i] = { ...tasksNext[i], ...w.fields } as Task;
+    else tasksNext.push({ id: w.id, ...w.fields } as Task);
+  }
+  useData.setState({ tasks: tasksNext, lists: listsNext.sort((a, b) => a.order - b.order) });
+  return { kept: out.kept };
+}
+
+async function send(body: ImportBody): Promise<{ kept: number }> {
+  if (isMock) return importLocally(body);
+  const token = await ensureToken();
+  if (!token) throw new Error("Not signed in.");
+  const res = await fetch(`${env.functionsUrl}/remindersImport`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, ...body }),
   });
+  if (!res.ok) throw new Error(`GOOYA's server answered ${res.status}. Try again in a minute.`);
+  return (await res.json()) as { kept: number };
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** A baseline from before lists and priority were kept: those two are taken as the phone has them now. */
+function completeBaseline(baseline: Record<string, ReminderFields>, device: DeviceReminder[]): Record<string, ReminderFields> {
+  const out = { ...baseline };
+  for (const r of device) {
+    const b = out[r.id];
+    if (b && (b.listId === undefined || b.priority === undefined)) out[r.id] = { ...b, listId: b.listId ?? r.listId, priority: b.priority ?? gooyaPriority(r.priority) };
+  }
+  return out;
+}
+
+/**
+ * Carries out a plan on the phone: changes, new reminders, deletions. What could not be done stays as the phone has it
+ * (so GOOYA shows the truth), and is said in `problems`.
+ */
+async function carryOut(plan: ReminderPlan, device: DeviceReminder[], tasksByReminder: Map<string, Task>): Promise<{ reminders: DeviceReminder[]; taskIds: Record<string, string>; problems: string[] }> {
+  const problems: string[] = [];
+  const moved: Record<string, string> = {};
+  const reminders = [...plan.reminders];
+  const onPhone = new Map(device.map((r) => [r.id, r]));
+  const replace = (id: string, next: DeviceReminder) => {
+    const i = reminders.findIndex((r) => r.id === id);
+    if (i >= 0) reminders[i] = next;
+    else reminders.push(next);
+  };
+  for (const c of plan.changes) {
+    try {
+      const saved = await Native.save({
+        id: c.id,
+        ...(c.listId !== undefined ? { listId: c.listId } : {}),
+        ...(c.title !== undefined ? { title: c.title } : {}),
+        ...(c.notes !== undefined ? { notes: c.notes } : {}),
+        ...(c.dueDate !== undefined ? { setDue: true, dueDate: c.dueDate, dueTime: c.dueTime ?? null } : {}),
+        ...(c.completed !== undefined ? { completed: c.completed } : {}),
+        ...(c.priority !== undefined ? { priority: c.priority } : {}),
+      });
+      // Moving to a list in another account gives the reminder a new id: it stays the same GOOYA task.
+      if (saved.id !== c.id) {
+        const i = reminders.findIndex((r) => r.id === c.id);
+        if (i >= 0) reminders.splice(i, 1);
+        const task = tasksByReminder.get(c.id);
+        if (task) moved[saved.id] = task.id;
+      }
+      replace(saved.id, deviceReminder(saved));
+    } catch (e) {
+      problems.push(`“${tasksByReminder.get(c.id)?.title ?? onPhone.get(c.id)?.title ?? "A reminder"}”: ${message(e)}`);
+      const was = onPhone.get(c.id);
+      if (was) replace(c.id, was);
+    }
+  }
+  const links = { ...useReminders.getState().links };
+  for (const c of plan.creates) {
+    try {
+      const saved = await Native.save({ listId: c.listId, title: c.title, notes: c.notes, setDue: !!c.dueDate, dueDate: c.dueDate, dueTime: c.dueTime, alarmAtDue: !!c.dueTime, completed: c.completed, priority: c.priority });
+      links[c.taskId] = saved.id;
+      // Remembered at once: if the app stops before GOOYA hears of it, the next sync does not make it twice.
+      useReminders.setState({ links: { ...links } });
+      reminders.push(deviceReminder(saved));
+    } catch (e) {
+      problems.push(`“${c.title}” couldn't be added to Reminders: ${message(e)}`);
+    }
+  }
+  for (const id of plan.deletes) {
+    try {
+      await Native.remove(id);
+    } catch (e) {
+      problems.push(`“${onPhone.get(id)?.title ?? "A reminder"}” couldn't be deleted in Reminders: ${message(e)}`);
+      const was = onPhone.get(id);
+      if (was) reminders.push(was);
+    }
+  }
+  const ids = new Set(reminders.map((r) => r.id));
+  const taskIds: Record<string, string> = { ...moved };
+  for (const [taskId, rid] of Object.entries(links)) if (ids.has(rid)) taskIds[rid] = taskId;
+  return { reminders, taskIds, problems };
 }
 
 let running: Promise<void> | null = null;
 let again = false;
 let lastRun = 0;
+/** Until then, Reminders' change notices are GOOYA's own saves coming back. */
+let quietUntil = 0;
 
-/** One sync: read, write back GOOYA's changes, send to GOOYA. `force` skips the once-a-minute limit. */
+/** One sync: read, take GOOYA's changes to Reminders, send the result to GOOYA. `force` skips the 10-second limit. */
 export function syncReminders(force = false): Promise<void> {
   const state = useReminders.getState();
   if (!state.enabled) return Promise.resolve();
@@ -253,38 +281,59 @@ export function syncReminders(force = false): Promise<void> {
   }
   if (!force && Date.now() - lastRun < MIN_GAP_MS) return Promise.resolve();
   const me = useSession.getState().me;
-  const { loaded } = useData.getState();
-  // GOOYA's side must be known before anything is written back (or overwritten).
-  if (!me || (!isMock && !(loaded.tasks && loaded.users))) return Promise.resolve();
+  const { loaded, fresh } = useData.getState();
+  // GOOYA's side must be known, from the server, before anything is written to Reminders or deleted there.
+  if (!me || (!isMock && !(loaded.tasks && loaded.users && loaded.lists && fresh.tasks && fresh.lists))) return Promise.resolve();
   lastRun = Date.now();
   running = (async () => {
     useReminders.setState({ syncing: true });
+    let kept = 0;
     try {
-      if (!(await hasAccess())) throw new Error("GOOYA can't read Reminders. Turn it on in Settings → Apps → GOOYA → Reminders.");
-      const { reminders: device, objects } = await readDeviceReminders();
-      const { baseline } = useReminders.getState();
-      const plan = planReminderSync(device, useData.getState().tasks, baseline, me);
-      if (plan.changes.length) await writeBack(plan.changes, objects);
-      if (isMock) importLocally(plan.reminders);
-      else {
-        const token = await ensureToken();
-        if (!token) throw new Error("Not signed in.");
-        const res = await fetch(`${env.functionsUrl}/remindersImport`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, full: true, timezone: deviceTimeZone(), reminders: plan.reminders.map(toImport) }),
-        });
-        if (!res.ok) throw new Error(`GOOYA's server answered ${res.status}. Try again in a minute.`);
+      if (!Native.isAvailable) throw new Error("This GOOYA build can't reach Reminders. Install the latest build.");
+      if (!setAccess(Native.authorization())) throw new Error("GOOYA can't read Reminders. Turn it on in Settings → Apps → GOOYA → Reminders.");
+      const allLists = await loadReminderLists();
+      const { excluded } = useReminders.getState();
+      const included = allLists.filter((l) => !excluded.includes(l.id));
+      const device = (await Native.reminders(included.map((l) => l.id), Date.now() - COMPLETED_DAYS * 86_400_000)).map(deviceReminder);
+      const { tasks, lists } = useData.getState();
+      const baseline = completeBaseline(useReminders.getState().baseline, device);
+      const writable = new Set(included.filter((l) => l.writable).map((l) => l.id));
+      const plan = planReminderSync(device, tasks, baseline, me, lists, useReminders.getState().links, writable);
+      // Many reminders at once looking deleted in GOOYA is more likely a problem than a wish: they stay.
+      const skipped = plan.deletes.length > 10 && plan.deletes.length > device.length * 0.3 ? plan.deletes.splice(0) : [];
+      if (skipped.length) plan.reminders.push(...device.filter((r) => skipped.includes(r.id)));
+      const tasksByReminder = new Map<string, Task>();
+      for (const t of tasks) {
+        const rid = t.owner === me ? reminderIdOf(t) : null;
+        if (rid) tasksByReminder.set(rid, t);
       }
-      useReminders.setState({ baseline: baselineOf(plan.reminders), lastSync: Date.now(), lastCount: plan.reminders.filter((r) => !r.completed).length, lastError: null });
+      quietUntil = Date.now() + 4000;
+      const done = await carryOut(plan, device, tasksByReminder);
+      const answer = await send({
+        full: true,
+        timezone: deviceTimeZone(),
+        lists: included.map(({ id, title, color, writable: w, isDefault }) => ({ id, title, color, writable: w, isDefault })),
+        reminders: done.reminders.map((r) => toImport(r, { taskId: done.taskIds[r.id], base: baseline[r.id] })),
+        unlink: plan.unlink.map((u) => u.taskId),
+      });
+      kept = answer.kept ?? 0;
+      // Tasks moved in GOOYA to its own lists stay there; their reminders go now that GOOYA has kept the tasks.
+      for (const u of plan.unlink) await Native.remove(u.reminderId).catch(() => false);
+      quietUntil = Date.now() + 4000;
+      const taken = new Set(Object.values(done.taskIds));
+      const links = Object.fromEntries(Object.entries(useReminders.getState().links).filter(([taskId]) => !taken.has(taskId)));
+      const problems = [...done.problems, ...(skipped.length ? [`${skipped.length} reminders look deleted in GOOYA, so they were kept in Reminders. Delete them there if that is what you want.`] : [])];
+      useReminders.setState({ baseline: baselineOf(done.reminders), links, lastSync: Date.now(), lastCount: done.reminders.filter((r) => !r.completed).length, lastError: null, problems });
     } catch (e) {
-      useReminders.setState({ lastError: e instanceof Error ? e.message : String(e) });
+      useReminders.setState({ lastError: message(e) });
     } finally {
       useReminders.setState({ syncing: false });
       running = null;
+      // GOOYA kept a change made there a moment ago: take it to Reminders once this phone has it.
+      if (kept > 0) setTimeout(() => void syncReminders(true), 2500);
       if (again) {
         again = false;
-        void syncReminders(true);
+        setTimeout(() => void syncReminders(true), 300);
       }
     }
   })();
@@ -293,7 +342,7 @@ export function syncReminders(force = false): Promise<void> {
 
 let soon: ReturnType<typeof setTimeout> | null = null;
 
-/** A reminder was changed in GOOYA: take it to Reminders in a moment (after the change reaches the local data). */
+/** A task was changed in GOOYA: take it to Reminders in a moment (after the change reaches the local data). */
 export function syncRemindersSoon(delay = 1500): void {
   if (!useReminders.getState().enabled) return;
   if (soon) clearTimeout(soon);
@@ -303,43 +352,33 @@ export function syncRemindersSoon(delay = 1500): void {
   }, delay);
 }
 
-/** Turns the sync on (asking for access) or off. Off also takes the reminders out of GOOYA. */
+/** Turns the sync on (asking for access) or off. Off also takes the reminders and their lists out of GOOYA. */
 export async function setRemindersEnabled(on: boolean): Promise<boolean> {
   try {
     return await setEnabled(on);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    console.warn("Reminders", message);
-    useReminders.setState({ lastError: `Couldn't turn Reminders ${on ? "on" : "off"}: ${message}` });
+    console.warn("Reminders", message(e));
+    useReminders.setState({ lastError: `Couldn't turn Reminders ${on ? "on" : "off"}: ${message(e)}` });
     return false;
   }
 }
 
 async function setEnabled(on: boolean): Promise<boolean> {
   if (on) {
+    if (!Native.isAvailable) throw new Error("this GOOYA build can't reach Reminders. Install the latest build.");
     const granted = await requestRemindersAccess();
     if (!granted) {
       useReminders.setState({ enabled: false, lastError: "GOOYA can't read Reminders. Turn it on in Settings → Apps → GOOYA → Reminders." });
       return false;
     }
-    useReminders.setState({ enabled: true, lastError: null });
+    useReminders.setState({ enabled: true, lastError: null, problems: [] });
     await loadReminderLists().catch(() => undefined);
     await syncReminders(true);
     return true;
   }
-  useReminders.setState({ enabled: false, baseline: {}, lastSync: null, lastCount: 0, lastError: null });
-  // Take this person's reminders out of GOOYA (nothing is deleted in Reminders).
-  if (isMock) importLocally([]);
-  else {
-    const token = await ensureToken().catch(() => null);
-    if (token) {
-      await fetch(`${env.functionsUrl}/remindersImport`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, full: true, timezone: deviceTimeZone(), reminders: [] }),
-      }).catch(() => undefined);
-    }
-  }
+  useReminders.setState({ enabled: false, baseline: {}, links: {}, lastSync: null, lastCount: 0, lastError: null, problems: [] });
+  // Take this person's reminders and their lists out of GOOYA (nothing is deleted in Reminders).
+  await send({ full: true, timezone: deviceTimeZone(), lists: [], reminders: [], unlink: [] }).catch(() => undefined);
   return true;
 }
 
@@ -349,32 +388,35 @@ export function setReminderListIncluded(listId: string, included: boolean): void
 }
 
 /**
- * Deleting a task that came from this phone's Reminders deletes the reminder too, as Apple Calendar's "Delete
- * Reminder" does. Returns false when the task is someone else's reminder (it would only come back).
+ * Deleting a task that is one of this phone's reminders deletes the reminder right away, as Apple Calendar's "Delete
+ * Reminder" does. Someone else's reminder is deleted by their phone at its next sync (it sees the task gone).
  */
-export async function deleteReminderOf(task: Task): Promise<"deleted" | "not-mine" | "not-reminder"> {
-  const id = reminderIdOf(task);
+export async function deleteReminderOf(task: Task): Promise<"deleted" | "later" | "not-reminder"> {
+  const id = reminderIdOf(task) ?? useReminders.getState().links[task.id] ?? null;
   if (!id) return "not-reminder";
   const me = useSession.getState().me;
-  if (task.owner !== me || !useReminders.getState().enabled) return "not-mine";
-  try {
-    const reminder = await Calendar.ExpoCalendarReminder.get(id);
-    await reminder.delete();
-  } catch {
-    // Already gone from Reminders.
-  }
+  if (task.owner !== me || !useReminders.getState().enabled || !Native.isAvailable) return "later";
+  quietUntil = Date.now() + 4000;
+  await Native.remove(id).catch(() => false);
   useReminders.setState((s) => {
     const baseline = { ...s.baseline };
     delete baseline[id];
-    return { baseline };
+    const links = Object.fromEntries(Object.entries(s.links).filter(([, rid]) => rid !== id));
+    return { baseline, links };
   });
   return "deleted";
 }
 
-/** Whose Reminders a task came from, for the details sheet ("구야's Apple Reminders"). */
+/** Whose Reminders a task is in, for the details sheet ("구야's Reminders"). */
 export function reminderOwnerName(task: Task): string | null {
-  if (!reminderIdOf(task)) return null;
+  if (task.source !== REMINDERS_SOURCE && !isReminderList(useData.getState().lists.find((l) => l.id === task.listId))) return null;
   return useData.getState().users[task.owner]?.name || PEOPLE[task.owner]?.name || null;
+}
+
+/** The Reminders list a GOOYA list is on this phone, when it is one of this person's. */
+export function reminderListOf(list: TaskList | undefined | null): ReminderListInfo | null {
+  if (!list || !isReminderList(list) || list.owner !== useSession.getState().me) return null;
+  return useReminders.getState().lists.find((l) => l.id === list.externalId) ?? null;
 }
 
 let started = false;
@@ -386,10 +428,20 @@ export function startRemindersSync(): void {
   AppState.addEventListener("change", (s) => {
     if (s === "active") void syncReminders();
   });
-  // The first sync once this phone's settings are read and GOOYA's tasks and people have arrived.
+  // Changed in Reminders (or on another device, through iCloud) while GOOYA is open.
+  let changed: ReturnType<typeof setTimeout> | null = null;
+  Native.onChange(() => {
+    if (Date.now() < quietUntil || running) return;
+    if (changed) clearTimeout(changed);
+    changed = setTimeout(() => {
+      changed = null;
+      if (AppState.currentState === "active") void syncReminders(true);
+    }, 1200);
+  });
+  // The first sync once this phone's settings are read and GOOYA's tasks, lists and people have come from the server.
   const ready = () => {
-    const { loaded } = useData.getState();
-    return isMock || (loaded.tasks && loaded.users);
+    const { loaded, fresh } = useData.getState();
+    return isMock || (loaded.tasks && loaded.users && loaded.lists && fresh.tasks && fresh.lists);
   };
   const kick = () => setTimeout(() => void syncReminders(true), 800);
   const afterSettings = () => {

@@ -7,6 +7,8 @@ export interface IntegrationCalendar {
   color: string
   primary?: boolean
   direction: SyncDirection
+  /** false for calendars GOOYA may not change (holidays, subscriptions, shared for viewing): Import only. */
+  writable?: boolean
   lastSync?: number
 }
 
@@ -19,6 +21,8 @@ export interface IntegrationAccount {
   calendars: Record<string, IntegrationCalendar>
   exportTasks?: boolean
   exportSchedules?: boolean
+  /** The "GOOYA" calendar made in this account for the copies. */
+  exportCalendarId?: string
   lastSync?: number
 }
 
@@ -30,6 +34,9 @@ interface DataState {
   events: CalendarEvent[]
   accounts: IntegrationAccount[]
   loaded: { tasks: boolean; schedules: boolean; users: boolean; lists: boolean }
+  /** The tasks and lists last came from the server, not only from this phone's copy (which may be behind). */
+  fresh: { tasks: boolean; lists: boolean }
+  setFresh: (what: 'tasks' | 'lists', fresh: boolean) => void
   setTasks: (tasks: Task[]) => void
   setLists: (lists: TaskList[]) => void
   setEvents: (events: CalendarEvent[]) => void
@@ -46,6 +53,8 @@ export const useData = create<DataState>((set) => ({
   events: [],
   accounts: [],
   loaded: { tasks: false, schedules: false, users: false, lists: false },
+  fresh: { tasks: false, lists: false },
+  setFresh: (what, fresh) => set((s) => (s.fresh[what] === fresh ? s : { fresh: { ...s.fresh, [what]: fresh } })),
   setTasks: (tasks) => set((s) => ({ tasks, loaded: { ...s.loaded, tasks: true } })),
   setLists: (lists) => set((s) => ({ lists: [...lists].sort((a, b) => a.order - b.order), loaded: { ...s.loaded, lists: true } })),
   setEvents: (events) => set({ events }),

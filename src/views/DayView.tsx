@@ -12,7 +12,7 @@ import { mix, readableTint, tintText } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { useMetrics, type Metrics } from "@/lib/metrics";
 import { useEventOccurrences, useScheduleOccurrences, useTaskOccurrences } from "@/lib/occurrences";
-import { colorHex, useMe, usePerson, type PersonInfo } from "@/lib/people";
+import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib/people";
 import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
 import { applyTaskEdit, deleteTaskScope, movedFields, setCompleted, type TaskFields } from "@/lib/taskOps";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
@@ -367,7 +367,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                                 </Pressable>
                               ) : (
                                 <Pressable key={o.key} onPress={() => actions.openTask(o)}>
-                                  <TaskChip occ={o} />
+                                  <TaskChip occ={o} shown={people.length} />
                                 </Pressable>
                               ),
                             )}
@@ -599,7 +599,7 @@ interface TaskPillProps {
  * hour, the owner's ring (tap it to complete) and the title. Long-press lifts it and dragging moves it (across days and
  * people); a tap opens it.
  */
-const TaskPill = memo(function TaskPill({ seg, info, hourH, metrics, dark, colors, date, person, subW, subIndex, subCols, onTap, onMenu, onMove }: TaskPillProps) {
+const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, onTap, onMenu, onMove }: TaskPillProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
   const [lifted, setLifted] = useState(false);
   const moved = useRef(false);
@@ -667,7 +667,8 @@ const TaskPill = memo(function TaskPill({ seg, info, hourH, metrics, dark, color
   const height = Math.max(metrics.taskRing + 8, (Math.min(TASK_MINUTES, 24 * 60 - seg.startMin) / 60) * hourH - 1);
   const previewTime = preview ? formatHM(Math.floor(startMin / 60) % 24, startMin % 60) : null;
   const bangs = ["", "!", "!!", "!!!"][o.task.priority ?? 0];
-  const ring = colorHex(info.color, dark);
+  // Both people's columns: whose task it is; one person's: which list.
+  const ring = useTaskColor(o.task, new Set(subCols.map((c) => c.person)).size);
   return (
     <GestureDetector gesture={gesture}>
       <View

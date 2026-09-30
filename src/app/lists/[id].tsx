@@ -14,6 +14,7 @@ import { MONTH_SHORT, WEEKDAY_LONG } from "@/lib/format";
 import { SMART, useListOccurrences, type SmartList } from "@/lib/listOccurrences";
 import { useFilteredPeople, useMe, usePerson } from "@/lib/people";
 import { useToday } from "@/lib/useNow";
+import { isReminderList } from "@shared/reminders";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
@@ -62,7 +63,8 @@ export default function ListScreen() {
     router.push("/sheet/edit");
   };
   const more = () =>
-    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(list ? ["Edit List"] : [])], null, (_, i) => {
+    // A Reminders list is named and coloured in Reminders (a change here would come back as it was).
+    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(list && !isReminderList(list) ? ["Edit List"] : [])], null, (_, i) => {
       if (i === 0) void patchSettings(me, { showCompleted: !showCompleted });
       else if (list) router.push({ pathname: "/sheet/listEdit", params: { id: list.id } });
     });

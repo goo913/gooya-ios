@@ -11,7 +11,8 @@ import { Icon } from "./Icon";
 export function SheetBar({ title, left, right }: { title: ReactNode; left?: ReactNode; right?: ReactNode }) {
   const colors = useColors();
   return (
-    <View style={styles.bar}>
+    // One view, never flattened: a form sheet with a scroll view lays out a header only when it is a single view.
+    <View collapsable={false} style={styles.bar}>
       <View style={styles.left}>{left}</View>
       <Text numberOfLines={1} style={[styles.title, { color: colors.label }]}>
         {title}

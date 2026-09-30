@@ -3,8 +3,8 @@ import { logger } from 'firebase-functions'
 import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, type PersonKey } from '../../../shared/people'
 import { INTEGRATIONS_KEY, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, secretRef } from './common'
-import { exportItemToGoogle, pushGoogleEvent, syncGoogleAccount } from './google'
-import { exportItemToApple, pushAppleEvent, syncAppleAccount } from './apple'
+import { exportItemToGoogle, pushGoogleEvent, revertGoogleEvent, syncGoogleAccount } from './google'
+import { exportItemToApple, pushAppleEvent, revertAppleEvent, syncAppleAccount } from './apple'
 import type { AccountDoc } from './common'
 
 export { googleAuthStart, googleAuthCallback, gcalNotify, pollGoogle, syncNow } from './google'
@@ -14,8 +14,11 @@ export { icsFeed } from './ics'
 
 const SECRETS = [INTEGRATIONS_KEY, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET]
 
-/** Locally edited imported events are pushed back to their source. */
-export const onEventWritten = onDocumentWritten({ document: 'events/{id}', secrets: SECRETS }, async (event) => {
+/**
+ * Events changed, added or deleted in GOOYA on a two-way calendar go to Google or iCloud. When that fails, GOOYA shows
+ * the calendar's version again and the event says what went wrong (pushError).
+ */
+export const onEventWritten = onDocumentWritten({ document: 'events/{id}', secrets: SECRETS, memory: '512MiB' }, async (event) => {
   const after = event.data?.after
   if (!after?.exists) return
   const ev = normalizeEvent(after.id, after.data() as Record<string, unknown>)
@@ -24,8 +27,10 @@ export const onEventWritten = onDocumentWritten({ document: 'events/{id}', secre
     if (ev.source === 'google') await pushGoogleEvent(ev)
     else await pushAppleEvent(ev)
   } catch (e) {
-    logger.error('push edit failed', { id: ev.id, error: String(e) })
-    await after.ref.set({ dirty: false, pushError: String((e as Error).message ?? e).slice(0, 300) }, { merge: true })
+    const problem = String((e as Error).message ?? e).slice(0, 300)
+    logger.error('push edit failed', { id: ev.id, error: problem })
+    if (ev.source === 'google') await revertGoogleEvent(ev, problem)
+    else await revertAppleEvent(ev, problem)
   }
 })
 
@@ -57,11 +62,11 @@ function syncShape(acc: AccountDoc | undefined): string {
     .map(([id, c]) => `${id}=${c.direction}`)
     .sort()
     .join(',')
-  return `${dirs}|${acc.exportTasks !== false}|${acc.exportSchedules !== false}`
+  return `${dirs}|${acc.exportTasks === true}|${acc.exportSchedules === true}`
 }
 
 /**
- * A calendar switched to Import, Export or Two-way (or an export switch changed) syncs right away, instead of at the
+ * A calendar switched to Import or Two-way (or off), or an export switch changed, syncs right away instead of at the
  * next poll up to 10 minutes later. The sync's own writes (sync tokens, lastSync) leave the shape alone, so they do not
  * trigger another one.
  */
@@ -71,7 +76,6 @@ export const onAccountChanged = onDocumentWritten({ document: 'integrations/{per
   const before = event.data?.before?.data() as AccountDoc | undefined
   const after = event.data?.after?.data() as AccountDoc | undefined
   if (!after || syncShape(before) === syncShape(after)) return
-  if (!Object.values(after.calendars ?? {}).some((c) => c.direction !== 'off')) return
   try {
     if (after.source === 'google') await syncGoogleAccount(person as PersonKey, accountId)
     else await syncAppleAccount(person as PersonKey, accountId)

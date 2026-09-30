@@ -32,15 +32,20 @@ export function startData(): void {
     return;
   }
   startWidgetSync();
-  const { setTasks, setSchedules, setUsers, setLists } = useData.getState();
-  onSnapshot(collection(db, "tasks"), (qs) => setTasks(qs.docs.map(taskFromSnap)));
-  onSnapshot(collection(db, "lists"), (qs) => {
+  const { setTasks, setSchedules, setUsers, setLists, setFresh } = useData.getState();
+  // Metadata changes too, to know when the tasks and lists have come from the server (Reminders sync waits for that).
+  onSnapshot(collection(db, "tasks"), { includeMetadataChanges: true }, (qs) => {
+    if (qs.docChanges().length || !useData.getState().loaded.tasks) setTasks(qs.docs.map(taskFromSnap));
+    setFresh("tasks", !qs.metadata.fromCache);
+  });
+  onSnapshot(collection(db, "lists"), { includeMetadataChanges: true }, (qs) => {
     const lists = qs.docs.map(listFromSnap);
     if (!qs.metadata.fromCache && !lists.some((l) => l.id === DEFAULT_LIST_ID)) {
       const { id, ...rest } = defaultList();
       void setDoc(doc(db, "lists", id), rest).catch(() => undefined);
     }
-    setLists(lists.length ? lists : [defaultList()]);
+    if (qs.docChanges().length || !useData.getState().loaded.lists) setLists(lists.length ? lists : [defaultList()]);
+    setFresh("lists", !qs.metadata.fromCache);
   });
   onSnapshot(collection(db, "schedules"), (qs) => setSchedules(qs.docs.map(scheduleFromSnap)));
   onSnapshot(collection(db, "events"), (qs) => {

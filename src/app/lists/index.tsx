@@ -8,16 +8,21 @@ import { Icon } from "@/components/Icon";
 import { ListBadge } from "@/components/ListIcons";
 import { SMART, useListOccurrences } from "@/lib/listOccurrences";
 import { useFilteredPeople, useMe, usePerson } from "@/lib/people";
+import type { TaskList } from "@shared/model";
+import { otherPerson } from "@shared/people";
+import { isReminderList } from "@shared/reminders";
 import { useToday } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
 
-/** Reminders-style lists: the smart lists, then the shared lists. */
+/** Reminders-style lists: the smart lists, GOOYA's shared lists, then each person's Apple Reminders lists. */
 export default function ListsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const me = useMe();
+  const mine = usePerson(me);
+  const other = usePerson(otherPerson(me));
   const people = useFilteredPeople();
   const today = useToday();
   const lists = useData((s) => s.lists);
@@ -43,7 +48,7 @@ export default function ListsScreen() {
   };
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg }]}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 58, paddingHorizontal: 16, paddingBottom: insets.bottom + 90 }} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 58, paddingHorizontal: 16, paddingBottom: insets.bottom + 150 }} showsVerticalScrollIndicator={false}>
         <View style={styles.grid}>
           {SMART.filter((s) => s.key !== "completed" || showCompleted || counts.completed > 0).map((s) => (
             <Pressable key={s.key} onPress={() => router.push({ pathname: "/lists/[id]", params: { id: `smart:${s.key}` } })} style={[styles.smart, { backgroundColor: colors.bg3 }]}>
@@ -58,20 +63,21 @@ export default function ListsScreen() {
           ))}
         </View>
         <Text style={[styles.h2, { color: colors.label }]}>My Lists</Text>
-        <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
-          {lists.map((l, i) => (
-            <Pressable key={l.id} onPress={() => router.push({ pathname: "/lists/[id]", params: { id: l.id } })} style={[styles.listRow, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator }]}>
-              <ListBadge icon={l.icon} color={l.color} size={32} />
-              <Text style={[styles.listName, { color: colors.label }]}>{l.name}</Text>
-              <Text style={[styles.listCount, { color: colors.label2 }]}>{counts.byList.get(l.id) ?? 0}</Text>
-              <Icon name="chevron.right" size={14} color={colors.label3} weight="semibold" />
-            </Pressable>
-          ))}
-        </View>
+        <ListCard lists={lists.filter((l) => !isReminderList(l))} counts={counts.byList} />
         <Pressable onPress={() => router.push("/sheet/listEdit")} style={styles.add}>
           <Icon name="plus" size={16} color={colors.blue} weight="semibold" />
           <Text style={[styles.addText, { color: colors.blue }]}>Add List</Text>
         </Pressable>
+        {[mine, other].map((p) => {
+          const theirs = lists.filter((l) => isReminderList(l) && l.owner === p.key);
+          if (!theirs.length) return null;
+          return (
+            <View key={p.key}>
+              <Text style={[styles.h2, { color: colors.label }]}>{p.key === me ? "My Reminders" : `${p.name}’s Reminders`}</Text>
+              <ListCard lists={theirs} counts={counts.byList} />
+            </View>
+          );
+        })}
       </ScrollView>
       <TopChrome back="Calendar" onBack={() => router.back()} onAdd={newTask} onSearch={() => router.push("/search")} />
       <BottomChrome
@@ -89,6 +95,25 @@ export default function ListsScreen() {
   );
 }
 
+function ListCard({ lists, counts }: { lists: TaskList[]; counts: Map<string, number> }) {
+  const colors = useColors();
+  return (
+    <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
+      {lists.map((l, i) => (
+        <Pressable key={l.id} onPress={() => router.push({ pathname: "/lists/[id]", params: { id: l.id } })} style={[styles.listRow, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator }]}>
+          <ListBadge icon={l.icon} color={l.color} size={32} />
+          <View style={styles.listText}>
+            <Text style={[styles.listName, { color: colors.label }]}>{l.name}</Text>
+            {l.readOnly ? <Text style={[styles.listNote, { color: colors.label2 }]}>Read-only in Reminders</Text> : null}
+          </View>
+          <Text style={[styles.listCount, { color: colors.label2 }]}>{counts.get(l.id) ?? 0}</Text>
+          <Icon name="chevron.right" size={14} color={colors.label3} weight="semibold" />
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
@@ -99,8 +124,10 @@ const styles = StyleSheet.create({
   smartLabel: { fontSize: 15, fontWeight: "600" },
   h2: { marginTop: 28, marginBottom: 8, paddingHorizontal: 4, fontSize: 22, fontWeight: "700" },
   card: { borderRadius: 14, overflow: "hidden" },
-  listRow: { height: 52, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 },
-  listName: { flex: 1, fontSize: 17 },
+  listRow: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 8 },
+  listText: { flex: 1 },
+  listName: { fontSize: 17 },
+  listNote: { fontSize: 13, marginTop: 1 },
   listCount: { fontSize: 17, fontVariant: ["tabular-nums"] },
   add: { marginTop: 16, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 },
   addText: { fontSize: 17, fontWeight: "600" },

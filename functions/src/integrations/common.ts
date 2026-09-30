@@ -18,11 +18,22 @@ export interface CalendarConfig {
   name: string
   color: string
   primary?: boolean
+  /**
+   * Whether GOOYA may change this calendar's events: Google's access role is owner or writer, iCloud grants
+   * write-content. Read-only calendars (holidays, subscriptions, calendars shared for viewing) can only be imported.
+   */
+  writable?: boolean
   direction: SyncDirection
   syncToken?: string
   ctag?: string
   url?: string
   lastSync?: number
+  /** Google cannot push changes of this calendar (holiday calendars): it is polled only. */
+  noPush?: boolean
+  /** Google: the calendar's own time zone, for events that do not name one. */
+  timeZone?: string
+  /** How the calendar's events were last brought in ('import' read-only, 'both' changeable); a switch refetches them. */
+  syncedAs?: 'import' | 'both'
 }
 
 export interface WatchChannel {
@@ -38,13 +49,26 @@ export interface AccountDoc {
   error?: string
   connectedAt: number
   calendars: Record<string, CalendarConfig>
+  /** The "GOOYA" calendar GOOYA made in this account for its tasks and schedules (Google id, iCloud URL). */
   exportCalendarId?: string
+  /** Copy GOOYA's tasks / schedules into that calendar; changes made there come back to GOOYA. */
   exportTasks?: boolean
   exportSchedules?: boolean
+  /** Where the export calendar's own changes were last read up to (Google sync token, iCloud ctag). */
+  exportSyncToken?: string
+  exportCtag?: string
   watch?: Record<string, WatchChannel>
   lastSync?: number
+  /** iCloud: the calendar home, where new calendars are made. */
   homeUrl?: string
 }
+
+/** Events of this calendar come into GOOYA. */
+export const importing = (c: CalendarConfig): boolean => c.direction === 'import' || c.direction === 'both'
+/** Events of this calendar can be changed in GOOYA, and the changes go back. */
+export const twoWay = (c: CalendarConfig): boolean => c.direction === 'both' && c.writable !== false
+/** GOOYA's tasks or schedules are copied into the account's "GOOYA" calendar. */
+export const exporting = (acc: Pick<AccountDoc, 'exportTasks' | 'exportSchedules'>): boolean => acc.exportTasks === true || acc.exportSchedules === true
 
 export function keyBytes(): Buffer {
   const hex = INTEGRATIONS_KEY.value().trim()
@@ -109,9 +133,13 @@ export function eventDocId(source: 'google' | 'apple', accountId: string, calend
   return `${source[0]}_${accountId}_${shortHash(`${calendarId}:${externalId}`, 20)}`
 }
 
-/** Google event ids must be [a-v0-9]{5,1024}; sha1 hex fits. */
+/**
+ * The Google event id of an exported task or schedule. Google allows only base32hex letters, a–v and digits, 5 to 1024
+ * of them: hex fits, and so does the "goo" in front ("gooya" did not: there is no y in base32hex, which Google answered
+ * with "Invalid resource id value.").
+ */
 export function googleEventIdFor(localId: string): string {
-  return `gooya${createHash('sha1').update(localId).digest('hex').slice(0, 30)}`
+  return `goo${createHash('sha1').update(localId).digest('hex').slice(0, 32)}`
 }
 
 export function nowMs(): number {

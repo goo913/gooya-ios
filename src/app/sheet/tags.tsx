@@ -40,35 +40,38 @@ export default function TagsSheet() {
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
       <SheetBar title="Tags" right={<BarButton onPress={() => router.back()}>Done</BarButton>} />
-      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
-        <View style={styles.chips}>
-          {value.map((t) => (
-            <Pressable key={t} onPress={() => change(value.filter((x) => x !== t))} style={[styles.chip, { backgroundColor: withAlpha(colors.blue, 0.15) }]}>
-              <Text style={[styles.chipText, { color: colors.blue }]}>#{t}</Text>
-              <Icon name="xmark" size={10} color={colors.blue} weight="bold" />
-            </Pressable>
-          ))}
-          {value.length === 0 ? <Text style={[styles.none, { color: colors.label3 }]}>No tags yet</Text> : null}
-        </View>
-        <Group>
-          <View style={styles.inputRow}>
-            <Text style={[styles.hash, { color: colors.label2 }]}>#</Text>
-            <TextInput value={input} onChangeText={setInput} placeholder="Add tag" placeholderTextColor={colors.label3} autoCapitalize="none" autoCorrect={false} returnKeyType="done" onSubmitEditing={() => add(input)} blurOnSubmit={false} autoFocus style={[styles.input, { color: colors.label }]} />
+      {/* Not the sheet's own scroll view (a form sheet would size that one over the bar): laid out under the bar. */}
+      <View collapsable={false} style={styles.fill}>
+        <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+          <View style={styles.chips}>
+            {value.map((t) => (
+              <Pressable key={t} onPress={() => change(value.filter((x) => x !== t))} style={[styles.chip, { backgroundColor: withAlpha(colors.blue, 0.15) }]}>
+                <Text style={[styles.chipText, { color: colors.blue }]}>#{t}</Text>
+                <Icon name="xmark" size={10} color={colors.blue} weight="bold" />
+              </Pressable>
+            ))}
+            {value.length === 0 ? <Text style={[styles.none, { color: colors.label3 }]}>No tags yet</Text> : null}
           </View>
-        </Group>
-        {suggestions.length ? (
-          <View style={styles.suggestWrap}>
-            <Text style={[styles.suggestTitle, { color: colors.label2 }]}>{needle ? "MATCHING" : "EXISTING TAGS"}</Text>
-            <View style={styles.chips}>
-              {suggestions.map((t) => (
-                <Pressable key={t} onPress={() => add(t)} style={[styles.chip, { backgroundColor: colors.fill3 }]}>
-                  <Text style={[styles.chipText, { color: colors.label }]}>#{t}</Text>
-                </Pressable>
-              ))}
+          <Group>
+            <View style={styles.inputRow}>
+              <Text style={[styles.hash, { color: colors.label2 }]}>#</Text>
+              <TextInput value={input} onChangeText={setInput} placeholder="Add tag" placeholderTextColor={colors.label3} autoCapitalize="none" autoCorrect={false} returnKeyType="done" onSubmitEditing={() => add(input)} blurOnSubmit={false} autoFocus style={[styles.input, { color: colors.label }]} />
             </View>
-          </View>
-        ) : null}
-      </ScrollView>
+          </Group>
+          {suggestions.length ? (
+            <View style={styles.suggestWrap}>
+              <Text style={[styles.suggestTitle, { color: colors.label2 }]}>{needle ? "MATCHING" : "EXISTING TAGS"}</Text>
+              <View style={styles.chips}>
+                {suggestions.map((t) => (
+                  <Pressable key={t} onPress={() => add(t)} style={[styles.chip, { backgroundColor: colors.fill3 }]}>
+                    <Text style={[styles.chipText, { color: colors.label }]}>#{t}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
+        </ScrollView>
+      </View>
     </View>
   );
 }

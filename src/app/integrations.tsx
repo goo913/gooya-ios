@@ -25,9 +25,10 @@ import { useColors } from "@/theme";
 const DIRECTIONS: { value: SyncDirection; label: string }[] = [
   { value: "off", label: "Off" },
   { value: "import", label: "Import" },
-  { value: "export", label: "Export" },
   { value: "both", label: "Two-way" },
 ];
+/** Calendars GOOYA may not change (holidays, subscriptions, calendars shared for viewing) are only imported. */
+const READ_ONLY_DIRECTIONS = DIRECTIONS.slice(0, 2);
 
 /** Settings → Calendar integrations: Google, iCloud, the Reminders bridge, the subscription feed. */
 export default function IntegrationsSheet() {
@@ -104,6 +105,8 @@ export default function IntegrationsSheet() {
     setBusy(accountId);
     try {
       await httpsCallable(functions, "syncNow")({ accountId });
+    } catch (e) {
+      setMessage(`Sync failed: ${String((e as Error).message ?? e).replace(/^\[?[\w/-]+\]?\s*/, "")}`);
     } finally {
       setBusy(null);
     }
@@ -122,7 +125,10 @@ export default function IntegrationsSheet() {
           </View>
         ) : null}
 
-        <Group header="Google Calendar" footer="Uses a separate Google consent step (calendar access). Import brings events into GOOYA; Export writes your tasks and schedules to a “GOOYA” calendar in your Google account; Two-way does both.">
+        <Group
+          header="Google Calendar"
+          footer="Import shows a calendar’s events in GOOYA. Two-way also lets you change, add and delete its events in GOOYA; the change is in Google within seconds, and changes made in Google come to GOOYA just as fast. Holiday and other read-only calendars can only be imported. The GOOYA calendar is a calendar GOOYA keeps in your Google account with your tasks and schedules: move, rename or delete one there and it changes in GOOYA too."
+        >
           {google.map((a) => (
             <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void syncNow(a.id)} />
           ))}
@@ -133,7 +139,7 @@ export default function IntegrationsSheet() {
 
         <Group
           header="Apple Calendar (iCloud)"
-          footer="Apple lets other apps into iCloud Calendar only with an app-specific password, never your Apple Account password. It is stored encrypted on GOOYA's server and never shown again; you can revoke it at account.apple.com at any time."
+          footer="Import and Two-way work as for Google: changes made in GOOYA are in iCloud within seconds; changes made in Apple Calendar come to GOOYA within 5 minutes (iCloud does not tell other apps sooner). Your Apple Reminders are in Apple Calendar already, so the GOOYA calendar here holds only GOOYA’s own tasks and your schedules. Apple lets other apps into iCloud Calendar only with an app-specific password, never your Apple Account password; it is stored encrypted on GOOYA’s server and you can revoke it at account.apple.com at any time."
         >
           {apple.map((a) => (
             <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void syncNow(a.id)} />
@@ -166,10 +172,10 @@ export default function IntegrationsSheet() {
 
         <Group
           header="Apple Reminders"
-          footer={`Your reminders from this iPhone show in GOOYA’s “Apple Reminders” list, for you and ${other.name}. Complete, rename or re-date one in GOOYA and it changes in Reminders too. They come in whenever you open GOOYA.`}
+          footer={`Two-way. Your Reminders lists are lists in GOOYA, in their own colours, for you and ${other.name}. Complete, rename, re-date, move or delete a reminder in GOOYA and it changes in Reminders; add a task to one of your Reminders lists in GOOYA and it is added to Reminders. Changes made in Reminders come in when you open GOOYA, and at once while it is open. ${other.name}’s changes to your reminders reach Reminders the next time GOOYA is open on this iPhone.`}
         >
-          <Row label="Show My Reminders">
-            <Switch label="Show my reminders" value={rem.enabled} onChange={(v) => void setRemindersEnabled(v)} />
+          <Row label="Sync My Reminders">
+            <Switch label="Sync my reminders" value={rem.enabled} onChange={(v) => void setRemindersEnabled(v)} />
           </Row>
           {rem.enabled ? (
             <Row label={rem.syncing ? "Syncing…" : "Sync Now"} labelColor={colors.blue} onPress={() => void syncReminders(true)}>
@@ -182,12 +188,28 @@ export default function IntegrationsSheet() {
           ) : null}
           {rem.access === "denied" ? <Row label="Allow Reminders in Settings" labelColor={colors.blue} onPress={() => void Linking.openSettings()} chevron /> : null}
           {rem.lastError ? <Text style={[styles.error, { color: colors.red, paddingTop: 10 }]}>{rem.lastError}</Text> : null}
+          {rem.enabled && rem.problems.length ? (
+            <View style={styles.problems}>
+              {rem.problems.map((p, i) => (
+                <Text key={i} style={[styles.small, { color: colors.orange }]}>
+                  {p}
+                </Text>
+              ))}
+            </View>
+          ) : null}
         </Group>
 
-        {rem.enabled && rem.lists.length > 1 ? (
-          <Group header="Reminders lists" footer="Only the ticked lists show in GOOYA.">
+        {rem.enabled && rem.lists.length ? (
+          <Group header="Reminders lists" footer="The ticked lists are in GOOYA. Lists marked read-only are subscribed or shared with you for viewing: GOOYA shows them but can’t change them.">
             {rem.lists.map((l) => (
-              <CheckRow key={l.id} color={l.color} checked={!rem.excluded.includes(l.id)} title={l.title} onPress={() => setReminderListIncluded(l.id, rem.excluded.includes(l.id))} />
+              <CheckRow
+                key={l.id}
+                color={l.color}
+                checked={!rem.excluded.includes(l.id)}
+                title={l.title}
+                subtitle={[l.isDefault ? "Default list" : null, l.writable ? null : "Read-only", l.source || null].filter(Boolean).join(" · ") || undefined}
+                onPress={() => setReminderListIncluded(l.id, rem.excluded.includes(l.id))}
+              />
             ))}
           </Group>
         ) : null}
@@ -213,38 +235,39 @@ function AccountRows({ account, me, busy, onSync }: { account: IntegrationAccoun
   const status = account.status === "error" ? "Error" : account.lastSync ? `Synced ${new Date(account.lastSync).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Connected";
   return (
     <>
-      <Row
-        label={
-          <View style={styles.inline}>
-            <SourceBadge source={account.source} size={16} color={colors.label} />
-            <Text style={[styles.email, { color: colors.label }]}>{account.email}</Text>
-          </View>
-        }
-      >
-        <Text style={[styles.small, { color: account.status === "error" ? colors.red : colors.label2 }]}>{status}</Text>
-      </Row>
-      {account.error ? <Text style={[styles.error, { color: colors.red }]}>{account.error}</Text> : null}
-      {calendars.map(([calId, c]) => (
-        <View key={calId} style={styles.calendar}>
-          <View style={styles.inline}>
-            <View style={[styles.dot, { backgroundColor: c.color }]} />
-            <Text numberOfLines={1} style={[styles.calName, { color: colors.label }]}>
-              {c.name}
-            </Text>
-            {c.primary ? <Text style={[styles.primary, { color: colors.label3 }]}>primary</Text> : null}
-          </View>
-          <Segmented<SyncDirection> options={DIRECTIONS} value={c.direction} onChange={(d) => void patchAccount(me, account.id, { calendars: { [calId]: { direction: d } } })} />
+      <View style={styles.account}>
+        <SourceBadge source={account.source} size={16} color={colors.label} />
+        <View style={styles.accountText}>
+          <Text style={[styles.email, { color: colors.label }]}>{account.email}</Text>
+          <Text style={[styles.small, { color: account.status === "error" ? colors.red : colors.label2 }]}>{status}</Text>
         </View>
-      ))}
-      <Row label="Export tasks">
-        <Switch label="Export tasks" value={account.exportTasks !== false} onChange={(v) => void patchAccount(me, account.id, { exportTasks: v })} />
+      </View>
+      {account.error ? <Text style={[styles.error, { color: colors.red }]}>{account.error}</Text> : null}
+      {calendars.map(([calId, c]) => {
+        const readOnly = c.writable === false;
+        // Before the server knew a calendar was read-only, Two-way could be chosen for one: it works as Import.
+        const direction: SyncDirection = readOnly && c.direction === "both" ? "import" : c.direction === "import" || c.direction === "both" ? c.direction : "off";
+        return (
+          <View key={calId} style={styles.calendar}>
+            <View style={styles.inline}>
+              <View style={[styles.dot, { backgroundColor: c.color }]} />
+              <Text numberOfLines={1} style={[styles.calName, { color: colors.label }]}>
+                {c.name}
+              </Text>
+              {c.primary ? <Text style={[styles.primary, { color: colors.label3 }]}>primary</Text> : null}
+              {readOnly ? <Text style={[styles.primary, { color: colors.label3 }]}>read-only</Text> : null}
+            </View>
+            <Segmented<SyncDirection> options={readOnly ? READ_ONLY_DIRECTIONS : DIRECTIONS} value={direction} onChange={(d) => void patchAccount(me, account.id, { calendars: { [calId]: { direction: d } } })} />
+          </View>
+        );
+      })}
+      <Row label={account.source === "google" ? "Tasks in a GOOYA calendar" : "GOOYA tasks in a GOOYA calendar"}>
+        <Switch label="Copy tasks to a GOOYA calendar" value={account.exportTasks === true} onChange={(v) => void patchAccount(me, account.id, { exportTasks: v })} />
       </Row>
-      <Row label="Export schedules">
-        <Switch label="Export schedules" value={account.exportSchedules !== false} onChange={(v) => void patchAccount(me, account.id, { exportSchedules: v })} />
+      <Row label="Schedules in a GOOYA calendar">
+        <Switch label="Copy schedules to a GOOYA calendar" value={account.exportSchedules === true} onChange={(v) => void patchAccount(me, account.id, { exportSchedules: v })} />
       </Row>
-      <Row label="Sync now" labelColor={colors.blue} onPress={onSync}>
-        {busy ? <Text style={[styles.small, { color: colors.label2 }]}>Syncing…</Text> : null}
-      </Row>
+      <Row label={busy ? "Syncing…" : "Sync Now"} labelColor={colors.blue} onPress={busy ? undefined : onSync} />
       <DestructiveButton onPress={() => void deleteAccount(me, account.id)}>Disconnect {account.source === "google" ? "Google" : "iCloud"}</DestructiveButton>
     </>
   );
@@ -258,10 +281,13 @@ const styles = StyleSheet.create({
   small: { fontSize: 13 },
   error: { paddingHorizontal: 16, paddingBottom: 12, fontSize: 13 },
   steps: { paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
+  problems: { paddingHorizontal: 16, paddingVertical: 10, gap: 6 },
   step: { fontSize: 15, lineHeight: 21 },
   demo: { paddingHorizontal: 32, fontSize: 12 },
   inline: { flexDirection: "row", alignItems: "center", gap: 8 },
   email: { fontSize: 17 },
+  account: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingVertical: 10 },
+  accountText: { flex: 1, gap: 2 },
   calendar: { paddingHorizontal: 16, paddingVertical: 8, gap: 8 },
   dot: { width: 12, height: 12, borderRadius: 6 },
   calName: { fontSize: 15, flexShrink: 1 },

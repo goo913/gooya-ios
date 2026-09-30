@@ -9,7 +9,9 @@ The first time it makes the native project (`npx expo prebuild`), fetches the li
 
 Sign in with Google (goochoi913@gmail.com or evapark7147@gmail.com; any other account is refused). Notifications: allow them when asked (Settings → Notifications in the app turns them on later).
 
-**Apple Reminders:** Settings (the gear) → Calendar integrations → Apple Reminders → turn on **Show My Reminders** → **Allow** when iOS asks. Your reminders appear in the “Apple Reminders” list and on the calendar (for both of you), and completing, renaming or re-dating one in GOOYA changes it in Reminders. It syncs whenever GOOYA opens; **Sync Now** does it on the spot. Pick which Reminders lists show under **Reminders lists**. (No Shortcut is needed any more.)
+**Apple Reminders (two-way):** Settings (the gear) → Calendar integrations → Apple Reminders → turn on **Sync My Reminders** → **Allow** when iOS asks. Each of your Reminders lists becomes a list in GOOYA, in its own colour (Lists → **My Reminders**; 은비 sees them as “구야's Reminders”). Complete, rename, re-date, re-prioritise, move or delete a reminder in GOOYA and it changes in Reminders; a task added to one of those lists in GOOYA (new tasks go to your default Reminders list) is added to Reminders; a task moved to one of GOOYA's own lists leaves Reminders. Changes made in Reminders come in when GOOYA opens, and at once while it is open; **Sync Now** does it on the spot. 은비's changes to your reminders reach Reminders the next time GOOYA is open on your iPhone. Untick lists under **Reminders lists** to leave them out; lists shared with you for viewing are read-only. Repeats are set in the Reminders app. Reminders alerts at a reminder's due time itself, so GOOYA's push is only for early reminders.
+
+**Google Calendar and iCloud (two-way):** Settings → Calendar integrations → connect an account, then choose per calendar: **Import** shows its events in GOOYA; **Two-way** also lets you change, add (the + button → Event) and delete them in GOOYA, and the change is in Google or iCloud within seconds (Google's changes come back as fast; iCloud's within 5 minutes). Read-only calendars (holidays, subscriptions, shared for viewing) offer only Import. **Tasks / Schedules in a GOOYA calendar** keep a calendar named GOOYA in that account with your tasks and schedules; moving, renaming or deleting one there changes it in GOOYA too (in iCloud's, only GOOYA's own tasks: your reminders are in Apple Calendar already).
 
 **The widget:** touch and hold an empty spot on the Home Screen → **Edit** (top left) → **Add Widget** → search **GOOYA** → pick a size → **Add Widget**. Small: today (or what is next). Medium: today's date and schedules, then the week's tasks. Large: the month with a dot per person and day, then the next tasks. It also offers Lock Screen sizes. Touch and hold the widget → **Edit Widget** → **Show** picks both of you, only you or only 은비. It updates within seconds of a change in the app, and on its own every half hour (from the server, so 은비's additions show up with the app closed).
 
@@ -34,6 +36,6 @@ Both make their own simulator ("GOOYA Demo", "GOOYA Live"). Ctrl+C stops the dev
 ```bash
 npm run typecheck   # the app, with shared/
 npm run lint
-npm test            # shared/ unit tests (recurrence, normalisation, widget feed)
+npm test            # unit tests: shared/ (recurrence, Reminders merge, calendar copies, widget feed) and the iCloud calendar-data edits
 cd functions && npx tsc --noEmit -p tsconfig.json
 ```

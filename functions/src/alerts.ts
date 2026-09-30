@@ -28,11 +28,14 @@ function queueId(taskId: string, dateKey: string, offsetMin: number): string {
 /**
  * Alert instants for a task's occurrences in the rolling window: the due-time
  * alert itself (offset 0; 9:00 AM for date-only tasks) plus early reminders.
+ * A task that is one of its owner's Apple Reminders gets no due-time alert from
+ * GOOYA: Reminders alerts at the due time on the owner's iPhone already.
  */
 export function desiredEntries(task: Task, now = Date.now()): Map<string, QueueEntry> {
   const out = new Map<string, QueueEntry>()
   if (!task.dueDate) return out
-  const alerts = [0, ...(task.earlyReminders ?? []).filter((a) => typeof a === 'number' && a > 0)]
+  const early = (task.earlyReminders ?? []).filter((a) => typeof a === 'number' && a > 0)
+  const alerts = task.source === 'apple-reminders' ? early : [0, ...early]
   const rangeStart = now - GRACE_MS - 8 * DAY_MS // alerts up to a week ahead of far-off occurrences
   const rangeEnd = now + WINDOW_DAYS * DAY_MS
   const occurrences: TaskOccurrence[] = expandTask(task, rangeStart, rangeEnd + 8 * DAY_MS)

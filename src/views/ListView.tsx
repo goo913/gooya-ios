@@ -7,13 +7,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TaskRing } from "@/components/Chips";
 import { MONTH_SHORT, WEEKDAY_LONG, formatTime } from "@/lib/format";
 import { useEventsByDay, useTasksByDay } from "@/lib/occurrences";
-import { colorHex, useFilteredPeople, usePerson } from "@/lib/people";
+import { useFilteredPeople, usePerson, useTaskColor } from "@/lib/people";
 import { setCompleted } from "@/lib/taskOps";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useNav } from "@/store/nav";
 import { useSheets } from "@/store/sheets";
-import { useColors, useIsDark } from "@/theme";
+import { useColors } from "@/theme";
 
 const PAST_DAYS = 14;
 const FUTURE_DAYS = 120;
@@ -118,10 +118,9 @@ export function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
 
 export function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
   const colors = useColors();
-  const dark = useIsDark();
   const person = usePerson(occ.task.owner);
   const list = useData((s) => s.lists.find((l) => l.id === occ.task.listId));
-  const ring = colorHex(person.color, dark);
+  const ring = useTaskColor(occ.task);
   const bangs = ["", "!", "!!", "!!!"][occ.task.priority ?? 0];
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
