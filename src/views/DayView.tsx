@@ -1,7 +1,7 @@
 import type { DateKey, EventOccurrence, ScheduleOccurrence, TaskOccurrence } from "@shared/model";
 import { otherPerson, type PersonKey } from "@shared/people";
 import { splitByDay } from "@shared/recurrence";
-import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
+import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, keyInZone, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
@@ -16,7 +16,7 @@ import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib
 import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
 import { applyTaskEdit, deleteTaskScope, movedFields, setCompleted, type TaskFields } from "@/lib/taskOps";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
-import { deleteSchedule } from "@/lib/db";
+import { deleteSchedule, patchEvent } from "@/lib/db";
 import { useNav } from "@/store/nav";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
@@ -289,6 +289,20 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
     ]);
   }, []);
 
+  // An event of a two-way calendar dragged to another time or day: the change goes to Google or iCloud.
+  const commitEventMove = useCallback((seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => {
+    const { event, dateKey } = seg.occ;
+    const start = zonedMs(date, formatHHmm(Math.floor(startMin / 60), startMin % 60), viewerTz);
+    const delta = start - seg.occ.start;
+    const days = (s: number, e: number) => ({ startDate: keyInZone(s, event.timezone), endDate: keyInZone(Math.max(s, e - 1), event.timezone) });
+    const all = () => void patchEvent(event.id, { start: event.start + delta, end: event.end + delta, ...days(event.start + delta, event.end + delta) });
+    if (!event.rrule) return all();
+    sheet([
+      { label: "Save for This Event Only", onSelect: () => void patchEvent(event.id, { overrides: { ...(event.overrides ?? {}), [dateKey]: { ...(event.overrides?.[dateKey] ?? {}), start, end: seg.occ.end + delta } } }) },
+      { label: "Save for All Events", onSelect: all },
+    ]);
+  }, []);
+
   const hours = Array.from({ length: 24 }, (_, i) => i + 1);
   const secondaryLabels = useMemo(() => {
     if (!secondGutter) return null;
@@ -453,6 +467,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                             onScheduleMenu={scheduleMenu}
                             onTaskMenu={taskMenu}
                             onMove={commitMove}
+                            onMoveEvent={commitEventMove}
                           />
                         ))}
                         {date === today ? <View pointerEvents="none" style={[styles.nowLine, { backgroundColor: colors.red, top: (nowMin / 60) * hourH - 1 }]} /> : null}
@@ -488,9 +503,10 @@ interface SubColumnProps {
   onScheduleMenu: (occ: ScheduleOccurrence) => void;
   onTaskMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
+  onMoveEvent: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
 }
 
-const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, actions, onScheduleMenu, onTaskMenu, onMove }: SubColumnProps) {
+const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, actions, onScheduleMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
   const longPress = useMemo(
     () =>
       Gesture.LongPress()
@@ -509,7 +525,7 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
           <ScheduleBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onScheduleMenu} onTap={actions.openSchedule} />
         ))}
         {data.events.map((seg) => (
-          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} onTap={actions.openEvent} />
+          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} onTap={actions.openEvent} onMove={onMoveEvent} />
         ))}
         {data.timed.map((seg) => (
           <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} />
@@ -540,13 +556,83 @@ const ScheduleBand = memo(function ScheduleBand({ seg, info, hourH, metrics, int
   );
 });
 
+interface EventBlockProps {
+  seg: Seg<EventOccurrence>;
+  hourH: number;
+  metrics: Metrics;
+  dark: boolean;
+  colors: Colors;
+  date: DateKey;
+  subW: number;
+  subIndex: number;
+  subCols: { date: DateKey; person: PersonKey }[];
+  onTap: (occ: EventOccurrence) => void;
+  onMove: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
+}
+
 /**
  * Imported event block, as Apple Calendar draws an event: its calendar's colour over the background, a rounded 3-point
- * bar inset at the left, the title in the calendar's colour, the time under it when there is room.
+ * bar inset at the left, the title in the calendar's colour, the time under it when there is room. An event of a
+ * two-way calendar can be lifted with a long press and dragged to another time or day (its own person's columns).
  */
-const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, onTap }: { seg: Seg<EventOccurrence>; hourH: number; metrics: Metrics; dark: boolean; colors: Colors; onTap: (occ: EventOccurrence) => void }) {
+const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, onTap, onMove }: EventBlockProps) {
+  const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
+  const [lifted, setLifted] = useState(false);
+  const previewRef = useRef<{ startMin: number; dx: number; target: number } | null>(null);
+  const moved = useRef(false);
   const c = seg.occ.event.color || colors.blue;
-  const top = (seg.startMin / 60) * hourH;
+  const snap = snapFor(hourH);
+  const movable = seg.occ.event.editable && !seg.occ.allDay;
+  // Columns go day by day, a column per person: the same person's column on another day is this many columns away.
+  const perDay = Math.max(1, new Set(subCols.map((s) => s.person)).size);
+  const showPreview = useCallback((p: { startMin: number; dx: number; target: number } | null) => {
+    previewRef.current = p;
+    setPreview(p);
+  }, []);
+  const onPanStart = useCallback(() => {
+    moved.current = false;
+    setLifted(true);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+  const onPanUpdate = useCallback(
+    (e: { translationX: number; translationY: number }) => {
+      if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
+      moved.current = true;
+      const deltaMin = Math.round(((e.translationY / hourH) * 60) / snap) * snap;
+      const startMin = Math.min(24 * 60 - snap, Math.max(0, seg.startMin + deltaMin));
+      const days = subIndex < 0 ? 0 : Math.round(e.translationX / (subW * perDay));
+      const target = subIndex < 0 ? -1 : Math.max(subIndex % perDay, Math.min(subCols.length - perDay + (subIndex % perDay), subIndex + days * perDay));
+      showPreview({ startMin, dx: target < 0 ? 0 : (target - subIndex) * subW, target });
+    },
+    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, perDay, showPreview],
+  );
+  const onPanEnd = useCallback(() => {
+    const p = previewRef.current;
+    setLifted(false);
+    showPreview(null);
+    if (!p || !moved.current) return;
+    const targetDate = p.target >= 0 ? subCols[p.target].date : date;
+    if (p.startMin !== seg.startMin || targetDate !== date) onMove(seg, p.startMin, targetDate);
+  }, [subCols, date, seg, onMove, showPreview]);
+  // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
+  /* eslint-disable react-hooks/refs */
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(movable)
+        .runOnJS(true)
+        .activateAfterLongPress(420)
+        .onStart(onPanStart)
+        .onUpdate(onPanUpdate)
+        .onEnd(onPanEnd)
+        .onFinalize(() => setLifted(false)),
+    [movable, onPanStart, onPanUpdate, onPanEnd],
+  );
+  /* eslint-enable react-hooks/refs */
+  const tap = useMemo(() => Gesture.Tap().runOnJS(true).onEnd(() => onTap(seg.occ)), [onTap, seg.occ]);
+  const gesture = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
+  const startMin = preview?.startMin ?? seg.startMin;
+  const top = (startMin / 60) * hourH;
   const height = Math.max(metrics.eventTitle * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
   const text = readableTint(c, dark);
   const titleH = metrics.eventTitle * 1.25;
@@ -555,25 +641,32 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   const avail = height - 4;
   const showTime = !seg.occ.allDay && avail >= titleH + timeH;
   const titleLines = Math.max(1, Math.floor((avail - (showTime ? timeH : 0)) / titleH));
+  const shownStart = preview ? seg.start + (preview.startMin - seg.startMin) * 60_000 : seg.start;
+  const shownEnd = preview ? seg.end + (preview.startMin - seg.startMin) * 60_000 : seg.end;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={seg.occ.title}
-      onPress={() => onTap(seg.occ)}
-      style={[styles.event, { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}
-    >
-      <View style={[styles.eventBar, { backgroundColor: c }]} />
-      <View style={styles.eventText}>
-        <Text allowFontScaling={false} numberOfLines={titleLines} style={[styles.eventTitle, { color: text, fontSize: metrics.eventTitle, lineHeight: titleH }]}>
-          {seg.occ.title}
-        </Text>
-        {showTime ? (
-          <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
-            {formatTime(seg.start, viewerTz)} – {formatTime(seg.end, viewerTz)}
+    <GestureDetector gesture={gesture}>
+      <View
+        accessibilityRole="button"
+        accessibilityLabel={seg.occ.title}
+        style={[
+          styles.event,
+          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2), zIndex: lifted ? 40 : undefined, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
+          lifted && styles.pillLifted,
+        ]}
+      >
+        <View style={[styles.eventBar, { backgroundColor: c }]} />
+        <View style={styles.eventText}>
+          <Text allowFontScaling={false} numberOfLines={titleLines} style={[styles.eventTitle, { color: text, fontSize: metrics.eventTitle, lineHeight: titleH }]}>
+            {seg.occ.title}
           </Text>
-        ) : null}
+          {showTime ? (
+            <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
+              {formatTime(shownStart, viewerTz)} – {formatTime(shownEnd, viewerTz)}
+            </Text>
+          ) : null}
+        </View>
       </View>
-    </Pressable>
+    </GestureDetector>
   );
 });
 

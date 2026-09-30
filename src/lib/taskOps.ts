@@ -74,6 +74,9 @@ export async function setCompleted(task: Task, dateKey: DateKey | null, complete
 
 /** Apply edited fields with Apple's "this only / future" semantics. */
 export async function applyTaskEdit(task: Task, occ: TaskOccurrence | null, fields: TaskFields, scope: EditScope): Promise<void> {
+  // A reminder given to the other person is no longer its owner's reminder: it becomes a GOOYA task (the owner's
+  // iPhone then takes it out of their Reminders; it becomes one of the new owner's reminders if it is in their list).
+  if (reminderIdOf(task) && fields.owner !== task.owner) await patchTask(task.id, { source: 'gooya', externalRefs: [] })
   await applyEdit(task, occ, fields, scope)
   if (touchesReminders(task, fields.listId)) syncRemindersSoon()
 }
