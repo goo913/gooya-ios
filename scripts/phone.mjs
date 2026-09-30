@@ -246,13 +246,21 @@ function xcodebuild(args, { cwd, env, log }) {
   });
 }
 
-function explainXcodeProblem(log) {
+/** What to do when a device says Developer Mode is off (iOS asks twice: the switch, then Turn On after the restart). */
+const developerModeSteps = (kind) => [
+  `Developer Mode is off on the ${kind}, as far as Xcode can tell. On the ${kind}:`,
+  "  1. Settings → Privacy & Security → Developer Mode (at the bottom) → on → Restart.",
+  `  2. After it restarts, unlock it: it asks "Turn On Developer Mode?" → Turn On, and enter the passcode.`,
+  `  3. Unplug the cable and plug it in again (Xcode reads the setting when the ${kind} connects), keep the ${kind} unlocked, and run this again.`,
+];
+
+function explainXcodeProblem(log, kind = "iPhone") {
   const text = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter((l) => /error|fail|denied|unable|invalid|requires/i.test(l)).join("\n") : "";
   const known = [
     [/PLA Update|Program License Agreement|agreement.*(accept|updated)/i, "Apple needs the team's account holder to accept an updated agreement: sign in at https://developer.apple.com/account and accept it. Then run this again."],
     [/No Accounts?\b|No account for team|not signed in|sign in with your Apple ID/i, "Xcode isn't signed in to the Apple ID that is on HyberTec LLC's team: Xcode → Settings… → Accounts → +. Then run this again."],
-    [/Developer Mode/i, "Turn on Developer Mode on the iPhone: Settings → Privacy & Security → Developer Mode. Then run this again."],
-    [/device is locked|is passcode protected/i, "Unlock the iPhone and keep it unlocked while the app installs, then run this again."],
+    [/Developer Mode/i, developerModeSteps(kind).join("\n")],
+    [/device is locked|is passcode protected/i, `Unlock the ${kind} and keep it unlocked while the app installs, then run this again.`],
     [/cannot be registered to your development team|identifier .* is not available/i, `The app id ${APP_ID} is taken by another Apple team. Ask Claude Code: "the app id is taken".`],
     [/No profiles for|requires a provisioning profile|provisioning profile|No signing certificate/i, `Xcode couldn't set up the signing for team ${TEAM.id} (${TEAM.name}). Check Xcode → Settings… → Accounts lists the Apple ID with that team, then run this again.`],
     [/Cloud signing permission error|cloud-managed distribution certificates/i, "Apple refused the team's cloud-managed App Store certificate: the Apple ID in Xcode must be an Admin on HyberTec LLC's team, or have \"Access to Cloud Managed Distribution Certificate\" in App Store Connect → Users and Access."],
@@ -363,8 +371,28 @@ function connectedIphone(env, kind = "iPhone") {
   }
   const name = phone.deviceProperties?.name ?? `your ${kind}`;
   if (phone.connectionProperties?.pairingState && phone.connectionProperties.pairingState !== "paired") stop([`${name} doesn't trust this Mac yet. Unlock it, and when it asks "Trust This Computer?", tap Trust. Then run this again.`]);
-  if (phone.deviceProperties?.developerModeStatus === "disabled") stop([`Developer Mode is off on ${name}: Settings → Privacy & Security → Developer Mode → on → Restart. Then run this again.`]);
-  return { name, udid: phone.hardwareProperties?.udid ?? phone.identifier };
+  if (phone.deviceProperties?.developerModeStatus === "disabled") stop(developerModeSteps(kind));
+  const udid = phone.hardwareProperties?.udid ?? phone.identifier;
+  // What Xcode itself says of the device (it can still call Developer Mode off after the switch was turned on, until
+  // the device is plugged in again): said now, instead of after a build that waits for the device and gives up.
+  const problem = xcodeDeviceProblem(env, udid);
+  if (problem) stop(/Developer Mode/i.test(problem) ? developerModeSteps(kind) : [`Xcode can't use ${name} yet: ${problem}`, `Unlock the ${kind}, unplug it and plug it in again, then run this again.`]);
+  return { name, udid };
+}
+
+/** Xcode's own reason a device can't be built for (xcdevice), or null. */
+function xcodeDeviceProblem(env, udid) {
+  const out = read("xcrun", ["xcdevice", "list", "--timeout", "8"], { env });
+  if (!out) return null;
+  try {
+    const device = JSON.parse(out.slice(out.indexOf("["))).find((d) => d.identifier === udid);
+    const error = device?.error;
+    // "preparing the device for development" goes on by itself while it stays unlocked.
+    if (!error || /prepar/i.test(`${error.description ?? ""} ${error.failureReason ?? ""}`)) return null;
+    return [error.description, error.recoverySuggestion].filter(Boolean).join(" ");
+  } catch {
+    return null;
+  }
 }
 
 function readProfile(file) {
@@ -391,13 +419,13 @@ async function iphone(kind = "iPhone") {
       "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration", `DEVELOPMENT_TEAM=${TEAM.id}`, "CODE_SIGN_STYLE=Automatic", "COMPILER_INDEX_STORE_ENABLE=NO", "build"],
     { cwd: iosDir, env, log },
   );
-  if (!built) stop([`The app didn't build for ${phone.name}.`, ...explainXcodeProblem(log)]);
+  if (!built) stop([`The app didn't build for ${phone.name}.`, ...explainXcodeProblem(log, kind)]);
   const app = path.join(derived, "Build", "Products", "Release-iphoneos", `${scheme}.app`);
   step(`Installing it on ${phone.name} (keep the ${kind} unlocked)`);
   const installLog = logFile("iphone-install.log");
   const installed = spawnSync("xcrun", ["devicectl", "device", "install", "app", "--device", phone.udid, app], { env, encoding: "utf8" });
   fs.writeFileSync(installLog, `${installed.stdout ?? ""}${installed.stderr ?? ""}`);
-  if (installed.status !== 0) stop([`The app built but didn't install on ${phone.name}.`, tail(installLog, 8), ...explainXcodeProblem(installLog)]);
+  if (installed.status !== 0) stop([`The app built but didn't install on ${phone.name}.`, tail(installLog, 8), ...explainXcodeProblem(installLog, kind)]);
   const launched = spawnSync("xcrun", ["devicectl", "device", "process", "launch", "--terminate-existing", "--device", phone.udid, APP_ID], { env, encoding: "utf8" });
   const expires = readProfile(path.join(app, "embedded.mobileprovision"))?.expires ?? null;
   console.log(`\n✓ ${APP_NAME} is on ${phone.name}, and runs without the Mac. Sign in with Google.`);
