@@ -1,13 +1,16 @@
 // iCloud events as calendar data (iCalendar), read and changed in place: GOOYA rewrites only what it shows (title,
 // notes, place, times, deleted or changed occurrences) and leaves alerts, invitees, links and everything else as they
-// were. Also reads the copies in GOOYA's own iCloud calendar back into plain values (shared/calendarCopy.ts).
+// were; those it only reads, for the event's details. Also reads the copies in GOOYA's own iCloud calendar back into
+// plain values (shared/calendarCopy.ts).
 
 import ICAL from 'ical.js'
 import { randomUUID } from 'node:crypto'
-import type { CalendarEvent, DateKey, EventOverride, Schedule } from '../../../shared/model'
+import type { AttendeeStatus, CalendarEvent, DateKey, EventAttendee, EventConference, EventOverride, Schedule } from '../../../shared/model'
 import type { CalendarCopy, CopyOccurrence } from '../../../shared/calendarCopy'
+import { findConference, providerOf } from '../../../shared/conference'
 import { scheduleAsEvent } from '../../../shared/schedules'
 import { addDaysKey, fieldsInZone, keyInZone, makeKey, pad2, zonedMs } from '../../../shared/time'
+import { alertList, attendee, invitees, organizerOf, type EventDetails } from './eventDetails'
 
 function isZone(tz: string): boolean {
   try {
@@ -190,10 +193,15 @@ export interface ParsedIcsEvent {
   overrides: Record<DateKey, EventOverride>
   /** LAST-MODIFIED, else DTSTAMP (ms), else 0. */
   updated: number
+  /** Invitees and organizer, the video call, the URL, busy or free, alerts (icsDetails). */
+  details: EventDetails
 }
 
-/** An iCloud calendar object as a GOOYA event's fields; floating times are on `defaultTz`'s clock. */
-export function parseIcsEvent(data: string, defaultTz: string): ParsedIcsEvent | null {
+/**
+ * An iCloud calendar object as a GOOYA event's fields; floating times are on `defaultTz`'s clock. `accountEmail` is the
+ * iCloud account's address: the invitee (or organizer) with it is the calendar's owner.
+ */
+export function parseIcsEvent(data: string, defaultTz: string, accountEmail?: string): ParsedIcsEvent | null {
   let cal: ICAL.Component
   try {
     cal = new ICAL.Component(ICAL.parse(data))
@@ -253,6 +261,83 @@ export function parseIcsEvent(data: string, defaultTz: string): ParsedIcsEvent |
     exdates: [...exdateKeys(master, tz)],
     overrides,
     updated: stamp ? stamp.toJSDate().getTime() : 0,
+    details: icsDetails(master, masterLocation, masterNotes, accountEmail),
+  }
+}
+
+/** A parameter's value as text (ical.js gives a list for the parameters that can have several). */
+function param(p: ICAL.Property, name: string): string {
+  const v = p.getParameter(name)
+  return String((Array.isArray(v) ? v[0] : v) ?? '').trim()
+}
+
+/** The address of an ATTENDEE or ORGANIZER: its mailto:, else the EMAIL parameter iCloud gives its own users (urn:uuid:…). */
+function addressOf(p: ICAL.Property): string | null {
+  const value = String(p.getFirstValue() ?? '').trim()
+  if (/^mailto:/i.test(value)) return value.slice(7).trim() || null
+  return param(p, 'email') || null
+}
+
+const PARTSTAT: Record<string, AttendeeStatus> = { ACCEPTED: 'accepted', DECLINED: 'declined', TENTATIVE: 'tentative', 'NEEDS-ACTION': 'needsAction' }
+
+/**
+ * Alerts set before the start, in minutes: TRIGGER:-PT30M is 30, -P1D is 1440, at the start 0. Alerts at a set time,
+ * after the start or counted from the end say no "minutes before", and are left out, as are ACTION:NONE placeholders
+ * and email alarms (an email, not an alert on the phone, as with Google's email reminders).
+ */
+function alertsOf(v: ICAL.Component): number[] {
+  const out: number[] = []
+  for (const alarm of v.getAllSubcomponents('valarm')) {
+    if (/^(NONE|EMAIL)$/i.test(String(alarm.getFirstPropertyValue('action') ?? ''))) continue
+    const trigger = alarm.getFirstProperty('trigger')
+    const value = trigger?.getFirstValue()
+    if (!trigger || !(value instanceof ICAL.Duration) || param(trigger, 'related').toUpperCase() === 'END') continue
+    const seconds = value.toSeconds()
+    if (seconds <= 0) out.push(Math.round(Math.abs(seconds) / 60))
+  }
+  return out
+}
+
+const httpLink = (v: unknown): string | null => (typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim()) ? v.trim() : null)
+
+/** The video call: the one Google or Microsoft wrote into the invitation, else a call link in the place, URL or notes. */
+function callOf(v: ICAL.Component, location: string, url: string, notes: string): EventConference | null {
+  const meet = httpLink(v.getFirstPropertyValue('x-google-conference'))
+  if (meet) return { name: providerOf(meet) ?? 'Google Meet', url: meet }
+  const teams = httpLink(v.getFirstPropertyValue('x-microsoft-skypeteamsmeetingurl')) ?? httpLink(v.getFirstPropertyValue('x-microsoft-onlinemeetingconflink'))
+  if (teams) return { name: providerOf(teams) ?? 'Microsoft Teams', url: teams }
+  return findConference(location, url, notes)
+}
+
+/**
+ * What else an iCloud event says, for its details: its invitees and organizer (rooms left out), the video call, its URL,
+ * busy or free (TRANSP), and its alerts. The one whose address is `accountEmail`, the iCloud account's, is the owner.
+ */
+function icsDetails(v: ICAL.Component, location: string, notes: string, accountEmail: string | undefined): EventDetails {
+  const mine = accountEmail?.trim().toLowerCase()
+  const isMine = (email: string) => !!mine && email.toLowerCase() === mine
+  const orgProp = v.getFirstProperty('organizer')
+  const orgEmail = orgProp ? addressOf(orgProp) : null
+  const organizer = orgProp && orgEmail ? organizerOf(orgEmail, param(orgProp, 'cn'), isMine(orgEmail)) : null
+  const people: EventAttendee[] = []
+  for (const p of v.getAllProperties('attendee')) {
+    if (/^(ROOM|RESOURCE)$/i.test(param(p, 'cutype'))) continue
+    const email = addressOf(p)
+    if (!email) continue
+    const flags = { organizer: !!organizer && email.toLowerCase() === organizer.email.toLowerCase(), self: isMine(email), optional: param(p, 'role').toUpperCase() === 'OPT-PARTICIPANT' }
+    people.push(attendee(email, param(p, 'cn'), PARTSTAT[param(p, 'partstat').toUpperCase()] ?? 'needsAction', flags))
+  }
+  // The organizer is one of the people at it, though not every calendar writes them among the attendees.
+  if (people.length && organizer && !people.some((a) => a.organizer)) people.unshift(attendee(organizer.email, organizer.name, 'accepted', { organizer: true, self: organizer.self }))
+  const url = String(v.getFirstPropertyValue('url') ?? '').trim()
+  const conference = callOf(v, location, url, notes)
+  const alerts = alertList(alertsOf(v))
+  return {
+    ...invitees(people, organizer),
+    ...(conference ? { conference } : {}),
+    ...(url ? { url } : {}),
+    showAs: String(v.getFirstPropertyValue('transp') ?? '').toUpperCase() === 'TRANSPARENT' ? 'free' : 'busy',
+    ...(alerts ? { alerts } : {}),
   }
 }
 

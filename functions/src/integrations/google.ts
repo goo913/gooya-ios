@@ -5,7 +5,7 @@ import { logger } from 'firebase-functions'
 // The Calendar API's own small client (the full googleapis package pushed functions past their memory limit).
 import { auth as googleAuth, calendar as googleCalendar, type calendar_v3 } from '@googleapis/calendar'
 import { createHash, randomUUID } from 'node:crypto'
-import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
+import type { AttendeeStatus, CalendarEvent, Schedule, Task } from '../../../shared/model'
 import { deletedInCalendar, plainNotes, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type CalendarCopy, type ScheduleCopy } from '../../../shared/calendarCopy'
 import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
@@ -32,6 +32,7 @@ import {
   type AccountDoc,
   type CalendarConfig,
 } from './common'
+import { googleAlerts, googleDetails } from './eventDetails'
 
 const SCOPES = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/userinfo.email']
 const REDIRECT_URI = `${FUNCTIONS_URL}/googleAuthCallback`
@@ -108,6 +109,10 @@ function calendarsFromGoogle(items: calendar_v3.Schema$CalendarListEntry[], exis
     // 'export' was a direction before the export became a per-account switch.
     let direction: CalendarConfig['direction'] = prev?.direction === 'import' || prev?.direction === 'both' ? prev.direction : 'off'
     if (direction === 'both' && !writable) direction = 'import'
+    const defaultAlerts = googleAlerts(c.defaultReminders)
+    // Default alerts changed in Google: every event is read again, so the ones that keep the defaults have the new
+    // alerts (Google does not list those events as changed).
+    const sameDefaults = !prev?.defaultAlerts || stableJson(prev.defaultAlerts) === stableJson(defaultAlerts)
     out[c.id] = {
       name: c.summaryOverride || c.summary || c.id,
       color: c.backgroundColor ?? '#4285f4',
@@ -115,7 +120,8 @@ function calendarsFromGoogle(items: calendar_v3.Schema$CalendarListEntry[], exis
       writable,
       direction,
       ...(c.timeZone ? { timeZone: c.timeZone } : {}),
-      ...(prev?.syncToken && direction !== 'off' ? { syncToken: prev.syncToken } : {}),
+      defaultAlerts,
+      ...(prev?.syncToken && direction !== 'off' && sameDefaults ? { syncToken: prev.syncToken } : {}),
       ...(prev?.syncedAs && direction !== 'off' ? { syncedAs: prev.syncedAs } : {}),
       ...(prev?.lastSync ? { lastSync: prev.lastSync } : {}),
       ...(prev?.noPush ? { noPush: true } : {}),
@@ -224,8 +230,11 @@ function rruleFromGoogle(recurrence: string[] | null | undefined): { rrule: stri
   return { rrule, exdates }
 }
 
-/** A Google event as a GOOYA event. `zone` is the calendar's time zone, for events that do not name their own. */
-function toEvent(person: PersonKey, accountId: string, calendarId: string, cfg: Pick<CalendarConfig, 'name' | 'color' | 'timeZone'>, editable: boolean, e: calendar_v3.Schema$Event): CalendarEvent | null {
+/**
+ * A Google event as a GOOYA event, with its invitees, call, alerts and the rest of its details (googleDetails). The
+ * calendar's time zone is for events that do not name their own; its default alerts for events that keep them.
+ */
+function toEvent(person: PersonKey, accountId: string, calendarId: string, cfg: Pick<CalendarConfig, 'name' | 'color' | 'timeZone' | 'defaultAlerts'>, editable: boolean, e: calendar_v3.Schema$Event): CalendarEvent | null {
   if (!e.id) return null
   const allDay = !!e.start?.date
   const tz = e.start?.timeZone || cfg.timeZone || PEOPLE[person].timezone
@@ -272,6 +281,7 @@ function toEvent(person: PersonKey, accountId: string, calendarId: string, cfg: 
     editable,
     etag: e.etag ?? '',
     updatedAt: Date.parse(e.updated ?? '') || Date.now(),
+    ...googleDetails(e, cfg.defaultAlerts),
   }
 }
 
@@ -280,6 +290,19 @@ function occurrenceKey(inst: calendar_v3.Schema$Event, tz: string): string | nul
   const orig = inst.originalStartTime?.date ?? inst.originalStartTime?.dateTime
   if (!orig) return null
   return inst.originalStartTime?.date ?? keyInZone(Date.parse(orig), tz)
+}
+
+/**
+ * A read without a sync token only goes back to `since` (120 days): the days of a repeating event before that which were
+ * moved or deleted in Google keep what an earlier read found, instead of showing again as the series has them. Only for
+ * the same series (a changed repeat has other days); a day around `since` is left to the read.
+ */
+function keepEarlierDays(ev: CalendarEvent, was: CalendarEvent, since: number): void {
+  if (!ev.rrule || ev.rrule !== was.rrule || ev.timezone !== was.timezone) return
+  const before = addDaysKey(keyInZone(since, ev.timezone), -1)
+  const read = (key: string) => key in ev.overrides || ev.exdates.includes(key)
+  for (const [key, ov] of Object.entries(was.overrides)) if (key < before && !read(key)) ev.overrides[key] = ov
+  for (const key of was.exdates) if (key < before && !read(key)) ev.exdates.push(key)
 }
 
 /** Incremental sync of one calendar; returns the number of changed events. */
@@ -294,6 +317,9 @@ export async function syncGoogleCalendar(person: PersonKey, accountId: string, c
   let pageToken: string | undefined
   // Switched between Import and Two-way: every event is read again, so all of them say whether they can be changed.
   let syncToken = cfg.syncedAs === mode ? cfg.syncToken : undefined
+  // Without a sync token every event from 120 days ago on is read again.
+  const full = !syncToken
+  const since = Date.now() - 120 * 86_400_000
   const masters = new Map<string, CalendarEvent>()
   const instances: calendar_v3.Schema$Event[] = []
   const deleted: string[] = []
@@ -306,7 +332,7 @@ export async function syncGoogleCalendar(person: PersonKey, accountId: string, c
         singleEvents: false,
         showDeleted: true,
         maxResults: 2500,
-        ...(syncToken ? {} : { timeMin: new Date(Date.now() - 120 * 86_400_000).toISOString() }),
+        ...(syncToken ? {} : { timeMin: new Date(since).toISOString() }),
       })
       for (const e of res.data.items ?? []) {
         if (!e.id) continue
@@ -374,9 +400,14 @@ export async function syncGoogleCalendar(person: PersonKey, accountId: string, c
   // A change made in GOOYA that is on its way to Google is not overwritten by the older version from Google.
   const ids = [...[...masters.values()].map((m) => m.id), ...deleted]
   const pending = new Set<string>()
+  const known = new Map<string, CalendarEvent>()
   for (let i = 0; i < ids.length; i += 300) {
     const snaps = await getFirestore().getAll(...ids.slice(i, i + 300).map((id) => eventsRef().doc(id)))
-    for (const s of snaps) if (s.exists && s.get('dirty')) pending.add(s.id)
+    for (const s of snaps) {
+      if (!s.exists) continue
+      if (s.get('dirty')) pending.add(s.id)
+      else if (full) known.set(s.id, normalizeEvent(s.id, s.data() as Record<string, unknown>))
+    }
   }
   let changed = 0
   let batch = getFirestore().batch()
@@ -388,6 +419,8 @@ export async function syncGoogleCalendar(person: PersonKey, accountId: string, c
   }
   for (const ev of masters.values()) {
     if (pending.has(ev.id)) continue
+    const was = known.get(ev.id)
+    if (was) keepEarlierDays(ev, was, since)
     const { id, ...rest } = ev
     batch.set(eventsRef().doc(id), { ...rest, dirty: false, deleted: false })
     changed++
@@ -993,4 +1026,79 @@ export const syncNow = onCall({ secrets: SECRETS, memory: '512MiB', timeoutSecon
   }
   const after = (await accountsRef(person.key).doc(accountId).get()).data() as AccountDoc | undefined
   return { ok: after?.status !== 'error', error: after?.error ?? null }
+})
+
+// ---------------------------------------------------------------- answering invitations
+
+const ANSWERS = ['accepted', 'tentative', 'declined'] as const
+type Answer = (typeof ANSWERS)[number]
+
+/** Why Google did not take an answer, in words the app can show. */
+function answerError(e: unknown): HttpsError {
+  if (e instanceof HttpsError) return e
+  const code = codeOf(e)
+  if (code === 404 || code === 410) return new HttpsError('not-found', 'This event is not in Google Calendar any more.')
+  if (/invalid_grant|no refresh token/i.test(message(e))) return new HttpsError('failed-precondition', 'GOOYA can no longer reach this Google account: connect it again in Integrations.')
+  if (code === 403) return new HttpsError('permission-denied', `Google did not let GOOYA answer in this calendar (${message(e)}).`)
+  return new HttpsError('unavailable', `Google Calendar did not take the answer (${message(e)}). Try again in a minute.`)
+}
+
+/**
+ * Callable respondToEvent({ eventId, response }) → { ok: true, myStatus }: answers an invitation in the caller's own
+ * Google calendar (Accept, Maybe, Decline), and Google lets the organizer know. `eventId` is the event's GOOYA id
+ * (events/{id}). GOOYA keeps a repeating event as its series, so the answer is for the whole series, like "All events"
+ * in Google Calendar. The event is then written again from Google's answer, so the app shows it at once.
+ */
+export const respondToEvent = onCall({ secrets: SECRETS, memory: '512MiB' }, async (req) => {
+  const person = personForEmail(req.auth?.token.email)
+  if (!person || !req.auth?.token.email_verified) throw new HttpsError('permission-denied', 'not allowed')
+  const eventId = String(req.data?.eventId ?? '')
+  const response = req.data?.response as Answer
+  if (!eventId || !ANSWERS.includes(response)) throw new HttpsError('invalid-argument', 'Say which event, and accepted, tentative or declined.')
+  const ref = eventsRef().doc(eventId)
+  const snap = await ref.get()
+  if (!snap.exists) throw new HttpsError('not-found', 'This event is not in GOOYA any more.')
+  const ev = normalizeEvent(snap.id, snap.data() as Record<string, unknown>)
+  if (ev.source !== 'google' || !ev.externalId) throw new HttpsError('failed-precondition', 'Only invitations in Google Calendar can be answered in GOOYA.')
+  if (ev.owner !== person.key) throw new HttpsError('permission-denied', 'This event is in the other person’s calendar.')
+  const acc = (await accountsRef(person.key).doc(ev.accountId).get()).data() as AccountDoc | undefined
+  const cfg = acc?.calendars?.[ev.calendarId]
+  if (!cfg || !importing(cfg)) throw new HttpsError('failed-precondition', 'This calendar is not in GOOYA any more.')
+  let answered: calendar_v3.Schema$Event
+  try {
+    const cal = await calendarFor(ev.accountId)
+    const current = (await cal.events.get({ calendarId: ev.calendarId, eventId: ev.externalId })).data
+    if (current.status === 'cancelled') throw new HttpsError('not-found', 'This event was deleted in Google Calendar.')
+    const attendees = current.attendees ?? []
+    // The owner's own entry (self). Organizing it, there is nothing to answer.
+    const me = attendees.find((a) => a.self)
+    if (!me || me.organizer || current.organizer?.self) throw new HttpsError('failed-precondition', 'You are not invited to this event')
+    me.responseStatus = response
+    // Google replaces the whole list on a patch: everyone else goes back as they were.
+    answered = (await withBackoff(() => cal.events.patch({ calendarId: ev.calendarId, eventId: ev.externalId, sendUpdates: 'all', requestBody: { attendees } }))).data
+  } catch (e) {
+    const err = answerError(e)
+    logger.warn('respondToEvent failed', { person: person.key, eventId, response, error: message(e) })
+    throw err
+  }
+  const fresh = toEvent(person.key, ev.accountId, ev.calendarId, cfg, twoWay(cfg), answered)
+  const myStatus: AttendeeStatus = fresh?.myStatus ?? response
+  if (fresh) {
+    // Written as the import writes it, under the same doc id, with the days of the series the import read.
+    const { id: _importId, ...rest } = fresh
+    try {
+      await getFirestore().runTransaction(async (tx) => {
+        const now = await tx.get(ref)
+        if (!now.exists) return
+        const stored = normalizeEvent(now.id, now.data() as Record<string, unknown>)
+        // A change made in GOOYA that is still on its way to Google keeps its fields: only the invitation is taken then.
+        if (stored.dirty) tx.update(ref, { attendees: rest.attendees, attendeeCount: rest.attendeeCount, organizer: rest.organizer, myStatus })
+        else tx.set(ref, { ...rest, exdates: stored.exdates, overrides: stored.overrides, dirty: false, deleted: false })
+      })
+    } catch (e) {
+      // Google has the answer; the next sync brings it to GOOYA.
+      logger.error('respondToEvent: answered, but the event was not written again', { eventId, error: message(e) })
+    }
+  }
+  return { ok: true, myStatus }
 })

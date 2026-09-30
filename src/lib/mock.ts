@@ -89,6 +89,41 @@ export function startMockData(): void {
     ev("gooya", "google", "Design review", d(0), "13:00", "14:00", { source: "apple", accountId: "a_demo", calendarName: "Family", color: "#ff9230", editable: false }),
     ev("gooya", "apple", "추석", d(3), null, null, { iCalUID: "chuseok@demo" }),
     ev("eunbi", "google", "1:1 with manager", d(1), "15:00", "15:30", { iCalUID: "one@demo" }),
+    // An invitation from Gmail with a Google Meet call, as Google Calendar sends it.
+    ev("gooya", "google", "AVENA AI Weekly Review", d(0), "09:00", "09:30", {
+      iCalUID: "avena@demo",
+      calendarName: "goochoi913@gmail.com",
+      color: "#9fdde3",
+      editable: false,
+      notes: "Weekly review of the AVENA AI project.\nAgenda: https://docs.google.com/document/d/avena-agenda",
+      attendees: [
+        { email: "firman@asterakb.com", status: "accepted", organizer: true },
+        { email: "goochoi913@gmail.com", status: "needsAction", self: true },
+        { email: "adriana@asterakb.com", status: "accepted" },
+        { email: "estimating@theavena.com", status: "needsAction" },
+        { email: "ivy@theavena.com", name: "Ivy Tran", status: "tentative" },
+        { email: "lam@theavena.com", status: "declined" },
+        { email: "maya@asterakb.com", status: "needsAction" },
+        { email: "rahmat@homestyle.co.id", status: "needsAction" },
+        { email: "sisca@asterakb.com", status: "needsAction" },
+        { email: "vtina@asterakb.com", status: "needsAction", optional: true },
+      ],
+      attendeeCount: 10,
+      organizer: { email: "firman@asterakb.com" },
+      myStatus: "needsAction",
+      conference: { name: "Google Meet", url: "https://meet.google.com/jke-jwff-ahm", phones: ["tel:+1-470-268-2442,,187432954#"], details: "PIN: 187 432 954#" },
+      showAs: "free",
+      alerts: [30],
+      htmlLink: "https://www.google.com/calendar/event?eid=demo",
+    }),
+    // A Zoom meeting whose link is only in the location, as university calendars send them.
+    ev("gooya", "apple", "Superforecasting Reading Group [CS6750]", d(0), "20:30", "21:30", {
+      iCalUID: "zoom@demo",
+      calendarName: "GT Calendar (Canvas)",
+      color: "#65c466",
+      location: "https://gatech.zoom.us/j/96638815067?pwd=2YrAL4afI21GdbmaOgufPYX-UC09sof.1",
+      notes: "Join Zoom Meeting\nhttps://gatech.zoom.us/j/96638815067?pwd=2YrAL4afI21GdbmaOgufPYX-UC09sof.1\n\nhttps://gatech.instructure.com/calendar?include_contexts=course_536416",
+    }),
   ];
   const schedule = (owner: PersonKey, title: string, date: string, start: string | null, end: string | null, extra: Partial<Schedule> = {}): Schedule => {
     const tz2 = PEOPLE[owner].timezone;

@@ -285,6 +285,50 @@ export interface CalendarEvent {
   deleted?: boolean
   /** Why the last change made in GOOYA could not be saved to the calendar (GOOYA shows the calendar's version again). */
   pushError?: string
+
+  // What else the calendar says about an imported event, for its details (as Apple Calendar shows them). All optional:
+  // events imported before these were read have none, and GOOYA's own schedules have none.
+  /** The people invited, the organizer first (at most MAX_ATTENDEES; attendeeCount says how many there are). */
+  attendees?: EventAttendee[]
+  attendeeCount?: number
+  organizer?: { email: string; name?: string; self?: boolean } | null
+  /** The calendar owner's own answer to the invitation, when they are invited (not the organizer). */
+  myStatus?: AttendeeStatus | null
+  /** The video call: Google Meet, Zoom, Teams… (from the calendar's conference data, or a link in the event). */
+  conference?: EventConference | null
+  /** The event's own link (the URL field), when it has one. */
+  url?: string
+  /** Busy or free (Google's "Show as", iCloud's TRANSP). */
+  showAs?: 'busy' | 'free'
+  /** Alerts, in minutes before the start. */
+  alerts?: number[]
+  /** Files attached in Google Calendar (Drive links). */
+  attachments?: { title: string; url: string }[]
+  /** The event in the calendar's own website (Google Calendar), to open what GOOYA does not show. */
+  htmlLink?: string
+}
+
+export type AttendeeStatus = 'accepted' | 'declined' | 'tentative' | 'needsAction'
+
+export interface EventAttendee {
+  email: string
+  name?: string
+  status: AttendeeStatus
+  organizer?: boolean
+  /** The calendar's owner. */
+  self?: boolean
+  optional?: boolean
+}
+
+export interface EventConference {
+  /** "Google Meet", "Zoom", "Microsoft Teams", "Webex", "FaceTime", or the link's host. */
+  name: string
+  /** The link that joins the call. */
+  url: string
+  /** Dial-in entry points ("tel:+1-470-268-2442,,123456#"). */
+  phones?: string[]
+  /** Meeting ID, passcode or PIN, as the calendar gives them. */
+  details?: string
 }
 
 export interface EventOccurrence {

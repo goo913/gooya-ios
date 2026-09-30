@@ -1,5 +1,5 @@
 // Plain-object normalisers shared by the web app and Cloud Functions.
-import type { CalendarEvent, ExternalRef, Routine, Schedule, Task, TaskList, UserDoc } from './model'
+import type { AttendeeStatus, CalendarEvent, ExternalRef, Routine, Schedule, Task, TaskList, UserDoc } from './model'
 import { isPersonKey } from './people'
 import { fieldsInZone } from './time'
 
@@ -199,5 +199,47 @@ export function normalizeEvent(id: string, d: Data): CalendarEvent {
     dirty: !!d.dirty,
     deleted: !!d.deleted,
     ...(typeof d.pushError === 'string' && d.pushError ? { pushError: d.pushError } : {}),
+    ...eventDetails(d),
   }
+}
+
+const STATUSES: AttendeeStatus[] = ['accepted', 'declined', 'tentative', 'needsAction']
+const statusOf = (v: unknown): AttendeeStatus => (STATUSES.includes(v as AttendeeStatus) ? (v as AttendeeStatus) : 'needsAction')
+
+/** The optional details of an imported event (invitees, video call, options), as far as the document has them. */
+function eventDetails(d: Data): Partial<CalendarEvent> {
+  const out: Partial<CalendarEvent> = {}
+  if (Array.isArray(d.attendees)) {
+    out.attendees = (d.attendees as Data[])
+      .filter((a) => a && typeof a.email === 'string' && a.email)
+      .map((a) => ({
+        email: str(a.email),
+        ...(typeof a.name === 'string' && a.name ? { name: a.name } : {}),
+        status: statusOf(a.status),
+        ...(a.organizer ? { organizer: true } : {}),
+        ...(a.self ? { self: true } : {}),
+        ...(a.optional ? { optional: true } : {}),
+      }))
+  }
+  if (typeof d.attendeeCount === 'number') out.attendeeCount = d.attendeeCount
+  const org = d.organizer as Data | null | undefined
+  if (org && typeof org.email === 'string' && org.email) out.organizer = { email: org.email, ...(typeof org.name === 'string' && org.name ? { name: org.name } : {}), ...(org.self ? { self: true } : {}) }
+  if (typeof d.myStatus === 'string') out.myStatus = statusOf(d.myStatus)
+  const conf = d.conference as Data | null | undefined
+  if (conf && typeof conf.url === 'string' && conf.url) {
+    out.conference = {
+      name: str(conf.name, 'Video Call'),
+      url: conf.url,
+      ...(Array.isArray(conf.phones) ? { phones: arr<string>(conf.phones).filter((p) => typeof p === 'string') } : {}),
+      ...(typeof conf.details === 'string' && conf.details ? { details: conf.details } : {}),
+    }
+  }
+  if (typeof d.url === 'string' && d.url) out.url = d.url
+  if (d.showAs === 'free' || d.showAs === 'busy') out.showAs = d.showAs
+  if (Array.isArray(d.alerts)) out.alerts = arr<number>(d.alerts).filter((n) => typeof n === 'number')
+  if (Array.isArray(d.attachments)) {
+    out.attachments = (d.attachments as Data[]).filter((a) => a && typeof a.url === 'string').map((a) => ({ title: str(a.title, 'Attachment'), url: str(a.url) }))
+  }
+  if (typeof d.htmlLink === 'string' && d.htmlLink) out.htmlLink = d.htmlLink
+  return out
 }

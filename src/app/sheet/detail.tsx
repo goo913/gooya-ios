@@ -1,18 +1,23 @@
-import type { DateKey, Task, TaskOccurrence } from "@shared/model";
+import type { AttendeeStatus, DateKey, Task, TaskOccurrence } from "@shared/model";
+import { findConference } from "@shared/conference";
 import { describeRule, expandEvent, expandRoutine, expandTask } from "@shared/recurrence";
 import { DAY_MS, addDaysKey, minutesSinceMidnight, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
-import { useEffect, useMemo, type ReactNode } from "react";
-import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { httpsCallable } from "@react-native-firebase/functions";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ActionSheetIOS, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TaskRing } from "@/components/Chips";
 import { GlassCapsule } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
+import { AnswerBar, ExpandableText, InviteesSection, LocationSection, OptionLine, OptionRow, Section, VideoCallSection, alertLabel } from "@/components/EventInfo";
 import { SourceBadge } from "@/components/SourceBadge";
 import { earlyReminderLabel } from "@/lib/alerts";
 import { mix } from "@/lib/color";
 import { deleteRoutine } from "@/lib/db";
-import { MONTH_SHORT, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
+import { functions } from "@/lib/firebase";
+import { isMock } from "@/lib/mock";
+import { MONTH_NAMES, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { colorHex, useMe, usePerson, usePersonColor, useTaskColor } from "@/lib/people";
 import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
 import { reminderOwnerName } from "@/lib/reminders";
@@ -22,7 +27,7 @@ import { plainNotes } from "@shared/calendarCopy";
 import { hasEndTime, scheduleAsEvent } from "@shared/schedules";
 import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
-import { useSheets } from "@/store/sheets";
+import { useSheets, type DetailRequest } from "@/store/sheets";
 import { useColors, useIsDark } from "@/theme";
 
 /**
@@ -39,32 +44,73 @@ export default function DetailSheet() {
   }, [req]);
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
-        {req?.kind === "task" ? <TaskDetail taskId={req.taskId} dateKey={req.dateKey} /> : null}
-        {req?.kind === "routine" ? <RoutineDetail routineId={req.routineId} dateKey={req.dateKey} /> : null}
-        {req?.kind === "event" ? <EventDetail eventId={req.eventId} dateKey={req.dateKey} /> : null}
+      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + (req?.kind === "event" ? 100 : 40) }} showsVerticalScrollIndicator={false}>
+        {req ? <DetailContent req={req} /> : null}
       </ScrollView>
+      {req?.kind === "event" ? <EventAnswers eventId={req.eventId} /> : null}
     </View>
+  );
+}
+
+/**
+ * Where the details are shown: this sheet (Close at the top; Edit replaces it with the editor), or the iPad's details
+ * pane beside the day (no Close; Edit opens the editor over it; deleting clears the pane).
+ */
+export interface DetailHost {
+  embedded: boolean;
+  toEditor: () => void;
+  close: () => void;
+}
+
+const SHEET_HOST: DetailHost = {
+  embedded: false,
+  toEditor: () => router.replace("/sheet/edit"),
+  close: () => {
+    useSheets.getState().closeDetail();
+    router.back();
+  },
+};
+
+const DetailHostContext = createContext<DetailHost>(SHEET_HOST);
+
+/** The details of a task, routine or event, for the sheet or the iPad's pane. */
+export function DetailContent({ req, host }: { req: DetailRequest; host?: DetailHost }) {
+  return (
+    <DetailHostContext.Provider value={host ?? SHEET_HOST}>
+      {req.kind === "task" ? <TaskDetail taskId={req.taskId} dateKey={req.dateKey} /> : null}
+      {req.kind === "routine" ? <RoutineDetail routineId={req.routineId} dateKey={req.dateKey} /> : null}
+      {req.kind === "event" ? <EventDetail eventId={req.eventId} dateKey={req.dateKey} /> : null}
+    </DetailHostContext.Provider>
   );
 }
 
 // ---------------------------------------------------------------- pieces
 
-/** "Tuesday, Sep 29, 2026" */
+/** "Tuesday, September 29, 2026", as Apple Calendar writes the day of an item. */
 function longDate(key: DateKey): string {
   const [y, m, d] = key.split("-").map(Number);
-  return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTH_SHORT[m - 1]} ${d}, ${y}`;
+  return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTH_NAMES[m - 1]} ${d}, ${y}`;
+}
+
+/** "9 AM", "9:30 AM": Apple leaves out ":00" in an event's details. */
+function clockTime(ms: number, tz: string): string {
+  return formatTime(ms, tz).replace(":00 ", " ");
 }
 
 function Top({ onEdit }: { onEdit?: () => void }) {
   const colors = useColors();
+  const host = useContext(DetailHostContext);
   return (
     <View style={styles.top}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={() => router.back()} hitSlop={6}>
-        <GlassCapsule style={styles.round}>
-          <Icon name="xmark" size={19} weight="semibold" color={colors.label} />
-        </GlassCapsule>
-      </Pressable>
+      {host.embedded ? (
+        <View />
+      ) : (
+        <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={() => router.back()} hitSlop={6}>
+          <GlassCapsule style={styles.round}>
+            <Icon name="xmark" size={19} weight="semibold" color={colors.label} />
+          </GlassCapsule>
+        </Pressable>
+      )}
       {onEdit ? (
         <Pressable accessibilityRole="button" accessibilityLabel="Edit" onPress={onEdit} hitSlop={6}>
           <GlassCapsule style={styles.editPill}>
@@ -148,17 +194,14 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
   const owner = usePerson(task?.owner ?? "gooya");
   const occ = useTaskOccurrence(task, dateKey);
   const openEditor = useSheets((s) => s.openEditor);
-  const closeDetail = useSheets((s) => s.closeDetail);
+  const host = useContext(DetailHostContext);
   const ring = useTaskColor(task ?? { owner: owner.key, listId: "" });
   if (!task || !occ) return <Missing what="task" />;
   const edit = () => {
     openEditor({ kind: "task", task, occ });
-    router.replace("/sheet/edit");
+    host.toEditor();
   };
-  const done = () => {
-    closeDetail();
-    router.back();
-  };
+  const done = host.close;
   const fromReminders = !!reminderIdOf(task);
   const remove = () => {
     const options = fromReminders ? ["Delete Reminder", "Cancel"] : task.rrule ? ["Delete This Task Only", "Delete All Future Tasks", "Delete All Tasks", "Cancel"] : ["Delete Task", "Cancel"];
@@ -242,7 +285,7 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
   const dark = useIsDark();
   const routine = useData((s) => s.routines.find((t) => t.id === routineId));
   const openEditor = useSheets((s) => s.openEditor);
-  const closeDetail = useSheets((s) => s.closeDetail);
+  const host = useContext(DetailHostContext);
   const owner = usePerson(routine?.owner ?? "gooya");
   const occ = useMemo(() => {
     if (!routine) return null;
@@ -256,12 +299,9 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
   const localTimes = routine.timezone !== viewerTz ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)} ${tzAbbrev(viewerTz, occ.start)} for you` : null;
   const edit = (dayOnly: boolean) => {
     openEditor({ kind: "routine", routine, dayOnly: dayOnly ? dateKey : undefined });
-    router.replace("/sheet/edit");
+    host.toEditor();
   };
-  const done = () => {
-    closeDetail();
-    router.back();
-  };
+  const done = host.close;
   const remove = () => {
     const options = ["Delete This Day Only", "Delete All Future", "Delete Routine", "Cancel"];
     ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex: 3, destructiveButtonIndex: [0, 1, 2] }, (i) => {
@@ -327,6 +367,7 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   const calendarConfig = useData((s) => s.accounts.find((a) => a.id === event?.accountId)?.calendars?.[event?.calendarId ?? ""]);
   const me = useMe();
   const openEditor = useSheets((s) => s.openEditor);
+  const host = useContext(DetailHostContext);
   const owner = usePerson(event?.owner ?? "gooya");
   const occ = useMemo(() => {
     if (!event) return null;
@@ -337,21 +378,30 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   }, [event, dateKey]);
   if (!event || !occ) return <Missing what="schedule" />;
   const color = event.color || colors.blue;
-  const when = occ.allDay ? "all-day" : hasEndTime(occ) ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)}` : formatTime(occ.start, viewerTz);
+  const when = occ.allDay ? "all-day" : hasEndTime(occ) ? `${clockTime(occ.start, viewerTz)} – ${clockTime(occ.end, viewerTz)}` : clockTime(occ.start, viewerTz);
+  // Apple adds the event's own clock when it was made in another time zone ("12:30 AM – 1:30 AM (GMT)").
+  const zone = event.timezone;
+  const otherClock =
+    !occ.allDay && zone && zone !== viewerTz && formatTime(occ.start, zone) !== formatTime(occ.start, viewerTz)
+      ? `${hasEndTime(occ) ? `${clockTime(occ.start, zone)} – ${clockTime(occ.end, zone)}` : clockTime(occ.start, zone)} (${tzAbbrev(zone, occ.start)})`
+      : null;
   const startMin = occ.allDay ? 0 : minutesSinceMidnight(occ.start, viewerTz);
   // A schedule without an end time takes half an hour's room, as in the day view.
   const endMin = startMin + (occ.end > occ.start ? (occ.end - occ.start) / 60000 : 30);
   // One occurrence can have its own place and notes.
   const ov = event.overrides?.[occ.dateKey];
   const location = ov?.location ?? event.location;
-  const notes = plainNotes(ov?.notes ?? event.notes);
+  const notes = plainNotes(ov?.notes ?? event.notes).trim();
+  // The call the calendar names; otherwise a call link in the event (a schedule, an event read before calls were).
+  const conference = event.conference ?? findConference(location, event.url, notes);
   const where = event.source === "google" ? "Google Calendar" : "iCloud";
   const edit = event.editable
     ? () => {
         openEditor({ kind: "schedule", event, eventOcc: occ });
-        router.replace("/sheet/edit");
+        host.toEditor();
       }
     : undefined;
+  const answer = event.myStatus && event.source !== "google" ? ANSWER_LABEL[event.myStatus] : null;
   return (
     <View>
       <Top onEdit={edit} />
@@ -360,9 +410,9 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         <View style={[styles.titleBar, { backgroundColor: color }]} />
         <View style={styles.barTitleText}>
           <Text style={[styles.eventTitle, { color: colors.label }]}>{occ.title}</Text>
-          {location ? <Text style={[styles.whenText, { color: colors.label2 }]}>{location}</Text> : null}
           <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(occ.dateKey)}</Text>
           <Text style={[styles.whenText, { color: colors.label2 }]}>{when}</Text>
+          {otherClock ? <Text style={[styles.whenText, { color: colors.label3 }]}>{otherClock}</Text> : null}
           {event.rrule ? (
             <View style={styles.repeat}>
               <Icon name="repeat" size={17} color={colors.label2} />
@@ -371,21 +421,7 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
           ) : null}
         </View>
       </View>
-      <Fact label="Calendar">
-        <View style={styles.inline}>
-          <View style={[styles.dot, { backgroundColor: color }]} />
-          <Text style={[styles.factValue, { color: colors.label2 }]}>{event.calendarName}</Text>
-          <SourceBadge source={event.source} size={14} color={colors.label2} />
-        </View>
-      </Fact>
-      <Fact label="Person">{owner.name}</Fact>
-      {notes ? (
-        <Fact label="Notes">
-          <Text selectable style={[styles.notes, { color: colors.label2 }]}>
-            {notes}
-          </Text>
-        </Fact>
-      ) : null}
+      <LocationSection location={location} conference={conference} />
       {!occ.allDay ? (
         <MiniTimeline startMin={startMin} endMin={endMin}>
           {(hourH, firstHour) => (
@@ -396,6 +432,76 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
             </View>
           )}
         </MiniTimeline>
+      ) : null}
+      {event.attendees?.length ? <InviteesSection attendees={event.attendees} count={event.attendeeCount} organizer={event.organizer} title={occ.title} /> : null}
+      <Section title="Options">
+        <OptionRow icon="calendar" label="Calendar">
+          <View style={[styles.dot, { backgroundColor: color }]} />
+          <Text numberOfLines={1} style={[styles.optionText, { color: colors.label2 }]}>
+            {event.calendarName}
+          </Text>
+          <SourceBadge source={event.source} size={14} color={colors.label2} />
+        </OptionRow>
+        <OptionLine />
+        <OptionRow icon="person" label="Person">
+          {owner.name}
+        </OptionRow>
+        {event.showAs ? (
+          <>
+            <OptionLine />
+            <OptionRow icon="hand.raised" label="Show As">
+              {event.showAs === "free" ? "Free" : "Busy"}
+            </OptionRow>
+          </>
+        ) : null}
+        {(event.alerts ?? []).map((m) => (
+          <View key={m}>
+            <OptionLine />
+            <OptionRow icon="bell" label="Alert">
+              {alertLabel(m)}
+            </OptionRow>
+          </View>
+        ))}
+        {answer ? (
+          <>
+            <OptionLine />
+            <OptionRow icon="checkmark.circle" label="My Answer">
+              {answer}
+            </OptionRow>
+          </>
+        ) : null}
+      </Section>
+      {conference ? <VideoCallSection conference={conference} /> : null}
+      {event.url && event.url !== conference?.url ? (
+        <Section title="URL">
+          <ExpandableText text={event.url} />
+        </Section>
+      ) : null}
+      {notes ? (
+        <Section title={event.source === "gooya" ? "Notes" : "Details"}>
+          <ExpandableText text={notes} />
+        </Section>
+      ) : null}
+      {event.attachments?.length ? (
+        <Section title="Attachments">
+          {event.attachments.map((a, i) => (
+            <View key={a.url}>
+              {i ? <OptionLine /> : null}
+              <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(a.url).catch(() => undefined)} style={({ pressed }) => pressed && { backgroundColor: colors.fill4 }}>
+                <OptionRow icon="paperclip" label="">
+                  <Text numberOfLines={1} style={[styles.optionText, { color: colors.red }]}>
+                    {a.title}
+                  </Text>
+                </OptionRow>
+              </Pressable>
+            </View>
+          ))}
+        </Section>
+      ) : null}
+      {event.htmlLink ? (
+        <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(event.htmlLink!).catch(() => undefined)} style={styles.openIn} hitSlop={6}>
+          <Text style={[styles.openInText, { color: colors.red }]}>Open in Google Calendar</Text>
+        </Pressable>
       ) : null}
       <Text style={[styles.foot, { color: colors.label3 }]}>
         {event.source === "gooya"
@@ -410,6 +516,42 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
                   ? `Imported from ${where}. This calendar can’t be changed from other apps.`
                   : `Imported from ${where}. Set this calendar to Two-way in Settings → Calendar integrations to change it here.`}
       </Text>
+    </View>
+  );
+}
+
+const ANSWER_LABEL: Record<AttendeeStatus, string> = { accepted: "Accepted", declined: "Declined", tentative: "Maybe", needsAction: "Not answered" };
+
+/**
+ * Accept · Maybe · Decline for an invitation in the owner's Google Calendar, floating over the bottom of the sheet (the
+ * answer goes to Google, and to the organizer, through the server's respondToEvent). Only the invited person sees it.
+ */
+export function EventAnswers({ eventId }: { eventId: string }) {
+  const insets = useSafeAreaInsets();
+  const me = useMe();
+  const event = useData((s) => s.events.find((e) => e.id === eventId));
+  const [busy, setBusy] = useState(false);
+  // The answer just given, shown until the calendar's copy says the same.
+  const [pending, setPending] = useState<AttendeeStatus | null>(null);
+  const current = event?.myStatus ?? null;
+  if (!event || event.source !== "google" || !current || event.owner !== me) return null;
+  const onAnswer = async (response: "accepted" | "tentative" | "declined") => {
+    if (response === (pending ?? current)) return;
+    setBusy(true);
+    setPending(response);
+    try {
+      if (isMock) useData.setState((s) => ({ events: s.events.map((e) => (e.id === eventId ? { ...e, myStatus: response, attendees: e.attendees?.map((a) => (a.self ? { ...a, status: response } : a)) } : e)) }));
+      else await httpsCallable(functions, "respondToEvent")({ eventId, response });
+    } catch (e) {
+      setPending(null);
+      Alert.alert("Couldn’t answer", e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View pointerEvents="box-none" style={[styles.answers, { bottom: insets.bottom + 10 }]}>
+      <AnswerBar status={pending ?? current} busy={busy} onAnswer={(a) => void onAnswer(a)} />
     </View>
   );
 }
@@ -462,5 +604,9 @@ const styles = StyleSheet.create({
   action: { minHeight: 52, borderRadius: 26, alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
   actionText: { fontSize: 17 },
   foot: { paddingHorizontal: 30, marginTop: 24, fontSize: 13, lineHeight: 17 },
+  optionText: { fontSize: 17, flexShrink: 1 },
+  openIn: { paddingHorizontal: 30, marginTop: 22 },
+  openInText: { fontSize: 17 },
+  answers: { position: "absolute", left: 16, right: 16 },
   empty: { paddingHorizontal: 24, paddingTop: 24, textAlign: "center", fontSize: 17 },
 });

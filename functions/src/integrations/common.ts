@@ -32,6 +32,8 @@ export interface CalendarConfig {
   noPush?: boolean
   /** Google: the calendar's own time zone, for events that do not name one. */
   timeZone?: string
+  /** Google: the calendar's default alerts (minutes before the start), which its timed events have unless they set their own. */
+  defaultAlerts?: number[]
   /** How the calendar's events were last brought in ('import' read-only, 'both' changeable); a switch refetches them. */
   syncedAs?: 'import' | 'both'
 }

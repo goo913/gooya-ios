@@ -206,9 +206,13 @@ async function refreshAppleCalendars(person: PersonKey, accountId: string, remot
 
 // ---------------------------------------------------------------- import (iCloud → GOOYA)
 
-function eventFromObject(person: PersonKey, accountId: string, calendarId: string, cfg: Pick<CalendarConfig, 'name' | 'color'>, editable: boolean, obj: DAVCalendarObject): CalendarEvent | null {
+/**
+ * An iCloud calendar object as a GOOYA event, with its invitees, call, alerts and the rest of its details.
+ * `accountEmail` is the iCloud account's address (AccountDoc.email): the invitee with it is the calendar's owner.
+ */
+function eventFromObject(person: PersonKey, accountId: string, calendarId: string, cfg: Pick<CalendarConfig, 'name' | 'color'>, editable: boolean, obj: DAVCalendarObject, accountEmail: string): CalendarEvent | null {
   if (!obj.data || !obj.url) return null
-  const p = parseIcsEvent(obj.data, PEOPLE[person].timezone)
+  const p = parseIcsEvent(obj.data, PEOPLE[person].timezone, accountEmail)
   if (!p) return null
   return {
     id: eventDocId('apple', accountId, calendarId, obj.url),
@@ -235,11 +239,18 @@ function eventFromObject(person: PersonKey, accountId: string, calendarId: strin
     editable,
     etag: String(obj.etag ?? ''),
     updatedAt: p.updated || Date.now(),
+    ...p.details,
   }
 }
 
+/**
+ * Whether an event in GOOYA was read with its details. Every event read since says busy or free (showAs); one read
+ * before has none, and is written again even when it did not change in iCloud.
+ */
+const readWithDetails = (d: FirebaseFirestore.DocumentSnapshot) => d.get('showAs') != null
+
 /** Refetches a calendar whose contents changed (its ctag), or was switched between Import and Two-way. */
-async function importAppleCalendar(person: PersonKey, accountId: string, calId: string, cfg: CalendarConfig, client: Dav, remote: DAVCalendar[]): Promise<void> {
+async function importAppleCalendar(person: PersonKey, accountId: string, calId: string, cfg: CalendarConfig, client: Dav, remote: DAVCalendar[], accountEmail: string): Promise<void> {
   const accRef = accountsRef(person).doc(accountId)
   const cal = remote.find((c) => c.url && shortHash(c.url, 16) === calId)
   if (!cal) return
@@ -250,20 +261,32 @@ async function importAppleCalendar(person: PersonKey, accountId: string, calId: 
   const objects = await client.fetchCalendarObjects({ calendar: cal, timeRange: { start: from, end: to } })
   const existing = await eventsRef().where('accountId', '==', accountId).where('calendarId', '==', calId).get()
   const keep = new Set<string>()
-  const batch = getFirestore().batch()
+  // Written a few hundred at a time: a calendar read again from scratch can change more events than one batch takes.
+  let batch = getFirestore().batch()
+  let n = 0
+  const flush = async () => {
+    if (n) await batch.commit()
+    batch = getFirestore().batch()
+    n = 0
+  }
   for (const obj of objects) {
-    const ev = eventFromObject(person, accountId, calId, cfg, mode === 'both', obj)
+    const ev = eventFromObject(person, accountId, calId, cfg, mode === 'both', obj, accountEmail)
     if (!ev) continue
     keep.add(ev.id)
     const prev = existing.docs.find((d) => d.id === ev.id)
     // A change made in GOOYA on its way to iCloud is not overwritten by the older version from iCloud.
     if (prev?.get('dirty')) continue
-    if (prev && prev.get('etag') === ev.etag && prev.get('editable') === ev.editable) continue
+    if (prev && prev.get('etag') === ev.etag && prev.get('editable') === ev.editable && readWithDetails(prev)) continue
     const { id, ...rest } = ev
     batch.set(eventsRef().doc(id), { ...rest, dirty: false, deleted: false })
+    if (++n >= 400) await flush()
   }
-  for (const d of existing.docs) if (!keep.has(d.id) && !d.get('dirty')) batch.delete(d.ref)
-  await batch.commit()
+  for (const d of existing.docs) {
+    if (keep.has(d.id) || d.get('dirty')) continue
+    batch.delete(d.ref)
+    if (++n >= 400) await flush()
+  }
+  await flush()
   logger.info('apple calendar fetched', { person, accountId, calendar: cfg.name, objects: objects.length, events: keep.size })
   await accRef.set({ calendars: { [calId]: { ctag: cal.ctag ?? null, syncedAs: mode, lastSync: Date.now() } } }, { merge: true })
 }
@@ -287,7 +310,7 @@ export async function syncAppleAccount(person: PersonKey, accountId: string): Pr
     if (!acc) return
     for (const [calId, cfg] of Object.entries(acc.calendars ?? {})) {
       try {
-        if (importing(cfg)) await importAppleCalendar(person, accountId, calId, cfg, client, remote)
+        if (importing(cfg)) await importAppleCalendar(person, accountId, calId, cfg, client, remote, acc.email)
         else if (cfg.ctag || cfg.lastSync) {
           // Turned off: its events leave GOOYA.
           await deleteCalendarEvents(accountId, calId)
@@ -638,7 +661,7 @@ export async function pushAppleEvent(ev: CalendarEvent): Promise<void> {
     throw new Error(`iCloud refused the change (${res.status}).`)
   }
   const fresh = await fetchObject(client, calendar, url)
-  const imported = fresh ? eventFromObject(ev.owner, ev.accountId, ev.calendarId, cfg, true, fresh) : null
+  const imported = fresh ? eventFromObject(ev.owner, ev.accountId, ev.calendarId, cfg, true, fresh, acc?.email ?? '') : null
   if (!imported) return
   const { id, ...rest } = imported
   await eventsRef().doc(id).set({ ...rest, dirty: false, deleted: false })
@@ -657,7 +680,7 @@ export async function revertAppleEvent(ev: CalendarEvent, problem: string): Prom
     const client = await clientFor(await credentialsOf(ev.accountId))
     const calendar = (await client.fetchCalendars()).find((c) => c.url && shortHash(c.url, 16) === ev.calendarId)
     const obj = calendar ? await fetchObject(client, calendar, ev.externalId) : null
-    const fresh = obj ? eventFromObject(ev.owner, ev.accountId, ev.calendarId, cfg, twoWay(cfg), obj) : null
+    const fresh = obj ? eventFromObject(ev.owner, ev.accountId, ev.calendarId, cfg, twoWay(cfg), obj, acc?.email ?? '') : null
     if (!fresh) {
       await eventsRef().doc(ev.id).delete()
       return

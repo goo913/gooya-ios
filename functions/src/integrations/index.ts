@@ -7,7 +7,7 @@ import { exportItemToGoogle, pushGoogleEvent, revertGoogleEvent, syncGoogleAccou
 import { exportItemToApple, pushAppleEvent, revertAppleEvent, syncAppleAccount } from './apple'
 import type { AccountDoc } from './common'
 
-export { googleAuthStart, googleAuthCallback, gcalNotify, pollGoogle, syncNow } from './google'
+export { googleAuthStart, googleAuthCallback, gcalNotify, pollGoogle, syncNow, respondToEvent } from './google'
 export { appleConnect, pollApple } from './apple'
 export { remindersImport } from './reminders'
 export { icsFeed } from './ics'
