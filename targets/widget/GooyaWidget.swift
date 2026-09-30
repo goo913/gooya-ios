@@ -39,7 +39,8 @@ struct GooyaWidget: Widget {
     }
     .configurationDisplayName("GOOYA")
     .description("Today, what is coming up, and two weeks or the month, for both of you.")
-    .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryInline, .accessoryCircular])
+    // The extra large size is the iPad's (an iPhone does not offer it).
+    .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .systemExtraLarge, .accessoryRectangular, .accessoryInline, .accessoryCircular])
     // The large layouts' grids use more of the widget than the standard margins; the other sizes put them back.
     .contentMarginsDisabled()
   }

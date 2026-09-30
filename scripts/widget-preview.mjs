@@ -5,6 +5,7 @@
  *
  *   npm run widget:preview                 with the calendar the demo simulator's app last wrote (or sample data)
  *   npm run widget:preview -- feed.json    with a saved feed (what GET /widgetFeed returns)
+ *   npm run widget:preview -- feed.json 2026-08-20T12:00:00-04:00    as the widget draws it at that moment
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -53,5 +54,6 @@ const compile = spawnSync(
 );
 if (compile.status !== 0) process.exit(compile.status ?? 1);
 for (const f of fs.readdirSync(outDir)) if (f.endsWith(".png")) fs.rmSync(path.join(outDir, f));
-const run = spawnSync(bin, [outDir, ...(feed ? [feed] : [])], { stdio: "inherit" });
+const at = process.argv[3] ? [process.argv[3]] : [];
+const run = spawnSync(bin, [outDir, feed ?? "-", ...at], { stdio: "inherit" });
 process.exit(run.status ?? 1);

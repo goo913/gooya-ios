@@ -1,14 +1,21 @@
 import SwiftUI
 import WidgetKit
 
-/// The large widget's layouts (Edit Widget → Layout).
+/// The large and extra large widgets' layouts (Edit Widget → Layout; one setting for both, as iPadOS tells the settings
+/// sheet an extra large widget is a large one). The extra large size draws each wider: the list beside the grid
+/// instead of under it, or the grid across the whole width.
 enum WidgetLayout: String, CaseIterable, Sendable {
-  /// This week and the next, what is on each day, and the list of what is coming under them. The default.
+  /// This week and the next, what is on each day, and the list of what is coming. The default.
   case twoWeeks
-  /// The month with a dot per person and day, and the list under it.
+  /// The month (large: a dot per person and day; extra large: what is on each day), and the list.
   case monthList
+  /// This week and the next alone, with room for more on each day.
+  case twoWeeksOnly
   /// The whole month, with what is on each day in its cell.
   case month
+
+  var isMonth: Bool { self == .monthList || self == .month }
+  var hasList: Bool { self == .twoWeeks || self == .monthList }
 }
 
 /// Edit Widget → Appearance: as the iPhone is, or always light or always dark.
@@ -154,6 +161,36 @@ struct WidgetModel {
       }
     }
     return groups
+  }
+
+  /// The month's weeks, Sunday first, with nil for the days of the months before and after it (or, `filled`, those
+  /// days too, as an iPad's month view shows them).
+  func monthRows(filled: Bool = false) -> [[String?]] {
+    let first = "\(month)-01"
+    let startCol = DayKey.weekday(first)
+    let days = DayKey.daysInMonth(first)
+    let rows = Int((Double(startCol + days) / 7).rounded(.up))
+    let start = DayKey.add(first, days: -startCol)
+    return (0..<rows).map { r in
+      (0..<7).map { c in
+        let key = DayKey.add(start, days: r * 7 + c)
+        return filled || key.hasPrefix(month) ? key : nil
+      }
+    }
+  }
+
+  /// This month, "YYYY-MM".
+  var month: String { String(today.prefix(7)) }
+
+  /// This week and the ones after it, Sunday first.
+  func weekRows(_ count: Int) -> [[String?]] {
+    let start = DayKey.sunday(today)
+    return (0..<count).map { w in (0..<7).map { c in DayKey.add(start, days: w * 7 + c) } }
+  }
+
+  /// A time as short as a wide day's chip writes it: "12 PM", "9:30 AM".
+  func shortTime(_ item: FeedItem) -> String {
+    item.time.replacingOccurrences(of: ":00 ", with: " ")
   }
 
   func dayLabel(_ key: String) -> String {

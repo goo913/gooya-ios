@@ -4,8 +4,11 @@ import WidgetKit
 // The Home Screen sizes and the Lock Screen ones. Small: today, or what is next. Medium: today's date and what is on
 // now or next, beside the coming days. Large, by its Layout: this week and the next with what is on each day and the
 // list under them (the default), the month with a dot per person and day and the list, or the month with what is on
-// each day. Tasks, schedules and the events of connected calendars, never routines. An event over several days is on
-// each of its days, never one bar across them. Every day shown opens that day in the app (gooya://day/YYYY-MM-DD).
+// each day, or the two weeks alone with room for more on each day. Extra large (the iPad's), by the same Layout: two
+// weeks or the month with the list beside them, or either across the whole width, where each day is wide enough for
+// longer titles and each thing's time. Tasks, schedules and the events of connected calendars, never routines. An
+// event over several days is on each of its days, never one bar across them. Every day shown opens that day in the app
+// (gooya://day/YYYY-MM-DD).
 
 struct WidgetRoot: View {
   @Environment(\.widgetFamily) private var family
@@ -45,12 +48,14 @@ struct WidgetContent: View {
     switch family {
     case .systemSmall: SmallView(m: m).padding(margins)
     case .systemMedium: MediumView(m: m).padding(margins)
-    case .systemLarge, .systemExtraLarge:
+    case .systemLarge:
       switch layout {
       case .twoWeeks: TwoWeeksView(m: m).padding(WidgetContent.gridInsets)
       case .monthList: MonthListView(m: m).padding(margins)
+      case .twoWeeksOnly: TwoWeeksView(m: m, list: false).padding(WidgetContent.gridInsets)
       case .month: MonthView(m: m).padding(WidgetContent.gridInsets)
       }
+    case .systemExtraLarge: WideView(m: m, layout: layout).padding(WidgetContent.gridInsets)
     default:
       #if os(iOS)
       AccessoryRoot(m: m, family: family)
@@ -334,12 +339,14 @@ struct LargeHeader: View {
   }
 }
 
+/// The days' letters over a grid ("Sun", "Mon"… over wide days).
 struct WeekdayLetters: View {
+  var names = false
   private let letters = ["S", "M", "T", "W", "T", "F", "S"]
   var body: some View {
     HStack(spacing: 0) {
       ForEach(0..<7, id: \.self) { i in
-        Text(letters[i]).font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+        Text(names ? DayKey.dayNames[i] : letters[i]).font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
       }
     }
     .frame(height: 12)
@@ -352,12 +359,14 @@ struct DayNumber: View {
   let key: String
   let weekend: Bool
   var withMonth = false
+  /// A day of the month before or after the one shown (the extra large month fills its first and last weeks).
+  var outside = false
   var body: some View {
     let isToday = key == m.today
     let p = DayKey.parts(key)
     Text(withMonth && p.d == 1 && !isToday ? "\(DayKey.monthShort[p.m - 1]) 1" : "\(p.d)")
       .font(.system(size: 11, weight: isToday || (withMonth && p.d == 1) ? .semibold : .regular))
-      .foregroundStyle(isToday ? Color.white : weekend ? Color.secondary : Color.primary)
+      .foregroundStyle(isToday ? Color.white : outside ? Color.secondary.opacity(0.55) : weekend ? Color.secondary : Color.primary)
       .frame(minWidth: 16, minHeight: 16)
       .background(isToday ? Color.red : Color.clear, in: Circle())
   }
@@ -365,34 +374,59 @@ struct DayNumber: View {
 
 /// What is on a day, in its cell: a short bar the width of the day with the title clipped at its end (never "…"), as
 /// the app's month view draws it. A task: a grey bar with a Reminders ring. An event or schedule: its colour's tint.
+/// In a wide day (the extra large size across its whole width) it ends with the time, and is a little bigger where the
+/// row has room.
 struct Chip: View {
   let m: WidgetModel
   let item: FeedItem
-  static let height: CGFloat = 12
+  var wide = false
+  var big = false
+  static func height(big: Bool) -> CGFloat { big ? 14 : 12 }
   var body: some View {
     let base = m.hex(item)
     let fill = item.isTask
       ? Color(hex: m.dark ? "#2c2c2e" : "#e9e9ee")
       : m.dark ? Color(hex: base, over: "#000000", amount: 0.27) : Color(hex: base, over: "#ffffff", amount: 0.2)
     let text: Color = item.isTask ? (item.completed ? Color.secondary : Color.primary) : Color(readable: base, dark: m.dark)
+    let title = Text(item.title)
+      .font(.system(size: big ? 10 : 9, weight: .semibold))
+      .foregroundStyle(text)
+      .lineLimit(1)
+      .fixedSize(horizontal: true, vertical: false)
+    // The title's width must not widen the day (minWidth 0): what does not fit is cut at its end.
+    let cut = title
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+      .mask {
+        HStack(spacing: 0) {
+          Rectangle()
+          LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 6)
+        }
+      }
+      .clipped()
     HStack(spacing: 2.5) {
-      if item.isTask { Ring(color: Color(hex: base), done: item.completed, size: 7) }
-      Text(item.title)
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(text)
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-    .padding(.leading, item.isTask ? 2 : 3)
-    // The title's width must not widen the day (minWidth 0): what does not fit is cut at the chip's end.
-    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-    .frame(height: Chip.height)
-    .mask {
-      HStack(spacing: 0) {
-        Rectangle()
-        LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 6)
+      if item.isTask { Ring(color: Color(hex: base), done: item.completed, size: big ? 8 : 7) }
+      if wide && !item.allDay {
+        // The time at the end when the whole title fits beside it; otherwise the title has the room.
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 4) {
+            title
+            Spacer(minLength: 0)
+            Text(m.shortTime(item))
+              .font(.system(size: 9, weight: .medium))
+              .foregroundStyle(item.isTask ? Color.secondary : text.opacity(0.8))
+              .lineLimit(1)
+              .fixedSize()
+          }
+          .padding(.trailing, 3)
+          cut
+        }
+      } else {
+        cut
       }
     }
+    .padding(.leading, item.isTask ? 2 : 3)
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    .frame(height: Chip.height(big: big))
     .background(fill, in: RoundedRectangle(cornerRadius: 3.5, style: .continuous))
     .clipped()
   }
@@ -406,22 +440,25 @@ struct ItemsCell: View {
   let weekend: Bool
   let slots: Int
   var withMonth = false
+  var wide = false
+  var big = false
+  var outside = false
   var body: some View {
     let list = m.cell(key)
     let overflow = list.count > slots ? list.count - max(0, slots - 1) : 0
     let shown = overflow > 0 ? Array(list.prefix(max(0, slots - 1))) : list
     DayLink(key: key) {
       VStack(spacing: 1) {
-        DayNumber(m: m, key: key, weekend: weekend, withMonth: withMonth)
+        DayNumber(m: m, key: key, weekend: weekend, withMonth: withMonth, outside: outside)
           .padding(.bottom, 1)
-        ForEach(shown) { item in Chip(m: m, item: item) }
+        ForEach(shown) { item in Chip(m: m, item: item, wide: wide, big: big) }
         if overflow > 0 {
           Text("+\(overflow)")
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: big ? 10 : 9, weight: .semibold))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 3)
-            .frame(height: Chip.height)
+            .frame(height: Chip.height(big: big))
         }
         Spacer(minLength: 0)
       }
@@ -434,8 +471,46 @@ struct ItemsCell: View {
 }
 
 /// How many chips fit under the day's number in a row this tall (the number takes 20 points with its padding).
-func chipSlots(rowHeight: CGFloat) -> Int {
-  max(1, Int((rowHeight - 20 + 1) / (Chip.height + 1)))
+func chipSlots(rowHeight: CGFloat, big: Bool = false) -> Int {
+  max(1, Int((rowHeight - 20 + 1) / (Chip.height(big: big) + 1)))
+}
+
+/// Weeks of days, the rows sharing the height they are given: each day's number and what is on it.
+struct DaysGrid: View {
+  let m: WidgetModel
+  /// Each week's days, Sunday first; nil for a day outside the month.
+  let rows: [[String?]]
+  var withMonth = false
+  var wide = false
+  /// The month shown ("YYYY-MM"), when its days are to stand out from the days before and after it.
+  var month: String? = nil
+  var body: some View {
+    GeometryReader { geo in
+      let rowHeight = geo.size.height / CGFloat(max(1, rows.count))
+      // Wide days' chips are bigger where the row has room for three, or for as many as small ones (not in a month
+      // of six weeks, where small ones fit two a day and big ones one).
+      let bigSlots = chipSlots(rowHeight: rowHeight, big: true)
+      let big = wide && (bigSlots >= 3 || bigSlots >= chipSlots(rowHeight: rowHeight))
+      let slots = chipSlots(rowHeight: rowHeight, big: big)
+      VStack(spacing: 0) {
+        ForEach(Array(rows.enumerated()), id: \.offset) { _, days in
+          VStack(spacing: 0) {
+            WeekLine()
+            HStack(spacing: 0) {
+              ForEach(0..<7, id: \.self) { c in
+                if let key = days[c] {
+                  ItemsCell(m: m, key: key, weekend: c == 0 || c == 6, slots: slots, withMonth: withMonth, wide: wide, big: big, outside: month.map { !key.hasPrefix($0) } ?? false)
+                } else {
+                  Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+              }
+            }
+          }
+          .frame(height: rowHeight)
+        }
+      }
+    }
+  }
 }
 
 /// A thin line over each week, as in Apple Calendar's month.
@@ -443,30 +518,24 @@ struct WeekLine: View {
   var body: some View { Rectangle().fill(Color.secondary.opacity(0.28)).frame(height: 0.5) }
 }
 
-/// This week and the next with what is on each day, and the list of what is coming under them.
+/// This week and the next with what is on each day, and the list of what is coming under them (or, without the list,
+/// the two weeks filling the widget, with room for more on each day).
 struct TwoWeeksView: View {
   let m: WidgetModel
+  var list = true
   var body: some View {
-    let start = DayKey.sunday(m.today)
     VStack(alignment: .leading, spacing: 0) {
       LargeHeader(m: m)
       Spacer().frame(height: 4)
       WeekdayLetters()
-      ForEach(0..<2, id: \.self) { w in
-        let week = DayKey.add(start, days: w * 7)
-        VStack(spacing: 0) {
-          WeekLine()
-          HStack(spacing: 0) {
-            ForEach(0..<7, id: \.self) { c in
-              ItemsCell(m: m, key: DayKey.add(week, days: c), weekend: c == 0 || c == 6, slots: 3, withMonth: true)
-            }
-          }
-        }
-        .frame(height: 60)
+      if list {
+        DaysGrid(m: m, rows: m.weekRows(2), withMonth: true).frame(height: 120)
+        WeekLine()
+        Spacer().frame(height: 7)
+        FittedList(m: m)
+      } else {
+        DaysGrid(m: m, rows: m.weekRows(2), withMonth: true)
       }
-      WeekLine()
-      Spacer().frame(height: 7)
-      FittedList(m: m)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .widgetURL(WidgetModel.url(m.today))
@@ -477,37 +546,11 @@ struct TwoWeeksView: View {
 struct MonthView: View {
   let m: WidgetModel
   var body: some View {
-    let p = DayKey.parts(m.today)
-    let first = String(format: "%04d-%02d-01", p.y, p.m)
-    let startCol = DayKey.weekday(first)
-    let days = DayKey.daysInMonth(first)
-    let rows = Int((Double(startCol + days) / 7).rounded(.up))
     VStack(alignment: .leading, spacing: 0) {
       LargeHeader(m: m)
       Spacer().frame(height: 4)
       WeekdayLetters()
-      GeometryReader { geo in
-        let rowHeight = geo.size.height / CGFloat(rows)
-        let slots = chipSlots(rowHeight: rowHeight)
-        VStack(spacing: 0) {
-          ForEach(0..<rows, id: \.self) { r in
-            VStack(spacing: 0) {
-              WeekLine()
-              HStack(spacing: 0) {
-                ForEach(0..<7, id: \.self) { c in
-                  let idx = r * 7 + c - startCol
-                  if idx >= 0 && idx < days {
-                    ItemsCell(m: m, key: String(format: "%04d-%02d-%02d", p.y, p.m, idx + 1), weekend: c == 0 || c == 6, slots: slots)
-                  } else {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                  }
-                }
-              }
-            }
-            .frame(height: rowHeight)
-          }
-        }
-      }
+      DaysGrid(m: m, rows: m.monthRows())
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .widgetURL(WidgetModel.url(m.today))
@@ -533,19 +576,13 @@ struct MonthGrid: View {
   let m: WidgetModel
 
   var body: some View {
-    let p = DayKey.parts(m.today)
-    let first = String(format: "%04d-%02d-01", p.y, p.m)
-    let startCol = DayKey.weekday(first)
-    let days = DayKey.daysInMonth(first)
-    let rows = Int((Double(startCol + days) / 7).rounded(.up))
     VStack(spacing: 1) {
       WeekdayLetters()
-      ForEach(0..<rows, id: \.self) { r in
+      ForEach(Array(m.monthRows().enumerated()), id: \.offset) { _, days in
         HStack(spacing: 0) {
           ForEach(0..<7, id: \.self) { c in
-            let idx = r * 7 + c - startCol
-            if idx >= 0 && idx < days {
-              DotsCell(m: m, key: String(format: "%04d-%02d-%02d", p.y, p.m, idx + 1), weekend: c == 0 || c == 6)
+            if let key = days[c] {
+              DotsCell(m: m, key: key, weekend: c == 0 || c == 6)
             } else {
               Color.clear.frame(maxWidth: .infinity).frame(height: 23)
             }
@@ -573,6 +610,36 @@ struct DotsCell: View {
       .frame(maxWidth: .infinity)
       .frame(height: 23)
     }
+  }
+}
+
+// MARK: - Extra large (the iPad's)
+
+/// The month's name and whose calendar it is across the top; under it two weeks or the month with the list of what is
+/// coming beside it, or across the whole width, where each day is wide enough for longer titles and each thing's time.
+struct WideView: View {
+  let m: WidgetModel
+  let layout: WidgetLayout
+  var body: some View {
+    let rows = layout.isMonth ? m.monthRows(filled: true) : m.weekRows(2)
+    VStack(alignment: .leading, spacing: 0) {
+      LargeHeader(m: m)
+      Spacer().frame(height: 4)
+      GeometryReader { geo in
+        let gap: CGFloat = 16
+        let gridWidth = layout.hasList ? ((geo.size.width - gap) * 0.6).rounded() : geo.size.width
+        HStack(alignment: .top, spacing: gap) {
+          VStack(spacing: 0) {
+            WeekdayLetters(names: !layout.hasList)
+            DaysGrid(m: m, rows: rows, withMonth: true, wide: !layout.hasList, month: layout.isMonth ? m.month : nil)
+          }
+          .frame(width: gridWidth)
+          if layout.hasList { FittedList(m: m) }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .widgetURL(WidgetModel.url(m.today))
   }
 }
 
