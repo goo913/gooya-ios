@@ -58,6 +58,7 @@ interface GooyaRemindersModule {
   reminders(listIds: string[], completedSince: number): Promise<NativeReminder[]>;
   save(input: ReminderSave): Promise<NativeReminder>;
   remove(id: string): Promise<boolean>;
+  isMac(): boolean;
   addListener(event: "onChange", listener: () => void): EventSubscription;
 }
 
@@ -77,6 +78,8 @@ export const lists = () => need().lists();
 export const reminders = (listIds: string[], completedSince: number) => need().reminders(listIds, completedSince);
 export const save = (input: ReminderSave) => need().save(input);
 export const remove = (id: string) => need().remove(id);
+/** GOOYA running on a Mac (the iPhone app on an Apple silicon Mac). */
+export const isMac = () => (native?.isMac ? native.isMac() : false);
 
 /** Called when anything changes in Reminders (including GOOYA's own saves). */
 export function onChange(listener: () => void): EventSubscription | null {

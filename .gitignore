@@ -7,8 +7,9 @@ functions/lib/
 .expo/
 dist/
 expo-env.d.ts
-# The native project is generated (npx expo prebuild); nothing in it is edited by hand.
-ios/
+# The native project is generated (npx expo prebuild); nothing in it is edited by hand. Only the top-level one: the
+# app's own native module (modules/gooya-reminders/ios) is source.
+/ios/
 
 # Firebase's file for the real project (scripts/phone.mjs downloads it): never committed
 /firebase/GoogleService-Info.plist
