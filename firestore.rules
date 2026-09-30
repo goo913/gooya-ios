@@ -49,8 +49,15 @@ service cloud.firestore {
       allow delete: if isMember();
     }
 
-    // schedules/{id}: recurring background routines (work, sleep, ...).
+    // schedules/{id}: things happening at a time (lunch at noon), GOOYA's own; either person may add them for either.
     match /schedules/{id} {
+      allow read: if isMember();
+      allow create, update: if isMember() && validPersonKey(request.resource.data.owner);
+      allow delete: if isMember();
+    }
+
+    // routines/{id}: recurring background routines (work, sleep, ...). Never copied to other calendars.
+    match /routines/{id} {
       allow read: if isMember();
       allow create, update: if isMember() && validPersonKey(request.resource.data.owner);
       allow delete: if isMember();

@@ -1,6 +1,6 @@
 import { onDocumentWritten, onDocumentDeleted } from 'firebase-functions/v2/firestore'
 import { logger } from 'firebase-functions'
-import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
+import { isLegacyRoutine, normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, type PersonKey } from '../../../shared/people'
 import { INTEGRATIONS_KEY, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, secretRef } from './common'
 import { exportItemToGoogle, pushGoogleEvent, revertGoogleEvent, syncGoogleAccount } from './google'
@@ -34,7 +34,7 @@ export const onEventWritten = onDocumentWritten({ document: 'events/{id}', secre
   }
 })
 
-/** Export tasks/schedules on change (GOOYA → connected calendars). */
+/** Tasks and schedules changed in GOOYA are copied to the GOOYA calendar in the owner's Google and iCloud (when on). */
 export const onTaskExport = onDocumentWritten({ document: 'tasks/{id}', secrets: SECRETS }, async (event) => {
   const after = event.data?.after
   const before = event.data?.before
@@ -43,16 +43,31 @@ export const onTaskExport = onDocumentWritten({ document: 'tasks/{id}', secrets:
   if (!owner || !(owner in PEOPLE)) return
   await exportItemToGoogle(owner, 'task', event.params.id, task)
   await exportItemToApple(owner, 'task', event.params.id, task)
+  // Given to the other person: the copy leaves the former owner's calendars.
+  const was = before?.data()?.owner as PersonKey | undefined
+  if (was && was !== owner && was in PEOPLE) {
+    await exportItemToGoogle(was, 'task', event.params.id, null)
+    await exportItemToApple(was, 'task', event.params.id, null)
+  }
 })
 
 export const onScheduleExport = onDocumentWritten({ document: 'schedules/{id}', secrets: SECRETS }, async (event) => {
   const after = event.data?.after
   const before = event.data?.before
-  const schedule = after?.exists ? normalizeSchedule(after.id, after.data() as Record<string, unknown>) : null
-  const owner = (schedule?.owner ?? (before?.data()?.owner as PersonKey)) as PersonKey | undefined
+  const next = after?.exists ? (after.data() as Record<string, unknown>) : null
+  const prev = before?.exists ? (before.data() as Record<string, unknown>) : null
+  // A routine that an older build still keeps in "schedules" is never copied into a calendar.
+  if ((next && isLegacyRoutine(next)) || (!next && prev && isLegacyRoutine(prev))) return
+  const schedule = next ? normalizeSchedule(event.params.id, next) : null
+  const owner = (schedule?.owner ?? prev?.owner) as PersonKey | undefined
   if (!owner || !(owner in PEOPLE)) return
   await exportItemToGoogle(owner, 'schedule', event.params.id, schedule)
   await exportItemToApple(owner, 'schedule', event.params.id, schedule)
+  const formerOwner = prev?.owner as PersonKey | undefined
+  if (formerOwner && formerOwner !== owner && formerOwner in PEOPLE) {
+    await exportItemToGoogle(formerOwner, 'schedule', event.params.id, null)
+    await exportItemToApple(formerOwner, 'schedule', event.params.id, null)
+  }
 })
 
 /** What decides what an account syncs: each calendar's direction and the two export switches. */

@@ -5,11 +5,13 @@ import { logger } from 'firebase-functions'
 import { createDAVClient, type DAVCalendar, type DAVCalendarObject } from 'tsdav'
 import { createHash, randomUUID } from 'node:crypto'
 import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
-import { deletedInCalendar, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange } from '../../../shared/calendarCopy'
-import { normalizeTask } from '../../../shared/normalize'
+import { deletedInCalendar, plainNotes, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type ScheduleCopy } from '../../../shared/calendarCopy'
+import { scheduleAsEvent } from '../../../shared/schedules'
+import { normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
+import { keyInZone } from '../../../shared/time'
 import { INTEGRATIONS_KEY, accountsRef, decrypt, encrypt, eventDocId, eventsRef, exporting, importing, secretRef, shortHash, twoWay, type AccountDoc, type CalendarConfig } from './common'
-import { scheduleToVevent, taskToVevent, wrapCalendar } from './ics'
+import { taskToVevent, wrapCalendar } from './ics'
 import { applyEventToIcs, copyFromIcs, parseIcsEvent } from './icsEdit'
 
 const ICLOUD = 'https://caldav.icloud.com'
@@ -329,6 +331,7 @@ interface Written {
   h: string
   e: string
 }
+type CopyKind = 'task' | 'schedule'
 
 const filenameOf = (key: string) => `${key.replace(':', '-')}.ics`
 function keyOfUrl(url: string): string | null {
@@ -361,19 +364,39 @@ async function ensureAppleExportCalendar(person: PersonKey, accountId: string, c
 }
 
 /**
- * Items of the person that belong in iCloud's GOOYA calendar: GOOYA's own tasks. Never routines, and not Apple Reminders
- * (they are in Apple Calendar already).
+ * The calendar data GOOYA writes for one item into iCloud, or null for nothing (a copy made before is taken out). Only
+ * GOOYA's own tasks (Apple Reminders are in Apple Calendar already) and schedules; routines never.
  */
+function icsFor(acc: AccountDoc, kind: CopyKind, item: Task | Schedule | null): string | null {
+  if (!item) return null
+  if (kind === 'task') {
+    const t = item as Task
+    const v = acc.exportTasks === true && t.source === 'gooya' && taskIsCopied(t) ? taskToVevent(t) : null
+    return v ? wrapCalendar('GOOYA', [v]) : null
+  }
+  if (acc.exportSchedules !== true) return null
+  const s = item as Schedule
+  // Written as of the schedule's last change, so the same schedule always gives the same calendar data.
+  return applyEventToIcs(null, scheduleAsEvent(s, '#0091ff'), s.updatedAt || s.createdAt || 0)
+}
+
+/** Items of the person that belong in iCloud's GOOYA calendar. */
 async function wantedInApple(person: PersonKey, acc: AccountDoc): Promise<Map<string, string>> {
   const db = getFirestore()
   const want = new Map<string, string>()
   if (acc.exportTasks === true) {
     const tasks = await db.collection('tasks').where('owner', '==', person).get()
     for (const d of tasks.docs) {
-      const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
-      if (t.source !== 'gooya' || !taskIsCopied(t)) continue
-      const v = taskToVevent(t)
-      if (v) want.set(`task:${t.id}`, wrapCalendar('GOOYA', [v]))
+      const ics = icsFor(acc, 'task', normalizeTask(d.id, d.data() as Record<string, unknown>))
+      if (ics) want.set(`task:${d.id}`, ics)
+    }
+  }
+  if (acc.exportSchedules === true) {
+    const schedules = await db.collection('schedules').where('owner', '==', person).get()
+    for (const d of schedules.docs) {
+      const s = normalizeSchedule(d.id, d.data() as Record<string, unknown>)
+      const ics = s && icsFor(acc, 'schedule', s)
+      if (ics) want.set(`schedule:${d.id}`, ics)
     }
   }
   return want
@@ -417,20 +440,14 @@ async function removeAppleExport(person: PersonKey, accountId: string, client: D
   await accountsRef(person).doc(accountId).set({ exportCalendarId: FieldValue.delete(), exportCtag: FieldValue.delete() }, { merge: true })
 }
 
-/** Export one changed item (called from the task/schedule triggers). */
-export async function exportItemToApple(person: PersonKey, kind: 'task' | 'schedule', id: string, item: Task | Schedule | null): Promise<void> {
+/** Export one changed item (called from the task and schedule triggers). */
+export async function exportItemToApple(person: PersonKey, kind: CopyKind, id: string, item: Task | Schedule | null): Promise<void> {
   const accounts = await accountsRef(person).where('source', '==', 'apple').get()
   for (const a of accounts.docs) {
     const acc = a.data() as AccountDoc
     if (!exporting(acc) || !acc.exportCalendarId) continue
     const key = `${kind}:${id}`
-    let ics: string | null = null
-    if (item && kind === 'task' && acc.exportTasks === true) {
-      const t = item as Task
-      const v = t.source === 'gooya' && taskIsCopied(t) ? taskToVevent(t) : null
-      ics = v ? wrapCalendar('GOOYA', [v]) : null
-    }
-    // Routines are never copied: a copy left from before is taken out.
+    const ics = icsFor(acc, kind, item)
     const stateRef = exportStateRef(person, a.id)
     try {
       const written = (await stateRef.get()).get(new FieldPath('items', key)) as Written | undefined
@@ -451,10 +468,27 @@ export async function exportItemToApple(person: PersonKey, kind: 'task' | 'sched
 
 // ---------------------------------------------------------------- changes made in the GOOYA calendar (iCloud → GOOYA)
 
+/** An iCloud copy of a schedule in plain values: the schedule itself, its deleted days and its changed ones. */
+function scheduleCopyFromIcs(data: string, tz: string, now: number): { copy: ScheduleCopy; exdates: string[]; occurrences: { dateKey: string; copy: ScheduleCopy }[] } | null {
+  const p = parseIcsEvent(data, tz)
+  if (!p) return null
+  const updated = p.updated || now
+  const copy: ScheduleCopy = { title: p.title === '(No title)' ? '' : p.title, notes: p.notes, location: p.location, allDay: p.allDay, start: p.start, end: p.end, startDate: p.startDate, endDate: p.endDate, updated }
+  const occurrences = Object.entries(p.overrides).map(([dateKey, ov]) => {
+    const s = ov.start ?? p.start
+    const e = ov.end ?? s + (p.end - p.start)
+    return {
+      dateKey,
+      copy: { ...copy, title: ov.title ?? copy.title, notes: ov.notes ?? copy.notes, location: ov.location ?? copy.location, start: s, end: e, startDate: keyInZone(s, tz), endDate: keyInZone(Math.max(s, e - 1), tz) },
+    }
+  })
+  return { copy, exdates: p.exdates, occurrences }
+}
+
 /**
  * Reads the GOOYA calendar when iCloud says it changed, and applies changes people made there (in Apple Calendar on a
  * phone or Mac) to the tasks and schedules the copies stand for. GOOYA knows its own writes by their etags. An event
- * added to the GOOYA calendar becomes a new task.
+ * added to the GOOYA calendar becomes a new schedule.
  */
 async function syncAppleExport(person: PersonKey, accountId: string, client: Dav, calendar: DAVCalendar): Promise<void> {
   const accRef = accountsRef(person).doc(accountId)
@@ -466,11 +500,15 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
   const objects = await client.fetchCalendarObjects({ calendar })
   const db = getFirestore()
   // Only what GOOYA copies there now can be changed or deleted from there (not routines or reminders from before).
-  const tasksSnap = await db.collection('tasks').where('owner', '==', person).get()
+  const [tasksSnap, schedulesSnap] = await Promise.all([db.collection('tasks').where('owner', '==', person).get(), db.collection('schedules').where('owner', '==', person).get()])
   const items = new Map<string, Task | Schedule>()
   for (const d of tasksSnap.docs) {
     const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
-    if (t.source === 'gooya') items.set(`task:${d.id}`, t)
+    if (icsFor(acc, 'task', t)) items.set(`task:${d.id}`, t)
+  }
+  for (const d of schedulesSnap.docs) {
+    const x = normalizeSchedule(d.id, d.data() as Record<string, unknown>)
+    if (x && icsFor(acc, 'schedule', x)) items.set(`schedule:${d.id}`, x)
   }
   const seen = new Set<string>()
   const etags: Record<string, Written | FieldValue> = {}
@@ -481,20 +519,21 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
     try {
       if (!key) {
         if (first) continue
-        // Something added to the GOOYA calendar in Apple Calendar: it becomes a GOOYA task (written back as one).
+        // Something added to the GOOYA calendar in Apple Calendar: it becomes a GOOYA schedule (written back as one).
         const tz = PEOPLE[person].timezone
-        const c = copyFromIcs(obj.data, tz, now)
+        const c = scheduleCopyFromIcs(obj.data, tz, now)
         if (!c || !c.copy.title.trim()) continue
-        // The id comes from the event, so two syncs reading the same change make one task.
-        const ref = db.collection('tasks').doc(`ic_${shortHash(`${person}:${obj.url}`, 20)}`)
+        // The id comes from the event, so two syncs reading the same change make one schedule.
+        const ref = db.collection('schedules').doc(`is_${shortHash(`${person}:${obj.url}`, 20)}`)
         if ((await ref.get()).exists) continue
+        const parsed = parseIcsEvent(obj.data, tz)
         await ref.create({
-          owner: person, createdBy: person, listId: 'tasks', title: c.copy.title.trim(), notes: c.copy.notes, dueDate: c.copy.startDate, dueTime: c.copy.allDay ? null : c.copy.startTime,
-          timezone: tz, rrule: null, exdates: [], overrides: {}, completed: false, completedDates: [], earlyReminders: [], tags: [], flagged: false, priority: 0, source: 'gooya',
-          externalRefs: [], createdAt: now, updatedAt: now,
+          owner: person, createdBy: person, title: c.copy.title.trim(), notes: plainNotes(c.copy.notes), location: c.copy.location, allDay: c.copy.allDay, start: c.copy.start,
+          end: c.copy.end, startDate: c.copy.startDate, endDate: c.copy.endDate, timezone: parsed?.timezone ?? tz, rrule: parsed?.rrule ?? null, exdates: [], overrides: {},
+          createdAt: now, updatedAt: now,
         })
         await client.deleteCalendarObject({ calendarObject: { url: obj.url, etag: '' } }).catch(() => undefined)
-        logger.info('apple copy: new task from the GOOYA calendar', { person, task: ref.id })
+        logger.info('apple copy: new schedule from the GOOYA calendar', { person, schedule: ref.id })
         continue
       }
       seen.add(key)
@@ -502,10 +541,8 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
       if (!was || was.e === obj.etag || first) continue
       const item = items.get(key)
       if (!item) continue
-      const kind = key.startsWith('task:') ? 'task' : 'schedule'
+      const kind: CopyKind = key.startsWith('task:') ? 'task' : 'schedule'
       const tz = item.timezone || PEOPLE[person].timezone
-      const c = copyFromIcs(obj.data, tz, now)
-      if (!c) continue
       let current = item
       let changed = false
       const apply = (patch: Partial<Task> | Partial<Schedule> | null) => {
@@ -513,9 +550,19 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
         current = { ...current, ...patch } as Task | Schedule
         changed = true
       }
-      apply(kind === 'task' ? taskChangeFromCopy(current as Task, c.copy) : scheduleChangeFromCopy(current as Schedule, c.copy))
-      for (const dateKey of c.exdates) apply(kind === 'task' ? taskOccurrenceChange(current as Task, { dateKey, cancelled: true }) : scheduleOccurrenceChange(current as Schedule, { dateKey, cancelled: true }))
-      for (const o of c.occurrences) apply(kind === 'task' ? taskOccurrenceChange(current as Task, o) : scheduleOccurrenceChange(current as Schedule, o))
+      if (kind === 'task') {
+        const c = copyFromIcs(obj.data, tz, now)
+        if (!c) continue
+        apply(taskChangeFromCopy(current as Task, c.copy))
+        for (const dateKey of c.exdates) apply(taskOccurrenceChange(current as Task, { dateKey, cancelled: true }))
+        for (const o of c.occurrences) apply(taskOccurrenceChange(current as Task, o))
+      } else {
+        const c = scheduleCopyFromIcs(obj.data, tz, now)
+        if (!c) continue
+        apply(scheduleChangeFromCopy(current as Schedule, c.copy))
+        for (const dateKey of c.exdates) apply(scheduleOccurrenceChange(current as Schedule, { dateKey, cancelled: true }))
+        for (const o of c.occurrences) apply(scheduleOccurrenceChange(current as Schedule, { dateKey: o.dateKey, cancelled: false, copy: o.copy }))
+      }
       // Known now, so it is not read again until it changes. When GOOYA takes the change, what it would write for the
       // item now counts as written: the copy stays as the person left it in Apple Calendar.
       let h = was.h
@@ -523,8 +570,8 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
         const { id: _id, ...fields } = current
         void _id
         const next = { ...current, updatedAt: now } as Task & Schedule
-        const v = kind === 'task' ? (taskIsCopied(next) ? taskToVevent(next) : null) : scheduleToVevent(next)
-        if (v) h = icsHash(wrapCalendar('GOOYA', [v]))
+        const ics = icsFor(acc, kind, next)
+        if (ics) h = icsHash(ics)
         await stateRef.set({ items: { [key]: { h, e: String(obj.etag ?? '') } } }, { merge: true })
         await db.collection(kind === 'task' ? 'tasks' : 'schedules').doc(item.id).set({ ...fields, updatedAt: now }, { merge: true })
         logger.info('apple copy: changed in Apple Calendar', { person, key })
@@ -538,7 +585,7 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
     for (const key of Object.keys(written)) {
       if (seen.has(key)) continue
       const item = items.get(key) ?? null
-      const kind = key.startsWith('task:') ? 'task' : 'schedule'
+      const kind: CopyKind = key.startsWith('task:') ? 'task' : 'schedule'
       if (deletedInCalendar(item as Task | Schedule | null, kind)) {
         await db.collection(kind === 'task' ? 'tasks' : 'schedules').doc(key.slice(key.indexOf(':') + 1)).delete()
         logger.info('apple copy: deleted in Apple Calendar', { person, key })

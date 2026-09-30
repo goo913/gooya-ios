@@ -1,4 +1,4 @@
-import type { DateKey, EventOccurrence, ScheduleOccurrence, TaskOccurrence } from "@shared/model";
+import type { CalendarEvent, DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from "@shared/model";
 import { otherPerson, type PersonKey } from "@shared/people";
 import { splitByDay } from "@shared/recurrence";
 import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, keyInZone, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
@@ -11,12 +11,12 @@ import { EventChip, TaskChip, TaskRing } from "@/components/Chips";
 import { mix, readableTint, tintText } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { useMetrics, type Metrics } from "@/lib/metrics";
-import { useEventOccurrences, useScheduleOccurrences, useTaskOccurrences } from "@/lib/occurrences";
+import { useEventOccurrences, useRoutineOccurrences, useTaskOccurrences } from "@/lib/occurrences";
 import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib/people";
-import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
+import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
 import { applyTaskEdit, deleteTaskScope, movedFields, setCompleted, type TaskFields } from "@/lib/taskOps";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
-import { deleteSchedule, patchEvent } from "@/lib/db";
+import { deleteRoutine, patchEvent, patchSchedule } from "@/lib/db";
 import { useNav } from "@/store/nav";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
@@ -38,17 +38,17 @@ interface Seg<T> {
 interface ColumnData {
   timed: Seg<TaskOccurrence>[];
   allDay: TaskOccurrence[];
-  schedules: Seg<ScheduleOccurrence>[];
+  routines: Seg<RoutineOccurrence>[];
   events: Seg<EventOccurrence>[];
   allDayEvents: EventOccurrence[];
 }
 
 export interface DayActions {
   openTask: (occ: TaskOccurrence) => void;
-  openSchedule: (occ: ScheduleOccurrence) => void;
+  openRoutine: (occ: RoutineOccurrence) => void;
   openEvent: (occ: EventOccurrence) => void;
   editTask: (occ: TaskOccurrence) => void;
-  editSchedule: (occ: ScheduleOccurrence, dayOnly: boolean) => void;
+  editRoutine: (occ: RoutineOccurrence, dayOnly: boolean) => void;
   createTask: (date: DateKey, person: PersonKey, minutes: number) => void;
 }
 
@@ -85,9 +85,9 @@ function formatDayTitle(key: DateKey): string {
   return `${WEEKDAY_LONG[new Date(Date.UTC(y, mo - 1, d)).getUTCDay()]} – ${MONTH_SHORT[mo - 1]} ${d}, ${y}`;
 }
 
-function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurrence[], schedules: ScheduleOccurrence[], events: EventOccurrence[]): Map<string, ColumnData> {
+function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurrence[], routines: RoutineOccurrence[], events: EventOccurrence[]): Map<string, ColumnData> {
   const map = new Map<string, ColumnData>();
-  for (const d of dates) for (const p of people) map.set(colKey(d, p), { timed: [], allDay: [], schedules: [], events: [], allDayEvents: [] });
+  for (const d of dates) for (const p of people) map.set(colKey(d, p), { timed: [], allDay: [], routines: [], events: [], allDayEvents: [] });
   const dateSet = new Set(dates);
   for (const occ of tasks) {
     if (!people.includes(occ.task.owner)) continue;
@@ -100,11 +100,11 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
       map.get(colKey(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
     }
   }
-  for (const occ of schedules) {
-    if (!people.includes(occ.schedule.owner)) continue;
+  for (const occ of routines) {
+    if (!people.includes(occ.routine.owner)) continue;
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
-      map.get(colKey(s.dateKey, occ.schedule.owner))!.schedules.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane: 0, lanes: 1 });
+      map.get(colKey(s.dateKey, occ.routine.owner))!.routines.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane: 0, lanes: 1 });
     }
   }
   for (const occ of events) {
@@ -115,14 +115,16 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
     }
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
-      map.get(colKey(s.dateKey, occ.event.owner))!.events.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.max(s.endMin, s.startMin + 1), lane: 0, lanes: 1 });
+      // A schedule without an end time takes the room of a task (half an hour), so what follows does not cover it.
+      const endMin = occ.end > occ.start ? Math.max(s.endMin, s.startMin + 1) : Math.min(24 * 60, s.startMin + TASK_MINUTES);
+      map.get(colKey(s.dateKey, occ.event.owner))!.events.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin, lane: 0, lanes: 1 });
     }
   }
   for (const c of map.values()) {
     // Tasks and events share the columns: overlapping ones sit side by side, as in Apple Calendar.
     assignLanes<TaskOccurrence | EventOccurrence>([...c.timed, ...c.events] as Seg<TaskOccurrence | EventOccurrence>[]);
     c.allDay.sort((a, b) => a.title.localeCompare(b.title));
-    c.schedules.sort((a, b) => a.startMin - b.startMin);
+    c.routines.sort((a, b) => a.startMin - b.startMin);
   }
   return map;
 }
@@ -154,7 +156,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const otherInfo = usePerson(other);
   const infos: Record<PersonKey, PersonInfo> = me === "gooya" ? { gooya: meInfo, eunbi: otherInfo } : { gooya: otherInfo, eunbi: meInfo };
   const secondGutter = meInfo.settings.secondGutter;
-  const intensity = meInfo.settings.scheduleIntensity ?? (dark ? 0.5 : 0.35);
+  const intensity = meInfo.settings.routineIntensity ?? (dark ? 0.5 : 0.35);
   const days = timelineDays;
   const people = useMemo<PersonKey[]>(() => (timelinePeople === "me" ? [me] : timelinePeople === "other" ? [other] : [me, other]), [timelinePeople, me, other]);
   const todayNonce = useNav((s) => s.todayNonce);
@@ -166,7 +168,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const rangeStart = useMemo(() => startOfDayMs(allDates[0], viewerTz) - DAY_MS, [allDates]);
   const rangeEnd = useMemo(() => startOfDayMs(addDaysKey(allDates[allDates.length - 1], 1), viewerTz) + DAY_MS, [allDates]);
   const taskOcc = useTaskOccurrences(rangeStart, rangeEnd, people);
-  const schedOcc = useScheduleOccurrences(rangeStart, rangeEnd, people);
+  const schedOcc = useRoutineOccurrences(rangeStart, rangeEnd, people);
   const eventOcc = useEventOccurrences(rangeStart, rangeEnd, people);
   const columns = useMemo(() => buildColumns(allDates, people, taskOcc, schedOcc, eventOcc), [allDates, people, taskOcc, schedOcc, eventOcc]);
   const allDayRows = useMemo(() => {
@@ -246,15 +248,15 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   // eslint-disable-next-line react-hooks/refs
   const pinch = useMemo(() => Gesture.Pinch().runOnJS(true).onStart(onPinchStart).onUpdate(onPinchUpdate), [onPinchStart, onPinchUpdate]);
 
-  const scheduleMenu = useCallback(
-    (occ: ScheduleOccurrence) => {
+  const routineMenu = useCallback(
+    (occ: RoutineOccurrence) => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       sheet([
-        { label: "Edit This Day Only", onSelect: () => actions.editSchedule(occ, true) },
-        { label: "Edit Schedule…", onSelect: () => actions.editSchedule(occ, false) },
-        { label: "Delete This Day Only", destructive: true, onSelect: () => void deleteScheduleDay(occ.schedule, occ.dateKey) },
-        { label: "Delete All Future", destructive: true, onSelect: () => void endScheduleBefore(occ.schedule, occ.dateKey) },
-        { label: "Delete Schedule", destructive: true, onSelect: () => void deleteSchedule(occ.schedule.id) },
+        { label: "Edit This Day Only", onSelect: () => actions.editRoutine(occ, true) },
+        { label: "Edit Routine…", onSelect: () => actions.editRoutine(occ, false) },
+        { label: "Delete This Day Only", destructive: true, onSelect: () => void deleteRoutineDay(occ.routine, occ.dateKey) },
+        { label: "Delete All Future", destructive: true, onSelect: () => void endRoutineBefore(occ.routine, occ.dateKey) },
+        { label: "Delete Routine", destructive: true, onSelect: () => void deleteRoutine(occ.routine.id) },
       ]);
     },
     [actions],
@@ -289,16 +291,18 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
     ]);
   }, []);
 
-  // An event of a two-way calendar dragged to another time or day: the change goes to Google or iCloud.
+  // A schedule dragged to another time or day: GOOYA's own, or an event of a two-way calendar (the change goes to
+  // Google or iCloud).
   const commitEventMove = useCallback((seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => {
     const { event, dateKey } = seg.occ;
     const start = zonedMs(date, formatHHmm(Math.floor(startMin / 60), startMin % 60), viewerTz);
     const delta = start - seg.occ.start;
     const days = (s: number, e: number) => ({ startDate: keyInZone(s, event.timezone), endDate: keyInZone(Math.max(s, e - 1), event.timezone) });
-    const all = () => void patchEvent(event.id, { start: event.start + delta, end: event.end + delta, ...days(event.start + delta, event.end + delta) });
+    const save = (patch: Partial<CalendarEvent>) => void (event.source === "gooya" ? patchSchedule(event.id, patch) : patchEvent(event.id, patch));
+    const all = () => save({ start: event.start + delta, end: event.end + delta, ...days(event.start + delta, event.end + delta) });
     if (!event.rrule) return all();
     sheet([
-      { label: "Save for This Event Only", onSelect: () => void patchEvent(event.id, { overrides: { ...(event.overrides ?? {}), [dateKey]: { ...(event.overrides?.[dateKey] ?? {}), start, end: seg.occ.end + delta } } }) },
+      { label: "Save for This Event Only", onSelect: () => save({ overrides: { ...(event.overrides ?? {}), [dateKey]: { ...(event.overrides?.[dateKey] ?? {}), start, end: seg.occ.end + delta } } }) },
       { label: "Save for All Events", onSelect: all },
     ]);
   }, []);
@@ -464,7 +468,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                             subIndex={p === 1 ? di * people.length + pi : -1}
                             subCols={subCols}
                             actions={actions}
-                            onScheduleMenu={scheduleMenu}
+                            onRoutineMenu={routineMenu}
                             onTaskMenu={taskMenu}
                             onMove={commitMove}
                             onMoveEvent={commitEventMove}
@@ -500,13 +504,13 @@ interface SubColumnProps {
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
   actions: DayActions;
-  onScheduleMenu: (occ: ScheduleOccurrence) => void;
+  onRoutineMenu: (occ: RoutineOccurrence) => void;
   onTaskMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
   onMoveEvent: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
 }
 
-const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, actions, onScheduleMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
+const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
   const longPress = useMemo(
     () =>
       Gesture.LongPress()
@@ -521,8 +525,8 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
   return (
     <GestureDetector gesture={longPress}>
       <View style={[styles.subCol, divider && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
-        {data.schedules.map((seg) => (
-          <ScheduleBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onScheduleMenu} onTap={actions.openSchedule} />
+        {data.routines.map((seg) => (
+          <RoutineBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
         ))}
         {data.events.map((seg) => (
           <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} onTap={actions.openEvent} onMove={onMoveEvent} />
@@ -536,14 +540,14 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
 });
 
 /**
- * Schedule band: the person's (or the schedule's own) colour mixed into the background at the chosen intensity, a
+ * Routine band: the person's (or the routine's own) colour mixed into the background at the chosen intensity, a
  * solid 3pt accent bar, and a bright (dark mode) or deep (light mode) tint for the title — like Apple Calendar.
  */
-const ScheduleBand = memo(function ScheduleBand({ seg, info, hourH, metrics, intensity, dark, colors, onMenu, onTap }: { seg: Seg<ScheduleOccurrence>; info: PersonInfo; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: ScheduleOccurrence) => void; onTap: (occ: ScheduleOccurrence) => void }) {
-  const sleep = seg.occ.schedule.kind === "sleep";
+const RoutineBand = memo(function RoutineBand({ seg, info, hourH, metrics, intensity, dark, colors, onMenu, onTap }: { seg: Seg<RoutineOccurrence>; info: PersonInfo; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: RoutineOccurrence) => void; onTap: (occ: RoutineOccurrence) => void }) {
+  const sleep = seg.occ.routine.kind === "sleep";
   const top = (seg.startMin / 60) * hourH;
   const height = Math.max(6, ((seg.endMin - seg.startMin) / 60) * hourH);
-  const base = seg.occ.schedule.color ? colorHex(seg.occ.schedule.color, dark) : colorHex(info.color, dark);
+  const base = seg.occ.routine.color ? colorHex(seg.occ.routine.color, dark) : colorHex(info.color, dark);
   const pct = Math.min(0.95, Math.max(0.1, intensity * (sleep ? 0.8 : 1)));
   return (
     <Pressable onPress={() => onTap(seg.occ)} onLongPress={() => onMenu(seg.occ)} delayLongPress={420} style={[styles.band, { top, height, backgroundColor: mix(base, colors.bg, pct), borderLeftColor: base }]}>
@@ -661,7 +665,7 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
           </Text>
           {showTime ? (
             <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
-              {formatTime(shownStart, viewerTz)} – {formatTime(shownEnd, viewerTz)}
+              {seg.end > seg.start ? `${formatTime(shownStart, viewerTz)} – ${formatTime(shownEnd, viewerTz)}` : formatTime(shownStart, viewerTz)}
             </Text>
           ) : null}
         </View>

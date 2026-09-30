@@ -5,7 +5,7 @@ import { useMe } from "./people";
 import { useToday } from "./useNow";
 
 /**
- * The "+" pill: a new task (the sheet offers Schedule too), dated today as Apple Calendar's + starts on today, so the
+ * The "+" pill: a new task (the sheet offers Schedule and Routine too), dated today as Apple Calendar's + starts on today, so the
  * task shows on the calendar unless the date is switched off.
  */
 export function useNewItem(): () => void {

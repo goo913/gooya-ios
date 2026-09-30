@@ -1,5 +1,5 @@
 import type { DateKey, Task, TaskOccurrence } from "@shared/model";
-import { describeRule, expandEvent, expandSchedule, expandTask } from "@shared/recurrence";
+import { describeRule, expandEvent, expandRoutine, expandTask } from "@shared/recurrence";
 import { DAY_MS, addDaysKey, minutesSinceMidnight, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { useEffect, useMemo, type ReactNode } from "react";
@@ -11,21 +11,22 @@ import { Icon } from "@/components/Icon";
 import { SourceBadge } from "@/components/SourceBadge";
 import { earlyReminderLabel } from "@/lib/alerts";
 import { mix } from "@/lib/color";
-import { deleteSchedule } from "@/lib/db";
+import { deleteRoutine } from "@/lib/db";
 import { MONTH_SHORT, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
-import { colorHex, useMe, usePerson, useTaskColor } from "@/lib/people";
-import { deleteScheduleDay, endScheduleBefore } from "@/lib/scheduleOps";
+import { colorHex, useMe, usePerson, usePersonColor, useTaskColor } from "@/lib/people";
+import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
 import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
 import { reminderIdOf } from "@shared/reminders";
 import { plainNotes } from "@shared/calendarCopy";
+import { hasEndTime, scheduleAsEvent } from "@shared/schedules";
 import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors, useIsDark } from "@/theme";
 
 /**
- * What a tap on a task, a schedule or an imported event opens: Apple Calendar's details sheet (iOS 26/27). A close
+ * What a tap on a task, a routine or an imported event opens: Apple Calendar's details sheet (iOS 26/27). A close
  * button and Edit on glass at the top, the title with its ring or colour bar, the date and time, the facts that matter,
  * a small timeline around the item, then the actions.
  */
@@ -40,7 +41,7 @@ export default function DetailSheet() {
     <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
         {req?.kind === "task" ? <TaskDetail taskId={req.taskId} dateKey={req.dateKey} /> : null}
-        {req?.kind === "schedule" ? <ScheduleDetail scheduleId={req.scheduleId} dateKey={req.dateKey} /> : null}
+        {req?.kind === "routine" ? <RoutineDetail routineId={req.routineId} dateKey={req.dateKey} /> : null}
         {req?.kind === "event" ? <EventDetail eventId={req.eventId} dateKey={req.dateKey} /> : null}
       </ScrollView>
     </View>
@@ -234,27 +235,27 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
   );
 }
 
-// ---------------------------------------------------------------- schedule
+// ---------------------------------------------------------------- routine
 
-function ScheduleDetail({ scheduleId, dateKey }: { scheduleId: string; dateKey: DateKey }) {
+function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: DateKey }) {
   const colors = useColors();
   const dark = useIsDark();
-  const schedule = useData((s) => s.schedules.find((t) => t.id === scheduleId));
+  const routine = useData((s) => s.routines.find((t) => t.id === routineId));
   const openEditor = useSheets((s) => s.openEditor);
   const closeDetail = useSheets((s) => s.closeDetail);
-  const owner = usePerson(schedule?.owner ?? "gooya");
+  const owner = usePerson(routine?.owner ?? "gooya");
   const occ = useMemo(() => {
-    if (!schedule) return null;
-    const from = startOfDayMs(dateKey, schedule.timezone) - DAY_MS;
-    const to = startOfDayMs(addDaysKey(dateKey, 1), schedule.timezone) + DAY_MS;
-    return expandSchedule(schedule, from, to).find((o) => o.dateKey === dateKey) ?? null;
-  }, [schedule, dateKey]);
-  if (!schedule || !occ) return <Missing what="schedule" />;
-  const color = schedule.color ? colorHex(schedule.color, dark) : colorHex(owner.color, dark);
-  const ownerTimes = `${formatTime(occ.start, schedule.timezone)} – ${formatTime(occ.end, schedule.timezone)} ${tzAbbrev(schedule.timezone, occ.start)}`;
-  const localTimes = schedule.timezone !== viewerTz ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)} ${tzAbbrev(viewerTz, occ.start)} for you` : null;
+    if (!routine) return null;
+    const from = startOfDayMs(dateKey, routine.timezone) - DAY_MS;
+    const to = startOfDayMs(addDaysKey(dateKey, 1), routine.timezone) + DAY_MS;
+    return expandRoutine(routine, from, to).find((o) => o.dateKey === dateKey) ?? null;
+  }, [routine, dateKey]);
+  if (!routine || !occ) return <Missing what="routine" />;
+  const color = routine.color ? colorHex(routine.color, dark) : colorHex(owner.color, dark);
+  const ownerTimes = `${formatTime(occ.start, routine.timezone)} – ${formatTime(occ.end, routine.timezone)} ${tzAbbrev(routine.timezone, occ.start)}`;
+  const localTimes = routine.timezone !== viewerTz ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)} ${tzAbbrev(viewerTz, occ.start)} for you` : null;
   const edit = (dayOnly: boolean) => {
-    openEditor({ kind: "schedule", schedule, dayOnly: dayOnly ? dateKey : undefined });
+    openEditor({ kind: "routine", routine, dayOnly: dayOnly ? dateKey : undefined });
     router.replace("/sheet/edit");
   };
   const done = () => {
@@ -262,11 +263,11 @@ function ScheduleDetail({ scheduleId, dateKey }: { scheduleId: string; dateKey: 
     router.back();
   };
   const remove = () => {
-    const options = ["Delete This Day Only", "Delete All Future", "Delete Schedule", "Cancel"];
+    const options = ["Delete This Day Only", "Delete All Future", "Delete Routine", "Cancel"];
     ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex: 3, destructiveButtonIndex: [0, 1, 2] }, (i) => {
-      if (i === 0) void deleteScheduleDay(schedule, dateKey).then(done);
-      else if (i === 1) void endScheduleBefore(schedule, dateKey).then(done);
-      else if (i === 2) void deleteSchedule(schedule.id).then(done);
+      if (i === 0) void deleteRoutineDay(routine, dateKey).then(done);
+      else if (i === 1) void endRoutineBefore(routine, dateKey).then(done);
+      else if (i === 2) void deleteRoutine(routine.id).then(done);
     });
   };
   const startMin = minutesSinceMidnight(occ.start, viewerTz);
@@ -285,9 +286,9 @@ function ScheduleDetail({ scheduleId, dateKey }: { scheduleId: string; dateKey: 
           {localTimes ? <Text style={[styles.small, { color: colors.label3 }]}>{localTimes}</Text> : null}
           <View style={styles.repeat}>
             <Icon name="repeat" size={17} color={colors.label2} />
-            <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(schedule.rrule)}</Text>
+            <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(routine.rrule)}</Text>
           </View>
-          {schedule.overrides?.[dateKey] ? <Text style={[styles.small, { color: colors.orange }]}>Edited for this day only</Text> : null}
+          {routine.overrides?.[dateKey] ? <Text style={[styles.small, { color: colors.orange }]}>Edited for this day only</Text> : null}
         </View>
       </View>
       <Fact label="Person">
@@ -318,7 +319,11 @@ function ScheduleDetail({ scheduleId, dateKey }: { scheduleId: string; dateKey: 
 
 function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }) {
   const colors = useColors();
-  const event = useData((s) => s.events.find((e) => e.id === eventId));
+  // An imported event, or one of GOOYA's own schedules (drawn as an event in its owner's colour).
+  const imported = useData((s) => s.events.find((e) => e.id === eventId));
+  const schedule = useData((s) => s.schedules.find((x) => x.id === eventId));
+  const scheduleColor = usePersonColor(schedule?.owner ?? "gooya");
+  const event = useMemo(() => imported ?? (schedule ? scheduleAsEvent(schedule, scheduleColor) : undefined), [imported, schedule, scheduleColor]);
   const calendarConfig = useData((s) => s.accounts.find((a) => a.id === event?.accountId)?.calendars?.[event?.calendarId ?? ""]);
   const me = useMe();
   const openEditor = useSheets((s) => s.openEditor);
@@ -330,11 +335,12 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
     const all = expandEvent(event, from, to);
     return all.find((o) => o.dateKey === dateKey) ?? all[0] ?? null;
   }, [event, dateKey]);
-  if (!event || !occ) return <Missing what="event" />;
+  if (!event || !occ) return <Missing what="schedule" />;
   const color = event.color || colors.blue;
-  const when = occ.allDay ? "all-day" : `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)}`;
+  const when = occ.allDay ? "all-day" : hasEndTime(occ) ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)}` : formatTime(occ.start, viewerTz);
   const startMin = occ.allDay ? 0 : minutesSinceMidnight(occ.start, viewerTz);
-  const endMin = startMin + (occ.end - occ.start) / 60000;
+  // A schedule without an end time takes half an hour's room, as in the day view.
+  const endMin = startMin + (occ.end > occ.start ? (occ.end - occ.start) / 60000 : 30);
   // One occurrence can have its own place and notes.
   const ov = event.overrides?.[occ.dateKey];
   const location = ov?.location ?? event.location;
@@ -342,7 +348,7 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   const where = event.source === "google" ? "Google Calendar" : "iCloud";
   const edit = event.editable
     ? () => {
-        openEditor({ kind: "event", event, eventOcc: occ });
+        openEditor({ kind: "schedule", event, eventOcc: occ });
         router.replace("/sheet/edit");
       }
     : undefined;
@@ -392,15 +398,17 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         </MiniTimeline>
       ) : null}
       <Text style={[styles.foot, { color: colors.label3 }]}>
-        {event.dirty
-          ? `Saving to ${where}…`
-          : event.editable
-            ? `Two-way with ${where}: change or delete it here or there, and the other one follows.`
-            : event.owner !== me
-              ? `From ${owner.name}’s ${where}.`
-              : calendarConfig?.writable === false
-                ? `Imported from ${where}. This calendar can’t be changed from other apps.`
-                : `Imported from ${where}. Set this calendar to Two-way in Settings → Calendar integrations to change it here.`}
+        {event.source === "gooya"
+          ? "A schedule in GOOYA. When copying is on (Settings → Calendar integrations), it is in the GOOYA calendar of your Google or iCloud too, and changes made there come back."
+          : event.dirty
+            ? `Saving to ${where}…`
+            : event.editable
+              ? `Two-way with ${where}: change or delete it here or there, and the other one follows.`
+              : event.owner !== me
+                ? `From ${owner.name}’s ${where}.`
+                : calendarConfig?.writable === false
+                  ? `Imported from ${where}. This calendar can’t be changed from other apps.`
+                  : `Imported from ${where}. Set this calendar to Two-way in Settings → Calendar integrations to change it here.`}
       </Text>
     </View>
   );

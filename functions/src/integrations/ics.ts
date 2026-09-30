@@ -1,10 +1,11 @@
 import { onRequest } from 'firebase-functions/v2/https'
 import { getFirestore } from 'firebase-admin/firestore'
 import { normalizeSchedule, normalizeTask, normalizeUser } from '../../../shared/normalize'
-import type { Schedule, Task } from '../../../shared/model'
+import type { Task } from '../../../shared/model'
 import { PEOPLE } from '../../../shared/people'
 import { fieldsInZone, zonedMs } from '../../../shared/time'
 import { personFromWidgetToken } from './common'
+import { scheduleVevents } from './icsEdit'
 
 function pad(n: number): string {
   return String(n).padStart(2, '0')
@@ -60,34 +61,13 @@ export function taskToVevent(t: Task, uidSuffix = '@gooya'): string | null {
   return lines.join('\n')
 }
 
-/** VEVENT for a schedule: recurring block in the owner's zone (may cross midnight). */
-export function scheduleToVevent(s: Schedule, uidSuffix = '@gooya'): string {
-  const tz = s.timezone || 'UTC'
-  const start = zonedMs(s.startDate, s.startTime, tz)
-  let end = zonedMs(s.startDate, s.endTime, tz)
-  if (end <= start) end += 86_400_000
-  const lines = [
-    'BEGIN:VEVENT',
-    `UID:${s.id}${uidSuffix}`,
-    `DTSTAMP:${icsLocal(s.updatedAt || Date.now(), 'UTC')}Z`,
-    `SUMMARY:${escapeText(`${s.icon ? `${s.icon} ` : ''}${s.title}`)}`,
-    `DTSTART;TZID=${tz}:${icsLocal(start, tz)}`,
-    `DTEND;TZID=${tz}:${icsLocal(end, tz)}`,
-    `RRULE:${s.rrule}${s.endDate && !/UNTIL/.test(s.rrule) ? `;UNTIL=${icsDate(s.endDate)}T235959` : ''}`,
-    'TRANSP:TRANSPARENT',
-  ]
-  for (const ex of s.exdates ?? []) lines.push(`EXDATE;TZID=${tz}:${icsDate(ex)}T${s.startTime.replace(':', '')}00`)
-  lines.push('END:VEVENT')
-  return lines.join('\n')
-}
-
 export function wrapCalendar(name: string, vevents: string[]): string {
   return foldLines(['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//GOOYA//Calendar//EN', 'CALSCALE:GREGORIAN', `X-WR-CALNAME:${escapeText(name)}`, ...vevents, 'END:VCALENDAR'].join('\n')) + '\r\n'
 }
 
 /**
- * GET /icsFeed?token=… — private read-only subscription feed (webcal://) with
- * the person's tasks and schedules.
+ * GET /icsFeed?token=… — private read-only subscription feed (webcal://) with the person's tasks and schedules.
+ * Routines (work, sleep) are not in it: they are background, not something to see in another calendar.
  */
 export const icsFeed = onRequest({ cors: true, invoker: 'public' }, async (req, res) => {
   const person = await personFromWidgetToken(String(req.query.token ?? ''))
@@ -108,7 +88,10 @@ export const icsFeed = onRequest({ cors: true, invoker: 'public' }, async (req, 
     const v = taskToVevent(normalizeTask(d.id, d.data() as Record<string, unknown>))
     if (v) vevents.push(v)
   }
-  for (const d of schedulesSnap.docs) vevents.push(scheduleToVevent(normalizeSchedule(d.id, d.data() as Record<string, unknown>)))
+  for (const d of schedulesSnap.docs) {
+    const s = normalizeSchedule(d.id, d.data() as Record<string, unknown>)
+    if (s) vevents.push(...scheduleVevents(s))
+  }
   res.set('Content-Type', 'text/calendar; charset=utf-8')
   res.set('Cache-Control', 'private, max-age=300')
   res.send(wrapCalendar(name, vevents))

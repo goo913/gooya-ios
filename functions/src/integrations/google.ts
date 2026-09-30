@@ -6,8 +6,8 @@ import { logger } from 'firebase-functions'
 import { auth as googleAuth, calendar as googleCalendar, type calendar_v3 } from '@googleapis/calendar'
 import { createHash, randomUUID } from 'node:crypto'
 import type { CalendarEvent, Schedule, Task } from '../../../shared/model'
-import { deletedInCalendar, scheduleChangeFromCopy, scheduleOccurrenceChange, scheduleTitle, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type CalendarCopy } from '../../../shared/calendarCopy'
-import { normalizeEvent, normalizeTask } from '../../../shared/normalize'
+import { deletedInCalendar, plainNotes, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type CalendarCopy, type ScheduleCopy } from '../../../shared/calendarCopy'
+import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
 import { addDaysKey, fieldsInZone, keyInZone, pad2, zonedMs } from '../../../shared/time'
 import {
@@ -504,8 +504,8 @@ export const pollGoogle = onSchedule({ schedule: '*/10 * * * *', timeZone: 'Amer
 // ---------------------------------------------------------------- export (GOOYA → the "GOOYA" calendar in Google)
 
 /**
- * What was last written to the GOOYA calendar, per item ('task:<id>' / 'schedule:<id>' → a hash of the event), so a
- * sync writes only what changed and knows what to take out.
+ * What was last written to the GOOYA calendar, per item ('task:<id>' / 'schedule:<id>' → a hash of what was written),
+ * so a sync writes only what changed and knows what to take out.
  */
 const exportStateRef = (person: PersonKey, accountId: string) => getFirestore().collection('integrations').doc(person).collection('exports').doc(accountId)
 
@@ -528,7 +528,8 @@ async function ensureExportCalendar(person: PersonKey, accountId: string, cal: c
   return id
 }
 
-const gooyaProps = (kind: 'task' | 'schedule', id: string) => ({ private: { gooyaKind: kind, gooyaId: id } })
+type CopyKind = 'task' | 'schedule'
+const gooyaProps = (kind: CopyKind, id: string) => ({ private: { gooyaKind: kind, gooyaId: id } })
 
 function taskToGoogle(t: Task): calendar_v3.Schema$Event | null {
   if (!taskIsCopied(t) || !t.dueDate) return null
@@ -550,25 +551,34 @@ function taskToGoogle(t: Task): calendar_v3.Schema$Event | null {
   return body
 }
 
+/** A schedule as a Google event; its moved or renamed days are written onto the series' days afterwards. */
 function scheduleToGoogle(s: Schedule): calendar_v3.Schema$Event {
   const tz = s.timezone || 'UTC'
-  const start = zonedMs(s.startDate, s.startTime, tz)
-  let end = zonedMs(s.startDate, s.endTime, tz)
-  if (end <= start) end += 86_400_000
-  const rec = [`RRULE:${s.rrule}${s.endDate && !/UNTIL/.test(s.rrule) ? `;UNTIL=${s.endDate.replace(/-/g, '')}T235959Z` : ''}`]
-  if (s.exdates?.length) rec.push(`EXDATE;TZID=${tz}:${s.exdates.map((d) => `${d.replace(/-/g, '')}T${s.startTime.replace(':', '')}00`).join(',')}`)
-  return {
-    summary: scheduleTitle(s),
-    description: '',
-    start: { dateTime: new Date(start).toISOString(), timeZone: tz },
-    end: { dateTime: new Date(end).toISOString(), timeZone: tz },
-    recurrence: rec,
-    transparency: 'transparent',
-    extendedProperties: gooyaProps('schedule', s.id),
+  const body: calendar_v3.Schema$Event = { summary: s.title, description: s.notes || '', location: s.location || '', extendedProperties: gooyaProps('schedule', s.id) }
+  if (s.allDay) {
+    body.start = { date: s.startDate }
+    body.end = { date: addDaysKey(s.endDate < s.startDate ? s.startDate : s.endDate, 1) }
+  } else {
+    body.start = { dateTime: new Date(s.start).toISOString(), timeZone: tz }
+    body.end = { dateTime: new Date(Math.max(s.start, s.end)).toISOString(), timeZone: tz }
   }
+  if (s.rrule) {
+    const rec = [`RRULE:${s.rrule}`]
+    if (s.exdates.length) {
+      const f = fieldsInZone(s.start, tz)
+      rec.push(s.allDay ? `EXDATE;VALUE=DATE:${s.exdates.map((d) => d.replace(/-/g, '')).join(',')}` : `EXDATE;TZID=${tz}:${s.exdates.map((d) => `${d.replace(/-/g, '')}T${pad2(f.h)}${pad2(f.min)}00`).join(',')}`)
+    }
+    body.recurrence = rec
+  }
+  return body
 }
 
-const bodyHash = (body: calendar_v3.Schema$Event) => createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 16)
+/** What GOOYA writes for one item: the event, and for a repeating schedule the days changed on their own. */
+interface Wanted {
+  body: calendar_v3.Schema$Event
+  schedule?: Schedule
+}
+const wantedHash = (w: Wanted) => createHash('sha1').update(JSON.stringify([w.body, w.schedule?.overrides ?? null])).digest('hex').slice(0, 16)
 
 async function upsertGoogleEvent(cal: calendar_v3.Calendar, calendarId: string, key: string, body: calendar_v3.Schema$Event): Promise<void> {
   const eventId = googleEventIdFor(key)
@@ -581,22 +591,59 @@ async function upsertGoogleEvent(cal: calendar_v3.Calendar, calendarId: string, 
   }
 }
 
+/** Writes an item, and a repeating schedule's days moved or renamed in GOOYA onto the series' days in Google. */
+async function writeWanted(cal: calendar_v3.Calendar, calendarId: string, key: string, w: Wanted): Promise<void> {
+  await upsertGoogleEvent(cal, calendarId, key, w.body)
+  const s = w.schedule
+  if (!s?.rrule) return
+  const tz = s.timezone || 'UTC'
+  for (const [dateKey, ov] of Object.entries(s.overrides ?? {})) {
+    if (ov.cancelled) continue
+    const inst = await findInstance(cal, calendarId, googleEventIdFor(key), dateKey, tz)
+    if (!inst?.id || inst.status === 'cancelled') continue
+    const body: calendar_v3.Schema$Event = {}
+    if (ov.title != null && ov.title !== (inst.summary ?? '')) body.summary = ov.title
+    if (ov.notes != null && ov.notes !== (inst.description ?? '')) body.description = ov.notes
+    if (ov.location != null && ov.location !== (inst.location ?? '')) body.location = ov.location
+    if (ov.start != null) {
+      const times = googleTimes(s.allDay, ov.start, ov.end ?? ov.start + (s.end - s.start), tz)
+      if (!sameTimes(inst, times)) Object.assign(body, times)
+    }
+    if (Object.keys(body).length) await withBackoff(() => cal.events.patch({ calendarId, eventId: inst.id!, requestBody: body }))
+  }
+}
+
 const deleteGoogleEvent = (cal: calendar_v3.Calendar, calendarId: string, key: string) => withBackoff(() => cal.events.delete({ calendarId, eventId: googleEventIdFor(key) })).catch(gone)
 
-/**
- * Items of the person that belong in the GOOYA calendar, as Google events: GOOYA's own tasks. Never routines (work,
- * sleep: background, not appointments), and not Apple Reminders (Apple Calendar shows those already, so a copy in
- * Google would show twice there).
- */
-async function wantedInGoogle(person: PersonKey, acc: AccountDoc): Promise<Map<string, calendar_v3.Schema$Event>> {
+/** What GOOYA copies for one item into Google (null: nothing, and a copy made before is taken out). */
+function wantedFor(acc: AccountDoc, kind: CopyKind, item: Task | Schedule | null): Wanted | null {
+  if (!item) return null
+  if (kind === 'task') {
+    // GOOYA's own tasks: Apple Reminders are in Apple Calendar already, a copy in Google would show twice there.
+    const t = item as Task
+    const body = acc.exportTasks === true && t.source === 'gooya' ? taskToGoogle(t) : null
+    return body ? { body } : null
+  }
+  return acc.exportSchedules === true ? { body: scheduleToGoogle(item as Schedule), schedule: item as Schedule } : null
+}
+
+/** Items of the person that belong in the GOOYA calendar: their GOOYA tasks and schedules. Routines never. */
+async function wantedInGoogle(person: PersonKey, acc: AccountDoc): Promise<Map<string, Wanted>> {
   const db = getFirestore()
-  const want = new Map<string, calendar_v3.Schema$Event>()
+  const want = new Map<string, Wanted>()
   if (acc.exportTasks === true) {
     const tasks = await db.collection('tasks').where('owner', '==', person).get()
     for (const d of tasks.docs) {
-      const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
-      const body = t.source === 'gooya' ? taskToGoogle(t) : null
-      if (body) want.set(`task:${d.id}`, body)
+      const w = wantedFor(acc, 'task', normalizeTask(d.id, d.data() as Record<string, unknown>))
+      if (w) want.set(`task:${d.id}`, w)
+    }
+  }
+  if (acc.exportSchedules === true) {
+    const schedules = await db.collection('schedules').where('owner', '==', person).get()
+    for (const d of schedules.docs) {
+      const s = normalizeSchedule(d.id, d.data() as Record<string, unknown>)
+      const w = s && wantedFor(acc, 'schedule', s)
+      if (w) want.set(`schedule:${d.id}`, w)
     }
   }
   return want
@@ -617,10 +664,10 @@ export async function exportToGoogle(person: PersonKey, accountId: string, cal?:
     if (Object.keys(updates).length) await stateRef.set({ items: updates }, { merge: true })
     updates = {}
   }
-  for (const [key, body] of want) {
-    const hash = bodyHash(body)
+  for (const [key, w] of want) {
+    const hash = wantedHash(w)
     if (written[key] === hash) continue
-    await upsertGoogleEvent(cal, calendarId, key, body)
+    await writeWanted(cal, calendarId, key, w)
     updates[key] = hash
     if (Object.keys(updates).length >= 10) await save()
     await sleep(150)
@@ -638,28 +685,29 @@ export async function exportToGoogle(person: PersonKey, accountId: string, cal?:
 /** Export turned off: the GOOYA calendar goes away from the Google account. */
 async function removeGoogleExport(person: PersonKey, accountId: string, cal: calendar_v3.Calendar): Promise<void> {
   const acc = (await accountsRef(person).doc(accountId).get()).data() as AccountDoc | undefined
-  if (acc?.exportCalendarId) await cal.calendars.delete({ calendarId: acc.exportCalendarId }).catch(gone)
+  const id = acc?.exportCalendarId
+  const w = id ? acc?.watch?.[id] : undefined
+  if (w?.channelId && w.resourceId) await cal.channels.stop({ requestBody: { id: w.channelId, resourceId: w.resourceId } }).catch(() => undefined)
+  if (id) await cal.calendars.delete({ calendarId: id }).catch(gone)
   await exportStateRef(person, accountId).delete()
-  await accountsRef(person).doc(accountId).set({ exportCalendarId: FieldValue.delete(), exportSyncToken: FieldValue.delete(), watch: { [acc?.exportCalendarId ?? '-']: FieldValue.delete() } }, { merge: true })
+  await accountsRef(person).doc(accountId).set({ exportCalendarId: FieldValue.delete(), exportSyncToken: FieldValue.delete(), watch: { [id ?? '-']: FieldValue.delete() } }, { merge: true })
 }
 
-/** Export one changed item (called from the task/schedule triggers). */
-export async function exportItemToGoogle(person: PersonKey, kind: 'task' | 'schedule', id: string, item: Task | Schedule | null): Promise<void> {
+/** Export one changed item (called from the task and schedule triggers). */
+export async function exportItemToGoogle(person: PersonKey, kind: CopyKind, id: string, item: Task | Schedule | null): Promise<void> {
   const accounts = await accountsRef(person).where('source', '==', 'google').get()
   for (const a of accounts.docs) {
     const acc = a.data() as AccountDoc
     if (!exporting(acc) || !acc.exportCalendarId) continue
-    const on = kind === 'task' ? acc.exportTasks === true : acc.exportSchedules === true
     const key = `${kind}:${id}`
-    // Routines are never copied (a copy left from before is taken out); reminders neither (see wantedInGoogle).
-    const body = !item || !on || kind !== 'task' || (item as Task).source !== 'gooya' ? null : taskToGoogle(item as Task)
+    const w = wantedFor(acc, kind, item)
     const stateRef = exportStateRef(person, a.id)
     try {
       const written = (await stateRef.get()).get(new FieldPath('items', key)) as string | undefined
-      if (body) {
-        const hash = bodyHash(body)
+      if (w) {
+        const hash = wantedHash(w)
         if (written === hash) continue
-        await upsertGoogleEvent(await calendarFor(a.id), acc.exportCalendarId, key, body)
+        await writeWanted(await calendarFor(a.id), acc.exportCalendarId, key, w)
         await stateRef.set({ items: { [key]: hash } }, { merge: true })
       } else if (written) {
         await deleteGoogleEvent(await calendarFor(a.id), acc.exportCalendarId, key)
@@ -673,7 +721,7 @@ export async function exportItemToGoogle(person: PersonKey, kind: 'task' | 'sche
 
 // ---------------------------------------------------------------- changes made in the GOOYA calendar (Google → GOOYA)
 
-/** A Google event of the GOOYA calendar in plain values, on the clock of the item it copies. */
+/** A Google event of the GOOYA calendar in plain values, on the clock of the task it copies. */
 function copyOf(e: calendar_v3.Schema$Event, tz: string): CalendarCopy | null {
   const allDay = !!e.start?.date
   const updated = Date.parse(e.updated ?? '') || Date.now()
@@ -688,10 +736,25 @@ function copyOf(e: calendar_v3.Schema$Event, tz: string): CalendarCopy | null {
   return { title: e.summary ?? '', notes: e.description ?? '', allDay, startDate: keyInZone(start, tz), startTime: hhmm(start), endTime: Number.isNaN(end) ? null : hhmm(end), updated }
 }
 
+/** A Google event of the GOOYA calendar as a schedule's values, on the schedule's clock. */
+function scheduleCopyOf(e: calendar_v3.Schema$Event, tz: string): ScheduleCopy | null {
+  const updated = Date.parse(e.updated ?? '') || Date.now()
+  const base = { title: e.summary ?? '', notes: e.description ?? '', location: e.location ?? '', updated }
+  if (e.start?.date) {
+    const startDate = e.start.date
+    const endExclusive = e.end?.date && e.end.date > startDate ? e.end.date : addDaysKey(startDate, 1)
+    return { ...base, allDay: true, start: zonedMs(startDate, '00:00', tz), end: zonedMs(endExclusive, '00:00', tz), startDate, endDate: addDaysKey(endExclusive, -1) }
+  }
+  const start = Date.parse(e.start?.dateTime ?? '')
+  if (Number.isNaN(start)) return null
+  const end = Math.max(start, Date.parse(e.end?.dateTime ?? '') || start)
+  return { ...base, allDay: false, start, end, startDate: keyInZone(start, tz), endDate: keyInZone(Math.max(start, end - 1), tz) }
+}
+
 /**
  * Reads what changed in the GOOYA calendar since last time and applies changes made there by people (moved, renamed,
  * notes, deleted) to the tasks and schedules they copy. GOOYA's own writes come back too; they match what GOOYA has and
- * change nothing. An event added to the GOOYA calendar becomes a new task.
+ * change nothing. An event added to the GOOYA calendar becomes a new schedule.
  */
 async function syncGoogleExport(person: PersonKey, accountId: string, cal: calendar_v3.Calendar, calendarId: string): Promise<void> {
   const accRef = accountsRef(person).doc(accountId)
@@ -716,19 +779,23 @@ async function syncGoogleExport(person: PersonKey, accountId: string, cal: calen
     throw e
   }
   // The first read only learns where the calendar is: everything in it was written by GOOYA.
-  if (!first && items.length) await applyGoogleCopies(person, accountId, cal, calendarId, items)
+  if (!first && items.length) await applyGoogleCopies(person, accountId, acc, cal, calendarId, items)
   await accRef.set({ exportSyncToken: syncToken ?? FieldValue.delete() }, { merge: true })
 }
 
-async function applyGoogleCopies(person: PersonKey, accountId: string, cal: calendar_v3.Calendar, calendarId: string, items: calendar_v3.Schema$Event[]): Promise<void> {
+async function applyGoogleCopies(person: PersonKey, accountId: string, acc: AccountDoc, cal: calendar_v3.Calendar, calendarId: string, items: calendar_v3.Schema$Event[]): Promise<void> {
   const db = getFirestore()
   // Only what GOOYA copies there now can be changed or deleted from there: a copy GOOYA took out itself (a routine, a
   // reminder, from before) comes back as deleted and must not delete the item.
-  const tasksSnap = await db.collection('tasks').where('owner', '==', person).get()
-  const byEventId = new Map<string, { kind: 'task' | 'schedule'; item: Task | Schedule }>()
+  const [tasksSnap, schedulesSnap] = await Promise.all([db.collection('tasks').where('owner', '==', person).get(), db.collection('schedules').where('owner', '==', person).get()])
+  const byEventId = new Map<string, { kind: CopyKind; item: Task | Schedule }>()
   for (const d of tasksSnap.docs) {
     const t = normalizeTask(d.id, d.data() as Record<string, unknown>)
-    if (t.source === 'gooya') byEventId.set(googleEventIdFor(`task:${d.id}`), { kind: 'task', item: t })
+    if (wantedFor(acc, 'task', t)) byEventId.set(googleEventIdFor(`task:${d.id}`), { kind: 'task', item: t })
+  }
+  for (const d of schedulesSnap.docs) {
+    const s = normalizeSchedule(d.id, d.data() as Record<string, unknown>)
+    if (s && wantedFor(acc, 'schedule', s)) byEventId.set(googleEventIdFor(`schedule:${d.id}`), { kind: 'schedule', item: s })
   }
   const now = Date.now()
   const stateRef = exportStateRef(person, accountId)
@@ -736,10 +803,10 @@ async function applyGoogleCopies(person: PersonKey, accountId: string, cal: cale
    * Saves a change made in Google to the task or schedule. What GOOYA would write for it now is marked as written, so
    * the copy in Google stays as the person left it (a longer event, say) instead of being written over.
    */
-  const takeCopy = async (kind: 'task' | 'schedule', item: Task | Schedule, patch: Partial<Task> | Partial<Schedule>) => {
+  const takeCopy = async (kind: CopyKind, item: Task | Schedule, patch: Partial<Task> | Partial<Schedule>) => {
     const next = { ...item, ...patch, updatedAt: now } as Task & Schedule
-    const body = kind === 'task' ? taskToGoogle(next) : scheduleToGoogle(next)
-    if (body) await stateRef.set({ items: { [`${kind}:${item.id}`]: bodyHash(body) } }, { merge: true })
+    const w = wantedFor(acc, kind, next)
+    if (w) await stateRef.set({ items: { [`${kind}:${item.id}`]: wantedHash(w) } }, { merge: true })
     await db.collection(kind === 'task' ? 'tasks' : 'schedules').doc(item.id).update({ ...patch, updatedAt: now })
   }
   for (const e of items) {
@@ -748,21 +815,21 @@ async function applyGoogleCopies(person: PersonKey, accountId: string, cal: cale
     const found = byEventId.get(masterId)
     try {
       if (!found) {
-        // Something added to the GOOYA calendar in Google: it becomes a GOOYA task (and is written back as one).
+        // Something added to the GOOYA calendar in Google: it becomes a GOOYA schedule (written back as one).
         if (e.recurringEventId || e.status === 'cancelled' || e.extendedProperties?.private?.gooyaId) continue
-        const tz = PEOPLE[person].timezone
-        const c = copyOf(e, tz)
+        const tz = e.start?.timeZone || PEOPLE[person].timezone
+        const c = scheduleCopyOf(e, tz)
         if (!c || !c.title.trim()) continue
-        // The id comes from the event, so two syncs reading the same change make one task.
-        const ref = db.collection('tasks').doc(`gc_${shortHash(`${person}:${e.id}`, 20)}`)
+        // The id comes from the event, so two syncs reading the same change make one schedule.
+        const ref = db.collection('schedules').doc(`gs_${shortHash(`${person}:${e.id}`, 20)}`)
         if ((await ref.get()).exists) continue
+        const { rrule } = rruleFromGoogle(e.recurrence)
         await ref.create({
-          owner: person, createdBy: person, listId: 'tasks', title: c.title.trim(), notes: c.notes, dueDate: c.startDate, dueTime: c.allDay ? null : c.startTime, timezone: tz,
-          rrule: null, exdates: [], overrides: {}, completed: false, completedDates: [], earlyReminders: [], tags: [], flagged: false, priority: 0, source: 'gooya',
-          externalRefs: [], createdAt: now, updatedAt: now,
+          owner: person, createdBy: person, title: c.title.trim(), notes: plainNotes(c.notes), location: c.location, allDay: c.allDay, start: c.start, end: c.end,
+          startDate: c.startDate, endDate: c.endDate, timezone: tz, rrule, exdates: [], overrides: {}, createdAt: now, updatedAt: now,
         })
         await cal.events.delete({ calendarId, eventId: e.id }).catch(gone)
-        logger.info('google copy: new task from the GOOYA calendar', { person, task: ref.id })
+        logger.info('google copy: new schedule from the GOOYA calendar', { person, schedule: ref.id })
         continue
       }
       const { kind, item } = found
@@ -771,8 +838,11 @@ async function applyGoogleCopies(person: PersonKey, accountId: string, cal: cale
       if (e.recurringEventId) {
         const dateKey = occurrenceKey(e, tz)
         if (!dateKey) continue
-        const occ = { dateKey, cancelled: e.status === 'cancelled', copy: copyOf(e, tz) ?? undefined }
-        const patch = kind === 'task' ? taskOccurrenceChange(item as Task, occ) : scheduleOccurrenceChange(item as Schedule, occ)
+        const cancelled = e.status === 'cancelled'
+        const patch =
+          kind === 'task'
+            ? taskOccurrenceChange(item as Task, { dateKey, cancelled, copy: copyOf(e, tz) ?? undefined })
+            : scheduleOccurrenceChange(item as Schedule, { dateKey, cancelled, copy: scheduleCopyOf(e, tz) ?? undefined })
         if (patch) await takeCopy(kind, item, patch)
         continue
       }
@@ -783,9 +853,14 @@ async function applyGoogleCopies(person: PersonKey, accountId: string, cal: cale
         }
         continue
       }
-      const c = copyOf(e, tz)
-      if (!c) continue
-      const patch = kind === 'task' ? taskChangeFromCopy(item as Task, c) : scheduleChangeFromCopy(item as Schedule, c)
+      let patch: Partial<Task> | Partial<Schedule> | null = null
+      if (kind === 'task') {
+        const c = copyOf(e, tz)
+        patch = c ? taskChangeFromCopy(item as Task, c) : null
+      } else {
+        const c = scheduleCopyOf(e, tz)
+        patch = c ? scheduleChangeFromCopy(item as Schedule, c) : null
+      }
       if (patch) {
         await takeCopy(kind, item, patch)
         logger.info('google copy: changed in Google', { person, kind, id: item.id, fields: Object.keys(patch) })

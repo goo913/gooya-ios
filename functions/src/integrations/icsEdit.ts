@@ -4,8 +4,9 @@
 
 import ICAL from 'ical.js'
 import { randomUUID } from 'node:crypto'
-import type { CalendarEvent, DateKey, EventOverride } from '../../../shared/model'
+import type { CalendarEvent, DateKey, EventOverride, Schedule } from '../../../shared/model'
 import type { CalendarCopy, CopyOccurrence } from '../../../shared/calendarCopy'
+import { scheduleAsEvent } from '../../../shared/schedules'
 import { addDaysKey, fieldsInZone, keyInZone, makeKey, pad2, zonedMs } from '../../../shared/time'
 
 function isZone(tz: string): boolean {
@@ -256,7 +257,7 @@ export function parseIcsEvent(data: string, defaultTz: string): ParsedIcsEvent |
 }
 
 /**
- * One of GOOYA's own copies in iCloud (task-….ics / schedule-….ics) in plain values on `tz`'s clock: the copy, its
+ * One of GOOYA's own copies in iCloud (task-….ics / routine-….ics) in plain values on `tz`'s clock: the copy, its
  * deleted occurrences, and its changed ones. `updated` falls back to `now` when the copy says nothing (it changed).
  */
 export function copyFromIcs(data: string, tz: string, now = Date.now()): { copy: CalendarCopy; exdates: DateKey[]; occurrences: CopyOccurrence[] } | null {
@@ -286,4 +287,10 @@ export function copyFromIcs(data: string, tz: string, now = Date.now()): { copy:
     }
   })
   return { copy, exdates: ev.exdates, occurrences }
+}
+
+/** A schedule's VEVENT components (the series and its changed days), for the subscription feed. */
+export function scheduleVevents(s: Schedule): string[] {
+  const cal = new ICAL.Component(ICAL.parse(applyEventToIcs(null, scheduleAsEvent(s, '#0091ff'), s.updatedAt || s.createdAt || 0)))
+  return cal.getAllSubcomponents('vevent').map((v) => v.toString())
 }

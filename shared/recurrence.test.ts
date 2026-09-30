@@ -1,13 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { expandSchedule, expandTask, splitByDay, occurrenceDays, describeRule, withUntil } from './recurrence.ts'
+import { expandRoutine, expandTask, splitByDay, occurrenceDays, describeRule, withUntil } from './recurrence.ts'
 import { keyInZone, zonedMs, fieldsInZone, offsetMinutes } from './time.ts'
-import type { Schedule, Task } from './model.ts'
+import type { Routine, Task } from './model.ts'
 
 const NY = 'America/New_York'
 const SEOUL = 'Asia/Seoul'
 
-const baseSchedule: Schedule = {
+const baseRoutine: Routine = {
   id: 'work', owner: 'eunbi', title: 'Work', icon: '💼', kind: 'work', color: null,
   startTime: '09:00', endTime: '17:00', timezone: SEOUL,
   rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', startDate: '2026-01-05', endDate: null,
@@ -30,18 +30,18 @@ test('gap becomes 14h after US DST ends on Nov 1 2026', () => {
   assert.equal(offsetMinutes(start, SEOUL) - offsetMinutes(start, NY), 14 * 60)
 })
 
-test('weekday schedule expands only Mon-Fri and respects exdates/overrides', () => {
-  const s: Schedule = { ...baseSchedule, exdates: ['2026-09-30'], overrides: { '2026-10-01': { startTime: '10:00', endTime: '15:00' } } }
-  const occ = expandSchedule(s, zonedMs('2026-09-27', '00:00', SEOUL), zonedMs('2026-10-04', '00:00', SEOUL))
+test('weekday routine expands only Mon-Fri and respects exdates/overrides', () => {
+  const s: Routine = { ...baseRoutine, exdates: ['2026-09-30'], overrides: { '2026-10-01': { startTime: '10:00', endTime: '15:00' } } }
+  const occ = expandRoutine(s, zonedMs('2026-09-27', '00:00', SEOUL), zonedMs('2026-10-04', '00:00', SEOUL))
   assert.deepEqual(occ.map((o) => o.dateKey), ['2026-09-28', '2026-09-29', '2026-10-01', '2026-10-02'])
   const thu = occ.find((o) => o.dateKey === '2026-10-01')!
   assert.equal(fieldsInZone(thu.start, SEOUL).h, 10)
   assert.equal(fieldsInZone(thu.end, SEOUL).h, 15)
 })
 
-test('sleep schedule crossing midnight spans into the next day', () => {
-  const sleep: Schedule = { ...baseSchedule, id: 'sleep', title: 'Sleep', icon: '💤', kind: 'sleep', startTime: '23:00', endTime: '07:00', rrule: 'FREQ=DAILY', startDate: '2026-01-01' }
-  const occ = expandSchedule(sleep, zonedMs('2026-09-28', '00:00', SEOUL), zonedMs('2026-09-29', '00:00', SEOUL))
+test('sleep routine crossing midnight spans into the next day', () => {
+  const sleep: Routine = { ...baseRoutine, id: 'sleep', title: 'Sleep', icon: '💤', kind: 'sleep', startTime: '23:00', endTime: '07:00', rrule: 'FREQ=DAILY', startDate: '2026-01-01' }
+  const occ = expandRoutine(sleep, zonedMs('2026-09-28', '00:00', SEOUL), zonedMs('2026-09-29', '00:00', SEOUL))
   assert.deepEqual(occ.map((o) => o.dateKey), ['2026-09-27', '2026-09-28'])
   const segs = splitByDay(occ[1], SEOUL)
   assert.equal(segs.length, 2)
@@ -49,9 +49,9 @@ test('sleep schedule crossing midnight spans into the next day', () => {
   assert.equal(segs[1].endMin, 7 * 60)
 })
 
-test('schedule endDate (UNTIL) stops the series', () => {
-  const s: Schedule = { ...baseSchedule, endDate: '2026-09-29' }
-  const occ = expandSchedule(s, zonedMs('2026-09-27', '00:00', SEOUL), zonedMs('2026-10-04', '00:00', SEOUL))
+test('routine endDate (UNTIL) stops the series', () => {
+  const s: Routine = { ...baseRoutine, endDate: '2026-09-29' }
+  const occ = expandRoutine(s, zonedMs('2026-09-27', '00:00', SEOUL), zonedMs('2026-10-04', '00:00', SEOUL))
   assert.deepEqual(occ.map((o) => o.dateKey), ['2026-09-28', '2026-09-29'])
 })
 
@@ -127,4 +127,13 @@ test('imported events: recurring timed events expand in their zone and dedupe ac
   assert.equal(dedupeEvents([base, apple2]).length, 1) // same title + start + end
   const apple3 = { ...apple2, start: base.start + 3600_000 }
   assert.equal(dedupeEvents([base, apple3]).length, 2)
+})
+
+test('a schedule without an end time is one moment on its day (the day view draws it)', () => {
+  const start = Date.UTC(2026, 8, 29, 13) // 9:00 AM in New York
+  const segs = splitByDay({ start, end: start }, 'America/New_York')
+  assert.equal(segs.length, 1)
+  assert.equal(segs[0].dateKey, '2026-09-29')
+  assert.equal(segs[0].startMin, 9 * 60)
+  assert.equal(segs[0].endMin, 9 * 60)
 })

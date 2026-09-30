@@ -5,7 +5,7 @@ const RRule: typeof rrulePkg.RRule =
   (rrulePkg as unknown as { RRule?: typeof rrulePkg.RRule }).RRule ??
   (rrulePkg as unknown as { default: { RRule: typeof rrulePkg.RRule } }).default.RRule
 export type RRuleType = InstanceType<typeof RRule>
-import type { CalendarEvent, DateKey, EventOccurrence, HHmm, Schedule, ScheduleOccurrence, Task, TaskOccurrence } from './model'
+import type { CalendarEvent, DateKey, EventOccurrence, HHmm, Routine, RoutineOccurrence, Task, TaskOccurrence } from './model'
 import { DAY_MS, addDaysKey, fieldsInZone, floatingFromKey, floatingInZone, keyFromFloating, keyInZone, minutesOf, startOfDayMs, zonedMs } from './time'
 
 const ruleCache = new Map<string, RRuleType>()
@@ -109,33 +109,33 @@ export function expandTask(task: Task, rangeStart: number, rangeEnd: number): Ta
   return out
 }
 
-/** Expand a schedule into instants overlapping [rangeStart, rangeEnd). */
-export function expandSchedule(schedule: Schedule, rangeStart: number, rangeEnd: number): ScheduleOccurrence[] {
-  const tz = schedule.timezone || 'UTC'
-  const out: ScheduleOccurrence[] = []
-  const until = schedule.endDate ? floatingFromKey(schedule.endDate, '23:59') : null
-  const rule = buildRule(schedule.rrule || 'FREQ=DAILY', floatingFromKey(schedule.startDate), until)
+/** Expand a routine into instants overlapping [rangeStart, rangeEnd). */
+export function expandRoutine(routine: Routine, rangeStart: number, rangeEnd: number): RoutineOccurrence[] {
+  const tz = routine.timezone || 'UTC'
+  const out: RoutineOccurrence[] = []
+  const until = routine.endDate ? floatingFromKey(routine.endDate, '23:59') : null
+  const rule = buildRule(routine.rrule || 'FREQ=DAILY', floatingFromKey(routine.startDate), until)
   const lo = new Date(floatingInZone(rangeStart, tz).getTime() - 2 * DAY_MS)
   const hi = new Date(floatingInZone(rangeEnd, tz).getTime() + DAY_MS)
   for (const occ of rule.between(lo, hi, true)) {
     const dateKey = keyFromFloating(occ)
-    if (schedule.exdates?.includes(dateKey)) continue
-    const ov = schedule.overrides?.[dateKey]
-    const startTime = ov?.startTime ?? schedule.startTime
-    const endTime = ov?.endTime ?? schedule.endTime
+    if (routine.exdates?.includes(dateKey)) continue
+    const ov = routine.overrides?.[dateKey]
+    const startTime = ov?.startTime ?? routine.startTime
+    const endTime = ov?.endTime ?? routine.endTime
     const start = zonedMs(dateKey, startTime, tz)
     let end = zonedMs(dateKey, endTime, tz)
     if (minutesOf(endTime) <= minutesOf(startTime)) end = zonedMs(addDaysKey(dateKey, 1), endTime, tz)
     if (end <= rangeStart || start >= rangeEnd) continue
     out.push({
-      kind: 'schedule',
-      schedule,
-      key: `${schedule.id}:${dateKey}`,
+      kind: 'routine',
+      routine,
+      key: `${routine.id}:${dateKey}`,
       dateKey,
       start,
       end,
-      title: ov?.title ?? schedule.title,
-      icon: schedule.icon,
+      title: ov?.title ?? routine.title,
+      icon: routine.icon,
     })
   }
   return out
@@ -147,6 +147,14 @@ export function splitByDay<T extends { start: number; end: number }>(
   viewerTz: string,
 ): Array<{ dateKey: DateKey; start: number; end: number; startMin: number; endMin: number; occ: T }> {
   const segments: Array<{ dateKey: DateKey; start: number; end: number; startMin: number; endMin: number; occ: T }> = []
+  // A moment (a schedule without an end time) is on the day it is at.
+  if (occ.end <= occ.start) {
+    const dateKey = keyInZone(occ.start, viewerTz)
+    const dayStart = startOfDayMs(dateKey, viewerTz)
+    const dayLength = (startOfDayMs(addDaysKey(dateKey, 1), viewerTz) - dayStart) / 60_000
+    const min = Math.round(((occ.start - dayStart) / 60_000) * (1440 / dayLength))
+    return [{ dateKey, start: occ.start, end: occ.start, startMin: min, endMin: min, occ }]
+  }
   let cursor = occ.start
   let guard = 0
   while (cursor < occ.end && guard++ < 62) {

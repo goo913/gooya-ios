@@ -1,11 +1,13 @@
 import { useMemo } from 'react'
 import { useData } from '@/store/data'
 import { usePrefs } from '@/store/prefs'
-import type { PersonKey } from '@shared/people'
-import type { DateKey, EventOccurrence, ScheduleOccurrence, TaskOccurrence } from '@shared/model'
-import { dedupeEvents, eventDays, expandEvent, expandSchedule, expandTask, occurrenceDays } from '@shared/recurrence'
+import { PEOPLE, type PersonKey } from '@shared/people'
+import type { DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from '@shared/model'
+import { dedupeEvents, eventDays, expandEvent, expandRoutine, expandTask, occurrenceDays } from '@shared/recurrence'
+import { scheduleAsEvent } from '@shared/schedules'
 import { useShallow } from 'zustand/react/shallow'
-import { useMe, usePerson } from './people'
+import { useIsDark } from '@/theme'
+import { colorHex, useMe, usePerson } from './people'
 
 export function sortOccurrences(a: TaskOccurrence, b: TaskOccurrence): number {
   if (a.allDay !== b.allDay) return a.allDay ? -1 : 1
@@ -48,30 +50,36 @@ export function useTasksByDay(start: number, end: number, people: PersonKey[], v
   }, [occ, viewerTz])
 }
 
-export function useScheduleOccurrences(start: number, end: number, people: PersonKey[]): ScheduleOccurrence[] {
-  const schedules = useData(useShallow((s) => s.schedules.filter((t) => people.includes(t.owner))))
+export function useRoutineOccurrences(start: number, end: number, people: PersonKey[]): RoutineOccurrence[] {
+  const routines = useData(useShallow((s) => s.routines.filter((t) => people.includes(t.owner))))
   return useMemo(() => {
-    const out: ScheduleOccurrence[] = []
-    for (const s of schedules) out.push(...expandSchedule(s, start, end))
+    const out: RoutineOccurrence[] = []
+    for (const s of routines) out.push(...expandRoutine(s, start, end))
     out.sort((a, b) => a.start - b.start)
     return out
-  }, [schedules, start, end])
+  }, [routines, start, end])
 }
 
-/** Imported calendar events for people within [start, end), deduped when the setting is on. */
+/**
+ * Schedules for people within [start, end): GOOYA's own (drawn in their owner's colour) and the events of imported
+ * calendars (in their calendar's colour, deduped when the setting is on).
+ */
 export function useEventOccurrences(start: number, end: number, people: PersonKey[]): EventOccurrence[] {
   const hidden = usePrefs((s) => s.hiddenCalendars)
   const events = useData(useShallow((s) => s.events.filter((e) => people.includes(e.owner) && !e.deleted && !hidden.includes(`${e.accountId}:${e.calendarId}`))))
+  const schedules = useData(useShallow((s) => s.schedules.filter((x) => people.includes(x.owner) && !hidden.includes('gooya:schedules'))))
+  const users = useData((s) => s.users)
+  const dark = useIsDark()
   const me = useMe()
   const avoidDuplicates = usePerson(me).settings.avoidDuplicates
   return useMemo(() => {
     const ordered = [...events].sort((a, b) => (a.source === b.source ? 0 : a.source === 'google' ? -1 : 1))
-    const list = avoidDuplicates ? dedupeEvents(ordered) : ordered
+    const list = [...(avoidDuplicates ? dedupeEvents(ordered) : ordered), ...schedules.map((x) => scheduleAsEvent(x, colorHex(users[x.owner]?.color || PEOPLE[x.owner].color, dark)))]
     const out: EventOccurrence[] = []
     for (const e of list) out.push(...expandEvent(e, start, end))
     out.sort((a, b) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.start - b.start))
     return out
-  }, [events, avoidDuplicates, start, end])
+  }, [events, schedules, users, dark, avoidDuplicates, start, end])
 }
 
 export function useEventsByDay(start: number, end: number, people: PersonKey[], viewerTz: string): Map<DateKey, EventOccurrence[]> {

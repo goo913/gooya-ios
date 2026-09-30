@@ -68,8 +68,8 @@ export default function DayScreen() {
         openDetail({ kind: "task", taskId: occ.task.id, dateKey: occ.dateKey });
         router.push("/sheet/detail");
       },
-      openSchedule: (occ) => {
-        openDetail({ kind: "schedule", scheduleId: occ.schedule.id, dateKey: occ.dateKey });
+      openRoutine: (occ) => {
+        openDetail({ kind: "routine", routineId: occ.routine.id, dateKey: occ.dateKey });
         router.push("/sheet/detail");
       },
       openEvent: (occ) => {
@@ -80,8 +80,8 @@ export default function DayScreen() {
         openEditor({ kind: "task", task: occ.task, occ });
         router.push("/sheet/edit");
       },
-      editSchedule: (occ, dayOnly) => {
-        openEditor({ kind: "schedule", schedule: occ.schedule, dayOnly: dayOnly ? occ.dateKey : undefined });
+      editRoutine: (occ, dayOnly) => {
+        openEditor({ kind: "routine", routine: occ.routine, dayOnly: dayOnly ? occ.dateKey : undefined });
         router.push("/sheet/edit");
       },
       createTask: (d, person, minutes) => {

@@ -1,7 +1,8 @@
 import { collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc, type DocumentData, type QueryDocumentSnapshot } from "@react-native-firebase/firestore";
-import { DEFAULT_LIST_ID, type CalendarEvent, type Schedule, type Task, type TaskList, type UserDoc } from "@shared/model";
-import { normalizeEvent, normalizeList, normalizeSchedule, normalizeTask, normalizeUser } from "@shared/normalize";
+import { DEFAULT_LIST_ID, type CalendarEvent, type Routine, type Schedule, type Task, type TaskList, type UserDoc } from "@shared/model";
+import { normalizeEvent, normalizeList, normalizeRoutine, normalizeSchedule, normalizeTask, normalizeUser } from "@shared/normalize";
 import { PERSON_KEYS, type PersonKey } from "@shared/people";
+import type { LastEdit } from "@shared/reminders";
 import { useData, type IntegrationAccount } from "@/store/data";
 import { useSession } from "@/store/session";
 import { db } from "./firebase";
@@ -11,7 +12,9 @@ import { startWidgetSync } from "./widget";
 type Snap = QueryDocumentSnapshot<DocumentData>;
 
 export const taskFromSnap = (snap: Snap): Task => normalizeTask(snap.id, snap.data());
-export const scheduleFromSnap = (snap: Snap): Schedule => normalizeSchedule(snap.id, snap.data());
+/** null for a routine an older build left in "schedules" (it is in "routines" now). */
+export const scheduleFromSnap = (snap: Snap): Schedule | null => normalizeSchedule(snap.id, snap.data());
+export const routineFromSnap = (snap: Snap): Routine => normalizeRoutine(snap.id, snap.data());
 export const userFromSnap = (snap: Snap): UserDoc | null => normalizeUser(snap.id, snap.data());
 export const listFromSnap = (snap: Snap): TaskList => normalizeList(snap.id, snap.data());
 
@@ -32,7 +35,7 @@ export function startData(): void {
     return;
   }
   startWidgetSync();
-  const { setTasks, setSchedules, setUsers, setLists, setFresh } = useData.getState();
+  const { setTasks, setSchedules, setRoutines, setUsers, setLists, setFresh } = useData.getState();
   // Metadata changes too, to know when the tasks and lists have come from the server (Reminders sync waits for that).
   onSnapshot(collection(db, "tasks"), { includeMetadataChanges: true }, (qs) => {
     if (qs.docChanges().length || !useData.getState().loaded.tasks) setTasks(qs.docs.map(taskFromSnap));
@@ -47,7 +50,8 @@ export function startData(): void {
     if (qs.docChanges().length || !useData.getState().loaded.lists) setLists(lists.length ? lists : [defaultList()]);
     setFresh("lists", !qs.metadata.fromCache);
   });
-  onSnapshot(collection(db, "schedules"), (qs) => setSchedules(qs.docs.map(scheduleFromSnap)));
+  onSnapshot(collection(db, "schedules"), (qs) => setSchedules(qs.docs.map(scheduleFromSnap).filter((s): s is Schedule => !!s)));
+  onSnapshot(collection(db, "routines"), (qs) => setRoutines(qs.docs.map(routineFromSnap)));
   onSnapshot(collection(db, "events"), (qs) => {
     useData.getState().setEvents(qs.docs.map((d) => normalizeEvent(d.id, d.data())).filter((e) => !e.deleted));
   });
@@ -81,15 +85,18 @@ export function newId(): string {
   return doc(collection(db, "tasks")).id;
 }
 
+/** Marks a write as the app's (the server then wakes the iPhone that keeps a changed reminder; shared/reminders.ts). */
+const FROM_APP = { lastEdit: "app" satisfies LastEdit };
+
 export async function saveTask(task: Task): Promise<void> {
   const { id, ...rest } = task;
   if (isMock) return useData.setState((s) => ({ tasks: [...s.tasks.filter((t) => t.id !== id), task] }));
-  await setDoc(doc(db, "tasks", id), stripUndefined({ ...rest, updatedAt: Date.now() }));
+  await setDoc(doc(db, "tasks", id), stripUndefined({ ...rest, ...FROM_APP, updatedAt: Date.now() }));
 }
 
 export async function patchTask(id: string, patch: Partial<Task>): Promise<void> {
   if (isMock) return useData.setState((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: Date.now() } : t)) }));
-  await updateDoc(doc(db, "tasks", id), stripUndefined({ ...patch, updatedAt: Date.now() }));
+  await updateDoc(doc(db, "tasks", id), stripUndefined({ ...patch, ...FROM_APP, updatedAt: Date.now() }));
 }
 
 export async function deleteTask(id: string): Promise<void> {
@@ -99,18 +106,34 @@ export async function deleteTask(id: string): Promise<void> {
 
 export async function saveSchedule(schedule: Schedule): Promise<void> {
   const { id, ...rest } = schedule;
-  if (isMock) return useData.setState((s) => ({ schedules: [...s.schedules.filter((t) => t.id !== id), schedule] }));
+  if (isMock) return useData.setState((s) => ({ schedules: [...s.schedules.filter((x) => x.id !== id), { ...schedule, updatedAt: Date.now() }] }));
   await setDoc(doc(db, "schedules", id), stripUndefined({ ...rest, updatedAt: Date.now() }));
 }
 
 export async function patchSchedule(id: string, patch: Partial<Schedule>): Promise<void> {
-  if (isMock) return useData.setState((s) => ({ schedules: s.schedules.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: Date.now() } : t)) }));
+  if (isMock) return useData.setState((s) => ({ schedules: s.schedules.map((x) => (x.id === id ? { ...x, ...patch, updatedAt: Date.now() } : x)) }));
   await updateDoc(doc(db, "schedules", id), stripUndefined({ ...patch, updatedAt: Date.now() }));
 }
 
 export async function deleteSchedule(id: string): Promise<void> {
-  if (isMock) return useData.setState((s) => ({ schedules: s.schedules.filter((t) => t.id !== id) }));
+  if (isMock) return useData.setState((s) => ({ schedules: s.schedules.filter((x) => x.id !== id) }));
   await deleteDoc(doc(db, "schedules", id));
+}
+
+export async function saveRoutine(routine: Routine): Promise<void> {
+  const { id, ...rest } = routine;
+  if (isMock) return useData.setState((s) => ({ routines: [...s.routines.filter((t) => t.id !== id), routine] }));
+  await setDoc(doc(db, "routines", id), stripUndefined({ ...rest, updatedAt: Date.now() }));
+}
+
+export async function patchRoutine(id: string, patch: Partial<Routine>): Promise<void> {
+  if (isMock) return useData.setState((s) => ({ routines: s.routines.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: Date.now() } : t)) }));
+  await updateDoc(doc(db, "routines", id), stripUndefined({ ...patch, updatedAt: Date.now() }));
+}
+
+export async function deleteRoutine(id: string): Promise<void> {
+  if (isMock) return useData.setState((s) => ({ routines: s.routines.filter((t) => t.id !== id) }));
+  await deleteDoc(doc(db, "routines", id));
 }
 
 export async function patchUser(key: PersonKey, patch: Record<string, unknown>): Promise<void> {

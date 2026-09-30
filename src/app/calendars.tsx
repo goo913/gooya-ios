@@ -62,6 +62,11 @@ export default function CalendarsSheet() {
         </Card>
         <Text style={[styles.foot, { color: colors.label2 }]}>The month, lists and search. The day view has its own choice in its view menu.</Text>
 
+        <SectionHeader>GOOYA</SectionHeader>
+        <Card>
+          <CheckRow color={colors.blue} checked={!hidden.includes("gooya:schedules")} onPress={() => toggleCalendar("gooya:schedules")} title="Schedules" subtitle="GOOYA's own, in each person's colour" />
+        </Card>
+
         {imported.map(({ account, calendars }) => (
           <View key={account.id}>
             <SectionHeader>{account.source === "google" ? "Google" : "iCloud"}</SectionHeader>

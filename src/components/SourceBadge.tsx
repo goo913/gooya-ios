@@ -1,8 +1,9 @@
 import { StyleSheet, Text, View } from "react-native";
 import { Icon } from "./Icon";
 
-/** Tiny source badge for imported events (Google / Apple). */
-export function SourceBadge({ source, size = 11, color }: { source: "google" | "apple"; size?: number; color?: string }) {
+/** Tiny source badge: Google or Apple for imported events; none for GOOYA's own schedules. */
+export function SourceBadge({ source, size = 11, color }: { source: "google" | "apple" | "gooya"; size?: number; color?: string }) {
+  if (source === "gooya") return null;
   if (source === "google") {
     return (
       <View style={[styles.g, { width: size, height: size, borderRadius: size / 2 }]}>

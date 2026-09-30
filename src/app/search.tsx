@@ -1,5 +1,7 @@
-import type { DateKey, EventOccurrence, Schedule, TaskOccurrence } from "@shared/model";
+import type { DateKey, EventOccurrence, Routine, TaskOccurrence } from "@shared/model";
+import { PEOPLE } from "@shared/people";
 import { dedupeEvents, describeRule, eventDays, expandEvent, expandTask, occurrenceDays } from "@shared/recurrence";
+import { scheduleAsEvent } from "@shared/schedules";
 import { addDaysKey, parseHHmm, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { useMemo, useState } from "react";
@@ -9,11 +11,11 @@ import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Segmented";
 import { formatHM } from "@/lib/format";
 import { useShowCompleted } from "@/lib/occurrences";
-import { useMe, usePerson, usePersonColor } from "@/lib/people";
+import { colorHex, useMe, usePerson, usePersonColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
-import { useColors } from "@/theme";
+import { useColors, useIsDark } from "@/theme";
 import { EventRow, TaskRow, dayHeading } from "@/views/ListView";
 
 const MAX_RESULTS = 200;
@@ -26,14 +28,19 @@ export default function SearchScreen() {
   const [filter, setFilter] = useState<"all" | "completed">("all");
   const showCompleted = useShowCompleted();
   const tasks = useData((s) => s.tasks);
-  const schedules = useData((s) => s.schedules);
+  const routines = useData((s) => s.routines);
   const allEvents = useData((s) => s.events);
+  const schedules = useData((s) => s.schedules);
+  const users = useData((s) => s.users);
+  const dark = useIsDark();
   const avoidDuplicates = usePerson(useMe()).settings.avoidDuplicates;
-  // The same event from two calendars once, as in the calendar views (Settings → Integrations → Avoid duplicates).
+  // GOOYA's schedules, and imported events: the same event from two calendars once, as in the calendar views
+  // (Settings → Integrations → Avoid duplicates).
   const events = useMemo(() => {
     const live = allEvents.filter((e) => !e.deleted).sort((a, b) => (a.source === b.source ? 0 : a.source === "google" ? -1 : 1));
-    return avoidDuplicates ? dedupeEvents(live) : live;
-  }, [allEvents, avoidDuplicates]);
+    const own = schedules.map((x) => scheduleAsEvent(x, colorHex(users[x.owner]?.color || PEOPLE[x.owner].color, dark)));
+    return [...own, ...(avoidDuplicates ? dedupeEvents(live) : live)];
+  }, [allEvents, schedules, users, dark, avoidDuplicates]);
   const today = useToday();
   const openDetail = useSheets((s) => s.openDetail);
   const needle = q.trim().toLowerCase();
@@ -58,7 +65,7 @@ export default function SearchScreen() {
       }
       if (count >= MAX_RESULTS) break;
     }
-    // Imported calendar events too (not in the Completed filter: events are not completed).
+    // Schedules too (not in the Completed filter: schedules are not completed).
     if (filter === "all") {
       for (const ev of events) {
         if (!(matches(ev.title, needle) || matches(ev.notes, needle) || matches(ev.location, needle))) continue;
@@ -76,8 +83,8 @@ export default function SearchScreen() {
     const days = Array.from(byDay.keys()).sort();
     const upcoming = days.filter((d) => d >= today);
     const past = days.filter((d) => d < today).reverse();
-    return { days: [...upcoming, ...past], byDay, schedules: schedules.filter((s) => matches(s.title, needle)) };
-  }, [needle, tasks, schedules, events, today, filter, showCompleted]);
+    return { days: [...upcoming, ...past], byDay, routines: routines.filter((s) => matches(s.title, needle)) };
+  }, [needle, tasks, routines, events, today, filter, showCompleted]);
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg, paddingTop: insets.top + 10 }]}>
       <View style={styles.bar}>
@@ -101,20 +108,20 @@ export default function SearchScreen() {
       </View>
       <ScrollView keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: insets.bottom + 20 }} showsVerticalScrollIndicator={false}>
         {results === null ? (
-          <Text style={[styles.hint, { color: colors.label2 }]}>Search tasks, schedules and calendar events for 구야 and 은비.</Text>
-        ) : results.days.length === 0 && results.schedules.length === 0 ? (
+          <Text style={[styles.hint, { color: colors.label2 }]}>Search tasks, schedules and routines for 구야 and 은비.</Text>
+        ) : results.days.length === 0 && results.routines.length === 0 ? (
           <Text style={[styles.hint, { color: colors.label2, fontSize: 17 }]}>No Results</Text>
         ) : (
           <>
-            {results.schedules.length ? (
+            {results.routines.length ? (
               <View>
-                <Text style={[styles.section, { color: colors.label2 }]}>SCHEDULES</Text>
-                {results.schedules.map((s) => (
-                  <ScheduleRow
+                <Text style={[styles.section, { color: colors.label2 }]}>ROUTINES</Text>
+                {results.routines.map((s) => (
+                  <RoutineRow
                     key={s.id}
-                    schedule={s}
+                    routine={s}
                     onOpen={() => {
-                      openDetail({ kind: "schedule", scheduleId: s.id, dateKey: today >= s.startDate ? today : s.startDate });
+                      openDetail({ kind: "routine", routineId: s.id, dateKey: today >= s.startDate ? today : s.startDate });
                       router.push("/sheet/detail");
                     }}
                   />
@@ -140,22 +147,22 @@ export default function SearchScreen() {
   );
 }
 
-function ScheduleRow({ schedule, onOpen }: { schedule: Schedule; onOpen: () => void }) {
+function RoutineRow({ routine, onOpen }: { routine: Routine; onOpen: () => void }) {
   const colors = useColors();
-  const person = usePerson(schedule.owner);
-  const color = usePersonColor(schedule.owner);
-  const s = parseHHmm(schedule.startTime);
-  const e = parseHHmm(schedule.endTime);
+  const person = usePerson(routine.owner);
+  const color = usePersonColor(routine.owner);
+  const s = parseHHmm(routine.startTime);
+  const e = parseHHmm(routine.endTime);
   return (
     <Pressable onPress={onOpen} style={[styles.schedRow, { borderBottomColor: colors.separator }]}>
-      <Text style={styles.schedIcon}>{schedule.icon}</Text>
+      <Text style={styles.schedIcon}>{routine.icon}</Text>
       <View style={[styles.schedBar, { backgroundColor: color }]} />
       <View style={{ flex: 1 }}>
         <Text numberOfLines={1} style={[styles.schedTitle, { color: colors.label }]}>
-          {schedule.title}
+          {routine.title}
         </Text>
         <Text numberOfLines={1} style={[styles.schedSub, { color: colors.label2 }]}>
-          {person.name} · {describeRule(schedule.rrule)} · {formatHM(s.h, s.min)} – {formatHM(e.h, e.min)}
+          {person.name} · {describeRule(routine.rrule)} · {formatHM(s.h, s.min)} – {formatHM(e.h, e.min)}
         </Text>
       </View>
     </Pressable>

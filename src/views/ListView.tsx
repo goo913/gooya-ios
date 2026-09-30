@@ -111,7 +111,8 @@ export function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
           </Text>
         ) : null}
       </View>
-      <Times start={occ.start} end={occ.end} allDay={occ.allDay} />
+      {/* A schedule without an end time shows its start only. */}
+      <Times start={occ.start} end={occ.end > occ.start ? occ.end : undefined} allDay={occ.allDay} />
     </Pressable>
   );
 }

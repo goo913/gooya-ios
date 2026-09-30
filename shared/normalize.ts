@@ -1,5 +1,5 @@
 // Plain-object normalisers shared by the web app and Cloud Functions.
-import type { CalendarEvent, ExternalRef, Schedule, Task, TaskList, UserDoc } from './model'
+import type { CalendarEvent, ExternalRef, Routine, Schedule, Task, TaskList, UserDoc } from './model'
 import { isPersonKey } from './people'
 import { fieldsInZone } from './time'
 
@@ -83,7 +83,42 @@ export function normalizeList(id: string, d: Data): TaskList {
   }
 }
 
-export function normalizeSchedule(id: string, d: Data): Schedule {
+/**
+ * A routine as builds from before routines had their own collection wrote it into "schedules": times of day
+ * (startTime, endTime) and no start instant. It is not a schedule, and is never shown or copied into a calendar as one.
+ */
+export function isLegacyRoutine(d: Data): boolean {
+  return typeof d.start !== 'number' && typeof d.startTime === 'string'
+}
+
+/** A schedule document, or null for a routine an older build left in "schedules" (see isLegacyRoutine). */
+export function normalizeSchedule(id: string, d: Data): Schedule | null {
+  if (isLegacyRoutine(d)) return null
+  const timezone = str(d.timezone, 'UTC')
+  const start = num(d.start)
+  const end = Math.max(start, num(d.end, start))
+  return {
+    id,
+    owner: isPersonKey(d.owner) ? d.owner : 'gooya',
+    createdBy: isPersonKey(d.createdBy) ? d.createdBy : isPersonKey(d.owner) ? d.owner : 'gooya',
+    title: str(d.title),
+    notes: str(d.notes),
+    location: str(d.location),
+    allDay: !!d.allDay,
+    start,
+    end,
+    startDate: str(d.startDate),
+    endDate: str(d.endDate, str(d.startDate)),
+    timezone,
+    rrule: typeof d.rrule === 'string' && d.rrule ? d.rrule : null,
+    exdates: arr<string>(d.exdates),
+    overrides: obj(d.overrides),
+    createdAt: num(d.createdAt),
+    updatedAt: num(d.updatedAt),
+  }
+}
+
+export function normalizeRoutine(id: string, d: Data): Routine {
   return {
     id,
     owner: isPersonKey(d.owner) ? d.owner : 'gooya',
@@ -104,6 +139,15 @@ export function normalizeSchedule(id: string, d: Data): Schedule {
   }
 }
 
+/** Routines were called schedules: a setting saved under the old name still counts. */
+function withRoutineIntensity(settings: Data): Data {
+  if (settings.routineIntensity === undefined && typeof settings.scheduleIntensity === 'number') {
+    const { scheduleIntensity, ...rest } = settings
+    return { ...rest, routineIntensity: scheduleIntensity }
+  }
+  return settings
+}
+
 export function normalizeUser(id: string, d: Data): UserDoc | null {
   if (!isPersonKey(id)) return null
   return {
@@ -115,16 +159,22 @@ export function normalizeUser(id: string, d: Data): UserDoc | null {
     color: str(d.color),
     fcmTokens: arr<string>(d.fcmTokens),
     recentColors: arr<string>(d.recentColors),
-    settings: obj(d.settings),
+    settings: withRoutineIntensity(obj(d.settings)),
     widgetToken: typeof d.widgetToken === 'string' ? d.widgetToken : null,
+    remindersDevice: remindersDevice(d.remindersDevice),
   }
+}
+
+function remindersDevice(v: unknown): UserDoc['remindersDevice'] {
+  const o = obj(v) as Record<string, unknown>
+  return typeof o.id === 'string' && o.id ? { id: o.id, name: str(o.name, 'iPhone'), at: num(o.at) } : null
 }
 
 export function normalizeEvent(id: string, d: Data): CalendarEvent {
   return {
     id,
     owner: isPersonKey(d.owner) ? d.owner : 'gooya',
-    source: d.source === 'apple' ? 'apple' : 'google',
+    source: d.source === 'apple' ? 'apple' : d.source === 'gooya' ? 'gooya' : 'google',
     accountId: str(d.accountId),
     calendarId: str(d.calendarId),
     calendarName: str(d.calendarName),

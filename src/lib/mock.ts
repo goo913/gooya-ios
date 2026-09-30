@@ -1,6 +1,6 @@
 // In-memory demo data so the app can be exercised without Firebase (the iPhone Simulator has no Google account).
 // EXPO_PUBLIC_DEMO=1 (optionally EXPO_PUBLIC_DEMO_ME=eunbi). Demo mode never reads or writes Firestore.
-import type { CalendarEvent, Schedule, Task, TaskList, UserDoc } from "@shared/model";
+import type { CalendarEvent, Routine, Schedule, Task, TaskList, UserDoc } from "@shared/model";
 import { PEOPLE, type PersonKey } from "@shared/people";
 import { addDaysKey, deviceTimeZone, todayKey, zonedMs } from "@shared/time";
 import { useData } from "@/store/data";
@@ -20,7 +20,7 @@ function task(owner: PersonKey, title: string, dueDate: string | null, dueTime: 
   };
 }
 
-function schedule(owner: PersonKey, title: string, icon: string, kind: Schedule["kind"], startTime: string, endTime: string, rrule: string): Schedule {
+function routine(owner: PersonKey, title: string, icon: string, kind: Routine["kind"], startTime: string, endTime: string, rrule: string): Routine {
   return {
     id: id(), owner, title, icon, kind, color: null, startTime, endTime, timezone: PEOPLE[owner].timezone,
     rrule, startDate: "2026-01-01", endDate: null, exdates: [], overrides: {}, createdAt: Date.now(), updatedAt: Date.now(),
@@ -54,11 +54,11 @@ export function startMockData(): void {
     task("gooya", "Someday: learn Korean cooking", null, null, { listId: "home" }),
   ];
 
-  const schedules: Schedule[] = [
-    schedule("gooya", "Work", "💼", "work", "09:00", "17:00", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"),
-    schedule("gooya", "Sleep", "💤", "sleep", "23:30", "07:00", "FREQ=DAILY"),
-    schedule("eunbi", "Work", "💼", "work", "09:00", "18:00", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"),
-    schedule("eunbi", "Sleep", "💤", "sleep", "00:30", "08:00", "FREQ=DAILY"),
+  const routines: Routine[] = [
+    routine("gooya", "Work", "💼", "work", "09:00", "17:00", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"),
+    routine("gooya", "Sleep", "💤", "sleep", "23:30", "07:00", "FREQ=DAILY"),
+    routine("eunbi", "Work", "💼", "work", "09:00", "18:00", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"),
+    routine("eunbi", "Sleep", "💤", "sleep", "00:30", "08:00", "FREQ=DAILY"),
   ];
 
   const users: Partial<Record<PersonKey, UserDoc>> = {
@@ -90,9 +90,23 @@ export function startMockData(): void {
     ev("gooya", "apple", "추석", d(3), null, null, { iCalUID: "chuseok@demo" }),
     ev("eunbi", "google", "1:1 with manager", d(1), "15:00", "15:30", { iCalUID: "one@demo" }),
   ];
-  const { setTasks, setSchedules, setUsers, setLists, setEvents, setAccounts } = useData.getState();
+  const schedule = (owner: PersonKey, title: string, date: string, start: string | null, end: string | null, extra: Partial<Schedule> = {}): Schedule => {
+    const tz2 = PEOPLE[owner].timezone;
+    const allDay = !start;
+    const s = allDay ? zonedMs(date, "00:00", tz2) : zonedMs(date, start!, tz2);
+    const e = allDay ? zonedMs(addDaysKey(date, 1), "00:00", tz2) : end ? zonedMs(date, end, tz2) : s;
+    return { id: id(), owner, createdBy: owner, title, notes: "", location: "", allDay, start: s, end: e, startDate: date, endDate: date, timezone: tz2, rrule: null, exdates: [], overrides: {}, createdAt: 0, updatedAt: 0, ...extra };
+  };
+  const schedules: Schedule[] = [
+    schedule("gooya", "Lunch with Minho", d(0), "12:30", "13:30", { location: "Ponce City Market" }),
+    schedule("eunbi", "Dentist", d(1), "15:00", "16:00"),
+    schedule("gooya", "Pick up 은비 at the airport", d(2), "18:45", null),
+    schedule("eunbi", "Family dinner", d(5), "19:00", "21:00", { createdBy: "gooya" }),
+  ];
+  const { setTasks, setSchedules, setRoutines, setUsers, setLists, setEvents, setAccounts } = useData.getState();
   setTasks(tasks);
   setSchedules(schedules);
+  setRoutines(routines);
   setUsers(users);
   setLists(lists);
   setEvents(events);

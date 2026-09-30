@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { PersonKey } from '@shared/people'
-import type { CalendarEvent, Schedule, SyncDirection, Task, TaskList, UserDoc } from '@shared/model'
+import type { CalendarEvent, Routine, Schedule, SyncDirection, Task, TaskList, UserDoc } from '@shared/model'
 
 export interface IntegrationCalendar {
   name: string
@@ -29,11 +29,12 @@ export interface IntegrationAccount {
 interface DataState {
   tasks: Task[]
   schedules: Schedule[]
+  routines: Routine[]
   users: Partial<Record<PersonKey, UserDoc>>
   lists: TaskList[]
   events: CalendarEvent[]
   accounts: IntegrationAccount[]
-  loaded: { tasks: boolean; schedules: boolean; users: boolean; lists: boolean }
+  loaded: { tasks: boolean; schedules: boolean; routines: boolean; users: boolean; lists: boolean }
   /** The tasks and lists last came from the server, not only from this phone's copy (which may be behind). */
   fresh: { tasks: boolean; lists: boolean }
   setFresh: (what: 'tasks' | 'lists', fresh: boolean) => void
@@ -42,17 +43,19 @@ interface DataState {
   setEvents: (events: CalendarEvent[]) => void
   setAccounts: (accounts: IntegrationAccount[]) => void
   setSchedules: (schedules: Schedule[]) => void
+  setRoutines: (routines: Routine[]) => void
   setUsers: (users: Partial<Record<PersonKey, UserDoc>>) => void
 }
 
 export const useData = create<DataState>((set) => ({
   tasks: [],
   schedules: [],
+  routines: [],
   users: {},
   lists: [],
   events: [],
   accounts: [],
-  loaded: { tasks: false, schedules: false, users: false, lists: false },
+  loaded: { tasks: false, schedules: false, routines: false, users: false, lists: false },
   fresh: { tasks: false, lists: false },
   setFresh: (what, fresh) => set((s) => (s.fresh[what] === fresh ? s : { fresh: { ...s.fresh, [what]: fresh } })),
   setTasks: (tasks) => set((s) => ({ tasks, loaded: { ...s.loaded, tasks: true } })),
@@ -60,5 +63,6 @@ export const useData = create<DataState>((set) => ({
   setEvents: (events) => set({ events }),
   setAccounts: (accounts) => set({ accounts }),
   setSchedules: (schedules) => set((s) => ({ schedules, loaded: { ...s.loaded, schedules: true } })),
+  setRoutines: (routines) => set((s) => ({ routines, loaded: { ...s.loaded, routines: true } })),
   setUsers: (users) => set((s) => ({ users, loaded: { ...s.loaded, users: true } })),
 }))

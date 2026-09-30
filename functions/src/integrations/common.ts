@@ -49,7 +49,7 @@ export interface AccountDoc {
   error?: string
   connectedAt: number
   calendars: Record<string, CalendarConfig>
-  /** The "GOOYA" calendar GOOYA made in this account for its tasks and schedules (Google id, iCloud URL). */
+  /** The "GOOYA" calendar GOOYA made in this account for its tasks and schedules (Google id, iCloud URL). Never routines. */
   exportCalendarId?: string
   /** Copy GOOYA's tasks / schedules into that calendar; changes made there come back to GOOYA. */
   exportTasks?: boolean

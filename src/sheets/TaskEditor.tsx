@@ -28,7 +28,7 @@ interface Props {
   initialDate?: DateKey;
   initialMinutes?: number;
   initialListId?: string;
-  /** Rendered above the form (the Task | Schedule switch). */
+  /** Rendered above the form (the Task | Routine switch). */
   topBar?: ReactNode;
   onClose: () => void;
 }

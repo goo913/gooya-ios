@@ -15,9 +15,11 @@ export interface TaskOverride {
 export type Priority = 0 | 1 | 2 | 3
 
 /**
- * A task is a reminder: something to do, optionally on a date, optionally at a
- * time (Apple Reminders semantics). Anything with a start and end is a schedule
- * or an imported event.
+ * GOOYA has three kinds of things:
+ * - a task is a reminder: something to do, optionally on a date, optionally at a time (Apple Reminders semantics);
+ * - a schedule is something happening at a time: lunch with a friend at noon, a flight, an appointment (like a
+ *   calendar event; events imported from Google or iCloud are schedules too);
+ * - a routine is a repeating background block of a person's days: work, sleep, the gym.
  */
 export interface Task {
   id: string
@@ -90,21 +92,50 @@ export interface TaskList {
 
 export const DEFAULT_LIST_ID = 'tasks'
 
-export type ScheduleKind = 'sleep' | 'work' | 'custom'
+/**
+ * Something happening at a time, GOOYA's own: lunch with a friend at noon. It has a start and usually an end (an end
+ * equal to the start means no end time), or it is all-day; it can repeat. It can be copied to the person's Google or
+ * iCloud (the GOOYA calendar there) and changed there too. Imported calendar events work the same way (CalendarEvent).
+ */
+export interface Schedule {
+  id: string
+  owner: PersonKey
+  createdBy: PersonKey
+  title: string
+  notes: string
+  location: string
+  allDay: boolean
+  /** Instants (ms). All-day: local midnights in `timezone`, the end being the midnight after the last day. */
+  start: number
+  end: number
+  startDate: DateKey
+  /** The last day (inclusive). */
+  endDate: DateKey
+  timezone: string
+  /** RRULE body without DTSTART. null = not repeating. */
+  rrule: string | null
+  exdates: DateKey[]
+  overrides: Record<DateKey, EventOverride>
+  createdAt: number
+  updatedAt: number
+}
 
-export interface ScheduleOverride {
+export type RoutineKind = 'sleep' | 'work' | 'custom'
+
+export interface RoutineOverride {
   title?: string
   startTime?: HHmm
   endTime?: HHmm
 }
 
-export interface Schedule {
+/** A repeating background block of a person's days (work, sleep): shown behind the day view, never copied out. */
+export interface Routine {
   id: string
   owner: PersonKey
   title: string
   /** Emoji label, e.g. 💤 for sleep. */
   icon: string
-  kind: ScheduleKind
+  kind: RoutineKind
   /** Hex color, or null → owner's color. */
   color: string | null
   startTime: HHmm
@@ -117,7 +148,7 @@ export interface Schedule {
   /** Inclusive last date, or null for open-ended. */
   endDate: DateKey | null
   exdates: DateKey[]
-  overrides: Record<DateKey, ScheduleOverride>
+  overrides: Record<DateKey, RoutineOverride>
   createdAt: number
   updatedAt: number
 }
@@ -125,8 +156,8 @@ export interface Schedule {
 export interface UserSettings {
   /** Show completed tasks everywhere (month, timeline, lists, search, widget). */
   showCompleted: boolean
-  /** Schedule band fill strength 0–1 (0.5 dark / 0.35 light by default). */
-  scheduleIntensity: number | null
+  /** Routine band fill strength 0–1 (0.5 dark / 0.35 light by default). Stored as scheduleIntensity before routines had their name. */
+  routineIntensity: number | null
   /** Hide the same external event arriving from two calendars. */
   avoidDuplicates: boolean
   /** Show the other person's local time as a second gutter in the timeline. */
@@ -151,6 +182,8 @@ export interface UserDoc {
   recentColors?: string[]
   settings: Partial<UserSettings>
   widgetToken?: string | null
+  /** The one device that syncs this person's Apple Reminders (two would each add GOOYA's new tasks to Reminders). */
+  remindersDevice?: { id: string; name: string; at: number } | null
 }
 
 export interface TaskOccurrence {
@@ -176,9 +209,9 @@ export interface TaskOccurrence {
   completed: boolean
 }
 
-export interface ScheduleOccurrence {
-  kind: 'schedule'
-  schedule: Schedule
+export interface RoutineOccurrence {
+  kind: 'routine'
+  routine: Routine
   key: string
   /** Occurrence date key in the owner's zone. */
   dateKey: DateKey
@@ -190,7 +223,7 @@ export interface ScheduleOccurrence {
 
 export const DEFAULT_SETTINGS: UserSettings = {
   showCompleted: true,
-  scheduleIntensity: null,
+  routineIntensity: null,
   avoidDuplicates: true,
   secondGutter: false,
   notifyOnOtherAdds: true,
@@ -201,7 +234,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
 /**
  * What GOOYA does with one Google or iCloud calendar: nothing, show its events (import), or show them and let them be
  * changed in GOOYA with the changes going back (both). Copying GOOYA's own tasks and schedules out is per account
- * (exportTasks / exportSchedules), not per calendar.
+ * (exportTasks / exportSchedules), not per calendar; routines are never copied.
  */
 export type SyncDirection = 'off' | 'import' | 'both'
 
@@ -215,14 +248,14 @@ export interface EventOverride {
 }
 
 /**
- * An imported calendar event (Google / Apple). Events have a start and end
- * and are shown as blocks above schedules. Editable only when the source
- * calendar is two-way.
+ * An imported calendar event (Google / Apple), or GOOYA's own schedule drawn as one (source 'gooya', see
+ * shared/schedules.ts). Events have a start and end and are shown as blocks above routines. An imported one can be
+ * changed only when its calendar is two-way.
  */
 export interface CalendarEvent {
   id: string
   owner: PersonKey
-  source: 'google' | 'apple'
+  source: 'google' | 'apple' | 'gooya'
   accountId: string
   calendarId: string
   calendarName: string

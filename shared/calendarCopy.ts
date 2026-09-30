@@ -2,9 +2,9 @@
 // coming back. The sync functions (functions/src/integrations) read the copies from Google or iCloud into the plain
 // values below; the rules for what a change there means for GOOYA live here, so both calendars follow the same ones.
 
-import type { DateKey, HHmm, Schedule, ScheduleOverride, Task, TaskOverride } from './model'
+import type { DateKey, EventOverride, HHmm, Schedule, Task, TaskOverride } from './model'
 
-/** One copy as it is in Google or iCloud now, on the clock of the task or schedule it copies. */
+/** One copy as it is in Google or iCloud now, on the clock of the task or routine it copies. */
 export interface CalendarCopy {
   title: string
   notes: string
@@ -28,15 +28,6 @@ export interface CopyOccurrence {
 /** Whether GOOYA puts this task into the calendar (so its disappearing from there means someone deleted it there). */
 export function taskIsCopied(t: Pick<Task, 'dueDate' | 'completed' | 'rrule'>): boolean {
   return !!t.dueDate && !(t.completed && !t.rrule)
-}
-
-/** A schedule is shown as "💤 Sleep": the icon in front is GOOYA's, not part of the title. */
-export function scheduleTitle(s: Pick<Schedule, 'icon' | 'title'>): string {
-  return `${s.icon ? `${s.icon} ` : ''}${s.title}`
-}
-
-function withoutIcon(title: string, icon: string): string {
-  return icon && title.startsWith(`${icon} `) ? title.slice(icon.length + 1) : icon && title.startsWith(icon) ? title.slice(icon.length).trimStart() : title
 }
 
 /** Google Calendar keeps notes edited on its website as HTML; GOOYA's notes are plain text. */
@@ -76,19 +67,6 @@ export function taskChangeFromCopy(t: Task, c: CalendarCopy): Partial<Task> | nu
   return Object.keys(patch).length ? patch : null
 }
 
-/** The same for a schedule: its title and its times (a schedule's days and repeat stay GOOYA's). */
-export function scheduleChangeFromCopy(s: Schedule, c: CalendarCopy): Partial<Schedule> | null {
-  if (c.updated <= s.updatedAt) return null
-  const patch: Partial<Schedule> = {}
-  const title = withoutIcon(c.title, s.icon).trim()
-  if (title && title !== s.title) patch.title = title
-  if (!c.allDay && c.startTime && c.endTime && (c.startTime !== s.startTime || c.endTime !== s.endTime)) {
-    patch.startTime = c.startTime
-    patch.endTime = c.endTime
-  }
-  return Object.keys(patch).length ? patch : null
-}
-
 /** One occurrence of a repeating task changed in the calendar: deleted there, or moved or renamed. */
 export function taskOccurrenceChange(t: Task, o: CopyOccurrence): Partial<Task> | null {
   if (o.cancelled) return t.exdates.includes(o.dateKey) ? null : { exdates: [...t.exdates, o.dateKey] }
@@ -109,18 +87,54 @@ export function taskOccurrenceChange(t: Task, o: CopyOccurrence): Partial<Task> 
   return { overrides: { ...t.overrides, [o.dateKey]: next } }
 }
 
-/** One occurrence of a schedule changed in the calendar. */
-export function scheduleOccurrenceChange(s: Schedule, o: CopyOccurrence): Partial<Schedule> | null {
-  if (o.cancelled) return s.exdates.includes(o.dateKey) ? null : { exdates: [...s.exdates, o.dateKey] }
+/** A copy of a schedule as it is in Google or iCloud now: instants, and days on the schedule's clock. */
+export interface ScheduleCopy {
+  title: string
+  notes: string
+  location: string
+  allDay: boolean
+  start: number
+  end: number
+  startDate: DateKey
+  endDate: DateKey
+  /** When it was last changed there (ms). */
+  updated: number
+}
+
+/** The change to a schedule that its copy, changed in the calendar, amounts to (null: none, or GOOYA's is newer). */
+export function scheduleChangeFromCopy(s: Schedule, c: ScheduleCopy): Partial<Schedule> | null {
+  if (c.updated <= s.updatedAt) return null
+  const patch: Partial<Schedule> = {}
+  const title = c.title.trim()
+  if (title && title !== s.title) patch.title = title
+  const notes = plainNotes(c.notes)
+  if (notes !== (s.notes ?? '')) patch.notes = notes
+  if (c.location !== (s.location ?? '')) patch.location = c.location
+  const sameTimes = c.allDay === s.allDay && (c.allDay ? c.startDate === s.startDate && c.endDate === s.endDate : c.start === s.start && c.end === s.end)
+  if (!sameTimes) Object.assign(patch, { allDay: c.allDay, start: c.start, end: Math.max(c.start, c.end), startDate: c.startDate, endDate: c.endDate })
+  return Object.keys(patch).length ? patch : null
+}
+
+/** One occurrence of a repeating schedule changed in the calendar: deleted there, or moved or renamed. */
+export function scheduleOccurrenceChange(s: Schedule, o: { dateKey: DateKey; cancelled: boolean; copy?: ScheduleCopy }): Partial<Schedule> | null {
+  if (o.cancelled) {
+    if (s.exdates.includes(o.dateKey)) return null
+    const overrides = { ...s.overrides }
+    delete overrides[o.dateKey]
+    return { exdates: [...s.exdates, o.dateKey], overrides }
+  }
   const c = o.copy
-  if (!c || c.updated <= s.updatedAt || c.allDay || !c.startTime || !c.endTime) return null
+  if (!c || c.updated <= s.updatedAt) return null
   const before = s.overrides[o.dateKey] ?? {}
-  const next: ScheduleOverride = { ...before }
-  const title = withoutIcon(c.title, s.icon).trim()
+  const next: EventOverride = { ...before }
+  const title = c.title.trim()
   if (title && title !== (before.title ?? s.title)) next.title = title
-  if (c.startTime !== (before.startTime ?? s.startTime) || c.endTime !== (before.endTime ?? s.endTime)) {
-    next.startTime = c.startTime
-    next.endTime = c.endTime
+  const notes = plainNotes(c.notes)
+  if (notes !== (before.notes ?? s.notes)) next.notes = notes
+  if (c.location !== (before.location ?? s.location)) next.location = c.location
+  if (c.start !== (before.start ?? null) || c.end !== (before.end ?? null)) {
+    next.start = c.start
+    next.end = Math.max(c.start, c.end)
   }
   if (JSON.stringify(next) === JSON.stringify(before)) return null
   return { overrides: { ...s.overrides, [o.dateKey]: next } }
@@ -128,7 +142,7 @@ export function scheduleOccurrenceChange(s: Schedule, o: CopyOccurrence): Partia
 
 /**
  * Whether a copy that disappeared from the calendar was deleted there by someone, rather than taken out by GOOYA
- * itself (a task completed, undated or deleted in GOOYA is taken out).
+ * itself (a task completed, undated or deleted in GOOYA is taken out). A schedule GOOYA still has was deleted there.
  */
 export function deletedInCalendar(item: Pick<Task, 'dueDate' | 'completed' | 'rrule'> | Schedule | null, kind: 'task' | 'schedule'): boolean {
   if (!item) return false
