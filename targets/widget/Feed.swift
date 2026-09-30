@@ -1,7 +1,8 @@
 import Foundation
 
 // The feed the app writes into the App Group (shared/widgetFeed.ts builds it; src/lib/widget.ts stores it) and the
-// widgetFeed Cloud Function serves. Field names follow the TypeScript types in shared/widgetFeed.ts.
+// widgetFeed Cloud Function serves. Field names follow the TypeScript types in shared/widgetFeed.ts; what a feed from
+// before schedules existed does not have is optional.
 
 struct FeedPerson: Codable, Hashable {
   let key: String
@@ -13,29 +14,32 @@ struct FeedPerson: Codable, Hashable {
 
 struct FeedItem: Codable, Identifiable, Hashable {
   let id: String
+  /// "task", "schedule" or "event".
+  let kind: String?
+  /// The task's, schedule's or event's id.
   let taskId: String
   let owner: String
   let title: String
   let allDay: Bool
   let start: Double
   let end: Double
+  /// The first and the last day it is on (only events and schedules run over several days).
   let date: String
+  let endDate: String?
+  /// "all-day" or the start time ("12:00 PM").
   let time: String
   let completed: Bool
   let flagged: Bool?
   let priority: Int?
   let listId: String?
-}
+  /// An event's calendar colour, a task's list colour; none for a schedule (its owner's colour).
+  let color: String?
+  /// The calendar of an event or schedule ("accountId:calendarId", "gooya:schedules").
+  let calendar: String?
 
-struct FeedSchedule: Codable, Identifiable, Hashable {
-  let id: String
-  let owner: String
-  let title: String
-  let icon: String?
-  let kind: String?
-  let start: Double
-  let end: Double
-  let time: String
+  var isTask: Bool { (kind ?? "task") == "task" }
+  var lastDay: String { max(endDate ?? date, date) }
+  func isOn(_ day: String) -> Bool { date <= day && day <= lastDay }
 }
 
 struct Feed: Codable, Hashable {
@@ -46,8 +50,6 @@ struct Feed: Codable, Hashable {
   let today: String
   let people: [FeedPerson]
   let items: [FeedItem]
-  let schedules: [FeedSchedule]
-  let dots: [String: [String]]
   let appUrl: String?
 
   func person(_ key: String) -> FeedPerson? { people.first { $0.key == key } }
@@ -74,6 +76,14 @@ enum FeedStore {
   static func token() -> String? {
     guard let t = defaults?.string(forKey: "token"), !t.isEmpty else { return nil }
     return t
+  }
+
+  /// The calendars unticked on this phone (the app's Calendars screen), which the widget leaves out too.
+  static func hidden() -> Set<String> {
+    guard let text = defaults?.string(forKey: "hidden"), let data = text.data(using: .utf8), let list = try? JSONDecoder().decode([String].self, from: data) else {
+      return []
+    }
+    return Set(list)
   }
 
   /// The freshest feed available: the server's when the cached one is old (or a push said so) and a token exists.
@@ -109,32 +119,56 @@ enum FeedStore {
     let tz = TimeZone.current
     let today = DayKey.key(for: now, in: tz)
     let cal = DayKey.calendar(tz)
-    func at(_ hour: Int, day: Int = 0) -> Double {
+    func at(_ hour: Double, day: Int = 0) -> Double {
       let base = cal.date(byAdding: .day, value: day, to: cal.startOfDay(for: now))!
-      return cal.date(byAdding: .hour, value: hour, to: base)!.timeIntervalSince1970 * 1000
+      return base.timeIntervalSince1970 * 1000 + hour * 3_600_000
     }
-    let tomorrow = DayKey.add(today, days: 1)
-    let dayAfter = DayKey.add(today, days: 2)
+    func time(_ hour: Double) -> String {
+      let h = Int(hour)
+      let m = Int((hour - Double(h)) * 60)
+      return String(format: "%d:%02d %@", h % 12 == 0 ? 12 : h % 12, m, h < 12 ? "AM" : "PM")
+    }
+    func task(_ id: String, _ owner: String, _ title: String, day: Int, hour: Double?, done: Bool = false) -> FeedItem {
+      let key = DayKey.add(today, days: day)
+      return FeedItem(
+        id: "t\(id)", kind: "task", taskId: id, owner: owner, title: title, allDay: hour == nil, start: at(hour ?? 9, day: day),
+        end: hour == nil ? at(24, day: day) : at(hour!, day: day) + 900_000, date: key, endDate: key, time: hour.map(time) ?? "all-day",
+        completed: done, flagged: false, priority: 0, listId: "tasks", color: nil, calendar: nil
+      )
+    }
+    func event(_ id: String, _ owner: String, _ title: String, day: Int, hour: Double?, hours: Double = 1, days: Int = 1, color: String? = nil) -> FeedItem {
+      let first = DayKey.add(today, days: day)
+      return FeedItem(
+        id: "e\(id)", kind: color == nil ? "schedule" : "event", taskId: id, owner: owner, title: title, allDay: hour == nil,
+        start: at(hour ?? 0, day: day), end: hour == nil ? at(0, day: day + days) : at(hour! + hours, day: day), date: first,
+        endDate: DayKey.add(first, days: hour == nil ? days - 1 : 0), time: hour.map(time) ?? "all-day", completed: false, flagged: false,
+        priority: 0, listId: nil, color: color, calendar: color == nil ? "gooya:schedules" : "sample:holidays"
+      )
+    }
+    let items = [
+      task("1", "gooya", "Gym", day: -1, hour: 7, done: true),
+      event("2", "eunbi", "추석연휴", day: -3, hour: nil, days: 3, color: "#16a765"),
+      task("3", "gooya", "Gym", day: 0, hour: 7),
+      event("4", "gooya", "Lunch with Minho", day: 0, hour: 12),
+      task("5", "eunbi", "Team standup", day: 0, hour: 10),
+      task("6", "gooya", "Call 은비", day: 0, hour: 21),
+      task("7", "gooya", "CS6750 lecture", day: 1, hour: 10),
+      event("8", "eunbi", "Korean class", day: 1, hour: 19, hours: 1.5),
+      task("9", "gooya", "Dentist", day: 2, hour: 14),
+      task("10", "eunbi", "엄마 생신", day: 2, hour: nil),
+      event("11", "gooya", "Family dinner", day: 4, hour: 18, hours: 2),
+      task("12", "gooya", "Rent", day: 5, hour: nil),
+      event("13", "eunbi", "Seoul trip", day: 8, hour: nil, days: 3, color: "#1badf8"),
+      task("14", "eunbi", "Pack", day: 7, hour: 20),
+      task("15", "gooya", "Oil change", day: 11, hour: 9),
+    ]
     return Feed(
       generatedAt: now.timeIntervalSince1970 * 1000, me: "gooya", other: "eunbi", timezone: tz.identifier, today: today,
       people: [
         FeedPerson(key: "gooya", name: "구야", timezone: tz.identifier, colorLight: "#007aff", colorDark: "#0a84ff"),
         FeedPerson(key: "eunbi", name: "은비", timezone: "Asia/Seoul", colorLight: "#ff9500", colorDark: "#ff9f0a"),
       ],
-      items: [
-        FeedItem(id: "1", taskId: "1", owner: "gooya", title: "Gym", allDay: false, start: at(7), end: at(7) + 900_000, date: today, time: "7:00 AM", completed: false, flagged: false, priority: 0, listId: "tasks"),
-        FeedItem(id: "2", taskId: "2", owner: "eunbi", title: "Team standup", allDay: false, start: at(10), end: at(10) + 900_000, date: today, time: "10:00 AM", completed: false, flagged: false, priority: 0, listId: "tasks"),
-        FeedItem(id: "3", taskId: "3", owner: "gooya", title: "Call 은비", allDay: false, start: at(21), end: at(21) + 900_000, date: today, time: "9:00 PM", completed: false, flagged: true, priority: 0, listId: "tasks"),
-        FeedItem(id: "4", taskId: "4", owner: "gooya", title: "CS6750 lecture", allDay: false, start: at(10, day: 1), end: at(10, day: 1) + 900_000, date: tomorrow, time: "10:00 AM", completed: false, flagged: false, priority: 0, listId: "tasks"),
-        FeedItem(id: "5", taskId: "5", owner: "eunbi", title: "Korean class", allDay: false, start: at(19, day: 1), end: at(19, day: 1) + 900_000, date: tomorrow, time: "7:00 PM", completed: false, flagged: false, priority: 0, listId: "tasks"),
-        FeedItem(id: "6", taskId: "6", owner: "gooya", title: "Dentist", allDay: false, start: at(14, day: 2), end: at(14, day: 2) + 900_000, date: dayAfter, time: "2:00 PM", completed: false, flagged: false, priority: 2, listId: "tasks"),
-        FeedItem(id: "7", taskId: "7", owner: "eunbi", title: "엄마 생신", allDay: true, start: at(0, day: 2), end: at(24, day: 2), date: dayAfter, time: "all-day", completed: false, flagged: true, priority: 0, listId: "tasks"),
-      ],
-      schedules: [
-        FeedSchedule(id: "s1", owner: "gooya", title: "Work", icon: "💼", kind: "work", start: at(9), end: at(17), time: "9:00 AM – 5:00 PM"),
-        FeedSchedule(id: "s2", owner: "eunbi", title: "Sleep", icon: "💤", kind: "sleep", start: at(11), end: at(19), time: "11:00 AM – 7:00 PM"),
-      ],
-      dots: [today: ["gooya", "eunbi"], tomorrow: ["gooya", "eunbi"], dayAfter: ["gooya", "eunbi"], DayKey.add(today, days: 4): ["gooya"], DayKey.add(today, days: 9): ["eunbi"]],
+      items: items.sorted { a, b in a.date != b.date ? a.date < b.date : a.allDay != b.allDay ? a.allDay : a.start < b.start },
       appUrl: nil
     )
   }
@@ -172,6 +206,8 @@ enum DayKey {
     cal.timeZone = TimeZone(identifier: "UTC")!
     return cal.component(.weekday, from: floating(key)) - 1
   }
+  /// The Sunday on or before the day.
+  static func sunday(_ key: String) -> String { add(key, days: -weekday(key)) }
   static func daysInMonth(_ key: String) -> Int {
     let p = parts(key)
     var cal = Calendar(identifier: .gregorian)
@@ -181,4 +217,5 @@ enum DayKey {
   }
   static let dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
   static let monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+  static let monthShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 }

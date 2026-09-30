@@ -1,74 +1,161 @@
 import SwiftUI
 import WidgetKit
 
-/// One moment on the widget's timeline: the feed as of that moment and the "Show" choice.
+/// The large widget's layouts (Edit Widget → Layout).
+enum WidgetLayout: String, CaseIterable, Sendable {
+  /// This week and the next, what is on each day, and the list of what is coming under them. The default.
+  case twoWeeks
+  /// The month with a dot per person and day, and the list under it.
+  case monthList
+  /// The whole month, with what is on each day in its cell.
+  case month
+}
+
+/// Edit Widget → Appearance: as the iPhone is, or always light or always dark.
+enum WidgetAppearance: String, CaseIterable, Sendable {
+  case system, light, dark
+}
+
+/// One moment on the widget's timeline: the feed as of that moment and the widget's settings.
 struct Entry: TimelineEntry {
   let date: Date
   let feed: Feed?
   let who: String
+  var layout: WidgetLayout = .twoWeeks
+  var appearance: WidgetAppearance = .system
+  var hidden: Set<String> = []
 }
 
-/// What one widget size draws, worked out once per timeline entry from the feed and the "Show" choice.
+/// What one widget size draws, worked out once per timeline entry from the feed and the widget's settings.
 struct WidgetModel {
   let feed: Feed
   let who: String
   let now: Date
+  /// Whether the widget is dark (its Appearance, or the iPhone's when that is System): colours are picked for it.
+  let dark: Bool
   let tz: TimeZone
   let today: String
+  /// What the widget shows: the chosen people's items, without the calendars unticked on this phone.
+  let items: [FeedItem]
+  /// What is still ahead, soonest first (see ahead()).
+  let upcoming: [FeedItem]
 
-  init(feed: Feed, who: String, now: Date) {
+  init(feed: Feed, who: String, now: Date, dark: Bool, hidden: Set<String> = []) {
     self.feed = feed
     self.who = who
     self.now = now
+    self.dark = dark
     tz = TimeZone(identifier: feed.timezone) ?? .current
     today = DayKey.key(for: now, in: tz)
+    let wanted = WidgetModel.chosen(who: who, feed: feed)
+    items = feed.items.filter { wanted($0.owner) && !($0.calendar.map { hidden.contains($0) } ?? false) }
+    upcoming = WidgetModel.ahead(items, today: today, now: now)
   }
 
-  func wanted(_ owner: String) -> Bool {
+  static func chosen(who: String, feed: Feed) -> (String) -> Bool {
     switch who {
-    case "me": return owner == feed.me
-    case "other": return owner == feed.other
-    default: return true
+    case "me": return { $0 == feed.me }
+    case "other": return { $0 == feed.other }
+    default: return { _ in true }
     }
   }
 
-  var people: [FeedPerson] { feed.people.filter { wanted($0.key) } }
+  var people: [FeedPerson] { feed.people.filter { WidgetModel.chosen(who: who, feed: feed)($0.key) } }
 
-  func color(_ owner: String) -> Color {
-    guard let p = feed.person(owner) else { return .primary }
-    return Color(light: p.colorLight, dark: p.colorDark)
+  // MARK: colours
+
+  func personHex(_ owner: String) -> String {
+    guard let p = feed.person(owner) else { return dark ? "#0a84ff" : "#007aff" }
+    return dark ? p.colorDark : p.colorLight
+  }
+
+  func color(_ owner: String) -> Color { Color(hex: personHex(owner)) }
+
+  /// A task's ring: its owner's colour, or its list's when the widget shows one person (as the app does); an event's
+  /// calendar colour; a schedule's owner's colour.
+  func hex(_ item: FeedItem) -> String {
+    if item.isTask { return (who != "both" ? item.color : nil) ?? personHex(item.owner) }
+    return item.color ?? personHex(item.owner)
   }
 
   func name(_ owner: String) -> String { feed.person(owner)?.name ?? owner }
 
-  /// Open items for the chosen people, today and later, soonest first.
-  var open: [FeedItem] {
-    feed.items
-      .filter { !$0.completed && wanted($0.owner) && $0.date >= today }
+  // MARK: days
+
+  /// Everything on a day, as the app's month cells order it: events and schedules (all-day first, then by time), then
+  /// tasks. An event over several days is on each of them.
+  func cell(_ day: String) -> [FeedItem] {
+    items.filter { $0.isOn(day) }.sorted { a, b in
+      if a.isTask != b.isTask { return !a.isTask }
+      if a.allDay != b.allDay { return a.allDay }
+      return a.start < b.start
+    }
+  }
+
+  /// Who has something on a day, in the feed's order of people.
+  func dots(_ day: String) -> [String] {
+    let owners = Set(items.filter { $0.isOn(day) }.map(\.owner))
+    return feed.people.map(\.key).filter { owners.contains($0) }
+  }
+
+  // MARK: the list
+
+  /// The day an item is listed under: its own, or today for an event that began before today and goes on.
+  func listDay(_ item: FeedItem) -> String { max(item.date, today) }
+
+  /// What is still ahead, soonest first: open tasks from today on (today's overdue ones too, as Reminders keeps them),
+  /// and events and schedules that have not ended.
+  static func ahead(_ items: [FeedItem], today: String, now: Date) -> [FeedItem] {
+    let ms = now.timeIntervalSince1970 * 1000
+    return items
+      .filter { $0.isTask ? !$0.completed && $0.date >= today : $0.lastDay >= today && ($0.allDay || $0.end > ms) }
       .sorted { a, b in
-        if a.date != b.date { return a.date < b.date }
+        let da = max(a.date, today), db = max(b.date, today)
+        if da != db { return da < db }
         if a.allDay != b.allDay { return a.allDay }
         return a.start < b.start
       }
   }
 
-  /// Today's open items, the overdue ones included (as Reminders does), in time order.
-  var todays: [FeedItem] { open.filter { $0.date == today } }
+  /// Today's part of the list.
+  var todays: [FeedItem] { upcoming.filter { listDay($0) == today } }
 
-  /// A timed item whose time has passed today without being ticked off.
+  func upcoming(from key: String, limit: Int) -> [FeedItem] { Array(upcoming.filter { listDay($0) >= key }.prefix(limit)) }
+
+  /// A timed task whose time has passed today without being ticked off.
   func overdue(_ item: FeedItem) -> Bool {
-    !item.allDay && item.date == today && item.end <= now.timeIntervalSince1970 * 1000
+    item.isTask && !item.allDay && item.date == today && item.end <= now.timeIntervalSince1970 * 1000
   }
 
-  func upcoming(from key: String, limit: Int) -> [FeedItem] { Array(open.filter { $0.date >= key }.prefix(limit)) }
-
-  /// Today's schedule blocks still running or ahead, for the chosen people.
-  var schedules: [FeedSchedule] {
+  /// What is on now or next today, for the medium widget's left side: a timed item not yet over, else what is left
+  /// of today (an all-day item, or a task whose time has passed).
+  var next: FeedItem? {
     let ms = now.timeIntervalSince1970 * 1000
-    return feed.schedules.filter { wanted($0.owner) && $0.end > ms }
+    return todays.first { !$0.allDay && $0.end > ms } ?? todays.first
   }
 
-  func dots(_ key: String) -> [String] { (feed.dots[key] ?? []).filter { wanted($0) } }
+  /// The list by day, as many rows as `lines` allows (a day's heading counts as `heading` of a row). `perDay` caps
+  /// each day after today, so later days get a look in.
+  func groups(from items: [FeedItem], lines: Double, heading: Double = 0.75, perDay: Int = .max) -> [DayGroup] {
+    var groups: [DayGroup] = []
+    var used = 0.0
+    var index: [String: Int] = [:]
+    for item in items {
+      let day = listDay(item)
+      if let i = index[day] {
+        if used + 1 > lines { break }
+        if day != today && groups[i].items.count >= perDay { continue }
+        groups[i].items.append(item)
+        used += 1
+      } else {
+        if used + heading + 1 > lines { break }
+        index[day] = groups.count
+        groups.append(DayGroup(day: day, items: [item]))
+        used += heading + 1
+      }
+    }
+    return groups
+  }
 
   func dayLabel(_ key: String) -> String {
     if key == today { return "Today" }
@@ -78,45 +165,70 @@ struct WidgetModel {
 
   var weekdayName: String { DayKey.dayNames[DayKey.weekday(today)] }
   var dayNumber: Int { DayKey.parts(today).d }
-  var monthTitle: String {
-    let p = DayKey.parts(today)
-    return "\(DayKey.monthNames[p.m - 1]) \(p.y)"
-  }
+  var monthTitle: String { DayKey.monthNames[DayKey.parts(today).m - 1] }
 
   static func url(_ key: String) -> URL { URL(string: "gooya://day/\(key)")! }
 }
+
+struct DayGroup: Identifiable {
+  let day: String
+  var items: [FeedItem]
+  var id: String { day }
+}
+
+// MARK: - Colours
 
 /// "#rrggbb" → red, green, blue in 0…1.
 func rgb(hex: String) -> (r: CGFloat, g: CGFloat, b: CGFloat)? {
   var text = hex.trimmingCharacters(in: .whitespaces)
   if text.hasPrefix("#") { text.removeFirst() }
-  guard text.count == 6, let value = UInt32(text, radix: 16) else { return nil }
+  guard text.count >= 6, let value = UInt32(text.prefix(6), radix: 16) else { return nil }
   return (CGFloat((value >> 16) & 0xff) / 255, CGFloat((value >> 8) & 0xff) / 255, CGFloat(value & 0xff) / 255)
 }
 
-#if canImport(UIKit)
-import UIKit
-
 extension Color {
-  /// A colour that follows light and dark mode, from the two hex values the feed carries.
-  init(light: String, dark: String) {
-    self.init(UIColor { traits in
-      guard let c = rgb(hex: traits.userInterfaceStyle == .dark ? dark : light) else { return .label }
-      return UIColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
-    })
+  /// A fixed colour from "#rrggbb" (the widget picks the light or dark value itself, for its Appearance setting).
+  init(hex: String) {
+    let c = rgb(hex: hex) ?? (0.56, 0.56, 0.58)
+    self.init(.sRGB, red: c.r, green: c.g, blue: c.b, opacity: 1)
+  }
+
+  /// `amount` of the colour over `base` (the app's mix()).
+  init(hex: String, over base: String, amount: CGFloat) {
+    let a = rgb(hex: hex) ?? (0.56, 0.56, 0.58)
+    let b = rgb(hex: base) ?? (0, 0, 0)
+    self.init(.sRGB, red: a.r * amount + b.r * (1 - amount), green: a.g * amount + b.g * (1 - amount), blue: a.b * amount + b.b * (1 - amount), opacity: 1)
+  }
+
+  /// The colour at a lightness that reads on its own tint (the app's readableTint()): light in dark mode, deep in light.
+  init(readable hex: String, dark: Bool) {
+    let c = rgb(hex: hex) ?? (0.56, 0.56, 0.58)
+    let hi = max(c.r, c.g, c.b), lo = min(c.r, c.g, c.b)
+    let l = (hi + lo) / 2
+    var h: CGFloat = 0, s: CGFloat = 0
+    if hi != lo {
+      let d = hi - lo
+      s = l > 0.5 ? d / (2 - hi - lo) : d / (hi + lo)
+      h = hi == c.r ? (c.g - c.b) / d + (c.g < c.b ? 6 : 0) : hi == c.g ? (c.b - c.r) / d + 2 : (c.r - c.g) / d + 4
+      h /= 6
+    }
+    let lightness = dark ? max(l, 0.6) : min(l, 0.38)
+    // HSL → RGB.
+    let q = lightness < 0.5 ? lightness * (1 + s) : lightness + s - lightness * s
+    let p = 2 * lightness - q
+    func channel(_ t0: CGFloat) -> CGFloat {
+      var t = t0
+      if t < 0 { t += 1 }
+      if t > 1 { t -= 1 }
+      if t < 1 / 6 { return p + (q - p) * 6 * t }
+      if t < 1 / 2 { return q }
+      if t < 2 / 3 { return p + (q - p) * (2 / 3 - t) * 6 }
+      return p
+    }
+    if s == 0 {
+      self.init(.sRGB, red: lightness, green: lightness, blue: lightness, opacity: 1)
+    } else {
+      self.init(.sRGB, red: channel(h + 1 / 3), green: channel(h), blue: channel(h - 1 / 3), opacity: 1)
+    }
   }
 }
-#elseif canImport(AppKit)
-import AppKit
-
-// The same colours on a Mac: npm run widget:preview draws the widget's views there to check them.
-extension Color {
-  init(light: String, dark: String) {
-    self.init(nsColor: NSColor(name: nil) { appearance in
-      let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-      guard let c = rgb(hex: isDark ? dark : light) else { return .labelColor }
-      return NSColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
-    })
-  }
-}
-#endif

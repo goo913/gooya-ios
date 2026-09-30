@@ -1,8 +1,10 @@
 import AppIntents
 import WidgetKit
 
-// "Show: Both · 구야 · 은비" when the widget is edited (long-press → Edit Widget). The choices are relative to the
-// signed-in person, so the same widget works on either phone; the names come from the feed the app wrote.
+// Touch and hold the widget → Edit Widget: Show (both of you, you, or the other person), Layout (the large size only:
+// two weeks with the list under them, the month with the list, or the month with what is on each day) and Appearance
+// (as the iPhone is, or always light or always dark). The people's names come from the feed the app wrote, so the
+// same widget works on either phone.
 
 struct PersonChoice: AppEntity {
   let id: String
@@ -30,15 +32,60 @@ struct PersonChoiceQuery: EntityQuery {
   func defaultResult() async -> PersonChoice? { PersonChoice.both }
 }
 
+extension WidgetLayout: AppEnum {
+  static let typeDisplayRepresentation: TypeDisplayRepresentation = "Layout"
+  static let caseDisplayRepresentations: [WidgetLayout: DisplayRepresentation] = [
+    .twoWeeks: "Two Weeks & List",
+    .monthList: "Month & List",
+    .month: "Month",
+  ]
+}
+
+extension WidgetAppearance: AppEnum {
+  static let typeDisplayRepresentation: TypeDisplayRepresentation = "Appearance"
+  static let caseDisplayRepresentations: [WidgetAppearance: DisplayRepresentation] = [
+    .system: "System",
+    .light: "Light",
+    .dark: "Dark",
+  ]
+}
+
 struct ShowIntent: WidgetConfigurationIntent {
-  static let title: LocalizedStringResource = "Show"
-  static let description = IntentDescription("Whose tasks the widget shows.")
+  static let title: LocalizedStringResource = "GOOYA"
+  static let description = IntentDescription("Whose calendar the widget shows, how, and whether it is light or dark.")
 
   @Parameter(title: "Show")
   var person: PersonChoice?
 
+  @Parameter(title: "Layout", default: .twoWeeks)
+  var layout: WidgetLayout
+
+  @Parameter(title: "Appearance", default: .system)
+  var appearance: WidgetAppearance
+
+  // Layout only where there is one to pick (the large size); Appearance not on the Lock Screen, which tints widgets.
+  static var parameterSummary: some ParameterSummary {
+    When(widgetFamily: .oneOf, [.systemLarge, .systemExtraLarge]) {
+      Summary {
+        \.$person
+        \.$layout
+        \.$appearance
+      }
+    } otherwise: {
+      When(widgetFamily: .oneOf, [.systemSmall, .systemMedium]) {
+        Summary {
+          \.$person
+          \.$appearance
+        }
+      } otherwise: {
+        Summary {
+          \.$person
+        }
+      }
+    }
+  }
+
   init() {}
-  init(person: PersonChoice?) { self.person = person }
 
   /// "both", "me" or "other".
   var who: String { person?.id ?? "both" }

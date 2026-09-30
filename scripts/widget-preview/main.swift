@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WidgetKit
 
 // Draws the widget's views (targets/widget) at the iPhone's widget sizes and saves them as PNGs, on the Mac, so the
 // layout can be checked without adding the widget to a Home Screen. scripts/widget-preview.mjs compiles and runs it:
@@ -13,20 +14,22 @@ struct Preview {
     if args.count > 2, let data = FileManager.default.contents(atPath: args[2]) {
       feed = try JSONDecoder().decode(Feed.self, from: data)
     }
-    let app = NSApplication.shared
-    // iPhone 17 Pro (402 × 874 points): the three Home Screen sizes.
-    let sizes: [(String, CGFloat, CGFloat)] = [("small", 158, 158), ("medium", 338, 158), ("large", 338, 354)]
-    for (name, w, h) in sizes {
+    _ = NSApplication.shared
+    // iPhone 15 (393 × 852 points): the three Home Screen sizes, and the standard margins.
+    let margins = EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16)
+    var shots: [(String, WidgetFamily, WidgetLayout, CGFloat, CGFloat)] = [
+      ("small", .systemSmall, .twoWeeks, 158, 158),
+      ("medium", .systemMedium, .twoWeeks, 338, 158),
+    ]
+    for layout in WidgetLayout.allCases { shots.append(("large-\(layout.rawValue)", .systemLarge, layout, 338, 354)) }
+    for (name, family, layout, w, h) in shots {
       for (scheme, label) in [(ColorScheme.dark, "dark"), (ColorScheme.light, "light")] {
         for who in ["both", "me", "other"] {
-          if who != "both" && !(name == "medium" && label == "dark") { continue }
-          let m = WidgetModel(feed: feed, who: who, now: Date())
-          let body: AnyView = name == "small" ? AnyView(SmallView(m: m)) : name == "medium" ? AnyView(MediumView(m: m)) : AnyView(LargeView(m: m))
-          app.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-          let content = body
-            .padding(16)
+          if who != "both" && !(name == "large-twoWeeks" && label == "light") { continue }
+          let m = WidgetModel(feed: feed, who: who, now: Date(), dark: scheme == .dark)
+          let content = WidgetContent(m: m, family: family, layout: layout, margins: margins)
             .frame(width: w, height: h)
-            .background(Color(light: "#ffffff", dark: "#000000"))
+            .background(scheme == .dark ? Color.black : Color.white)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .environment(\.colorScheme, scheme)
           let renderer = ImageRenderer(content: content)

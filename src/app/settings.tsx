@@ -38,7 +38,7 @@ export default function SettingsSheet() {
   const zones = Array.from(new Set([...COMMON_ZONES, mine.timezone]));
   const save = (patch: Record<string, unknown>) => void patchUser(me, patch);
   const saveSetting = (key: string, value: unknown) => void patchSettings(me, { [key]: value });
-  const intensity = dragIntensity ?? Math.round((mine.settings.scheduleIntensity ?? (dark ? 0.5 : 0.35)) * 100);
+  const intensity = dragIntensity ?? Math.round((mine.settings.routineIntensity ?? (dark ? 0.5 : 0.35)) * 100);
   const togglePush = async (on: boolean) => {
     if (on) {
       const granted = await requestNotifications();
@@ -94,10 +94,10 @@ export default function SettingsSheet() {
           </Row>
         </Group>
 
-        <Group header="Timeline" footer={`Schedule intensity sets how strongly Work, Sleep and other schedules are filled in the day views. Shows ${other.name}’s local hours next to yours when the second gutter is on.`}>
+        <Group header="Timeline" footer={`Routine intensity sets how strongly Work, Sleep and other routines are filled in the day views. Shows ${other.name}’s local hours next to yours when the second gutter is on.`}>
           <View style={styles.sliderBlock}>
             <View style={styles.sliderHead}>
-              <Text style={[styles.sliderLabel, { color: colors.label }]}>Schedule intensity</Text>
+              <Text style={[styles.sliderLabel, { color: colors.label }]}>Routine intensity</Text>
               <Text style={[styles.sliderLabel, { color: colors.label2 }]}>{intensity}%</Text>
             </View>
             <View style={styles.sliderRow}>
@@ -111,7 +111,7 @@ export default function SettingsSheet() {
                   onValueChange={(v) => setDragIntensity(Math.round(v))}
                   onEditingChanged={(editing) => {
                     if (!editing && dragIntensity != null) {
-                      saveSetting("scheduleIntensity", dragIntensity / 100);
+                      saveSetting("routineIntensity", dragIntensity / 100);
                       setDragIntensity(null);
                     }
                   }}
@@ -150,13 +150,13 @@ export default function SettingsSheet() {
           <Row label="Calendar integrations" onPress={() => router.push("/integrations")} chevron />
         </Group>
 
-        <Group header="Home Screen widget" footer={`Today, the coming week and the month, for both of you, in three sizes (and on the Lock Screen). It follows what you change here, and tapping a day opens it in GOOYA.`}>
+        <Group header="Home Screen widget" footer={`Tasks, schedules and your calendars' events (never routines) for both of you, in three sizes and on the Lock Screen. The large one shows two weeks and the list by default, or the month. It follows what you change here, and tapping a day opens it in GOOYA.`}>
           <Row
             label="How to add it"
             onPress={() =>
               Alert.alert(
                 "Adding the widget",
-                `1. Touch and hold an empty spot on the Home Screen.\n2. Tap Edit at the top left, then Add Widget.\n3. Search for GOOYA, pick a size and tap Add Widget.\n\nTo show only you or only ${other.name}: touch and hold the widget, tap Edit Widget, then Show.`,
+                `1. Touch and hold an empty spot on the Home Screen.\n2. Tap Edit at the top left, then Add Widget.\n3. Search for GOOYA, pick a size and tap Add Widget.\n\nTouch and hold the widget, then Edit Widget:\n• Show: both of you, only you or only ${other.name}.\n• Layout (large size): Two Weeks & List, Month & List, or Month.\n• Appearance: System, or always Light or Dark, whatever the iPhone's mode.`,
               )
             }
             chevron
