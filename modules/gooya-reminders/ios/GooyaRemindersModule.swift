@@ -8,6 +8,10 @@ import UIKit
 public class GooyaRemindersModule: Module {
   private let store = EKEventStore()
   private var observer: NSObjectProtocol?
+  /// The person allowed Reminders in this run of GOOYA. Until the app is opened again, iOS keeps answering "not
+  /// determined" when asked for the status, though the store reads everything; without this, GOOYA said it could not
+  /// read Reminders right after the person allowed it (and until they switched the permission off and on).
+  private var allowedThisRun = false
 
   public func definition() -> ModuleDefinition {
     Name("GooyaReminders")
@@ -35,12 +39,14 @@ public class GooyaRemindersModule: Module {
     }
 
     Function("authorization") { () -> String in
-      switch EKEventStore.authorizationStatus(for: .reminder) {
-      case .fullAccess: return "granted"
+      let status = EKEventStore.authorizationStatus(for: .reminder)
+      if status == .fullAccess || self.allowedThisRun {
+        return "granted"
+      }
+      switch status {
       case .denied, .writeOnly: return "denied"
       case .restricted: return "restricted"
-      case .notDetermined: return "undetermined"
-      @unknown default: return "undetermined"
+      default: return "undetermined"
       }
     }
 
@@ -50,6 +56,7 @@ public class GooyaRemindersModule: Module {
           promise.reject("ERR_REMINDERS_ACCESS", error.localizedDescription)
           return
         }
+        self.allowedThisRun = granted
         // Lists and reminders read before access was given are empty; read them again.
         self.store.reset()
         promise.resolve(granted)
