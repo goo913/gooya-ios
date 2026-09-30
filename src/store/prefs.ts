@@ -51,7 +51,7 @@ export const usePrefs = create<PrefsState>()(
   persist(
     (set) => ({
       filter: "me",
-      timelineDays: 2,
+      timelineDays: 1,
       timelinePeople: "both",
       dayDisplay: "timeline",
       hourHeight: DEFAULT_HOUR_HEIGHT,
@@ -73,22 +73,25 @@ export const usePrefs = create<PrefsState>()(
     }),
     {
       name: "gooya-prefs",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance, hiddenCalendars: s.hiddenCalendars }),
-      // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default).
+      // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default). Version 3
+      // made Single Day the default: the day opens as one day again, where Multi Day had been the default.
       migrate: (persisted, version) => {
-        const old = (persisted ?? {}) as Record<string, unknown>;
-        if (version >= 2) return old;
-        const mode = old.timelineMode;
-        const hour = typeof old.hourHeight === "number" ? old.hourHeight : 62;
-        return {
-          ...old,
-          timelineDays: mode === "one-day" ? 1 : 2,
-          timelinePeople: mode === "me" ? "me" : mode === "other" ? "other" : "both",
-          dayDisplay: "timeline",
-          hourHeight: (hour / 62) * DEFAULT_HOUR_HEIGHT,
-        };
+        let old = (persisted ?? {}) as Record<string, unknown>;
+        if (version < 2) {
+          const mode = old.timelineMode;
+          const hour = typeof old.hourHeight === "number" ? old.hourHeight : 62;
+          old = {
+            ...old,
+            timelinePeople: mode === "me" ? "me" : mode === "other" ? "other" : "both",
+            dayDisplay: "timeline",
+            hourHeight: (hour / 62) * DEFAULT_HOUR_HEIGHT,
+          };
+        }
+        if (version < 3) old = { ...old, timelineDays: 1 };
+        return old;
       },
       onRehydrateStorage: () => (state) => {
         applyAppearance(state?.appearance ?? "dark");
