@@ -88,8 +88,9 @@ function formatDayTitle(key: DateKey): string {
 }
 
 /**
- * The columns: one per day and person, or one per day with everyone's items (`merged`, the iPad's week). Routines only
- * where one person's column is: across a merged column they would cover each other.
+ * The columns: one per day and person, or one per day with everyone's items (`merged`, the iPad's week). In a merged
+ * column each person's routines take their own part of the width (the first person's at the left), so they do not
+ * cover each other.
  */
 function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurrence[], routines: RoutineOccurrence[], events: EventOccurrence[], merged = false): Map<string, ColumnData> {
   const map = new Map<string, ColumnData>();
@@ -98,7 +99,6 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
   const dateSet = new Set(dates);
   /** The column an item of `owner` goes into on `date`. */
   const place = (date: DateKey, owner: PersonKey) => colKey(date, merged ? colPeople[0] : owner);
-  if (merged && people.length > 1) routines = [];
   for (const occ of tasks) {
     if (!people.includes(occ.task.owner)) continue;
     if (occ.allDay) {
@@ -110,11 +110,13 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
       map.get(place(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
     }
   }
+  const shared = merged && people.length > 1;
   for (const occ of routines) {
     if (!people.includes(occ.routine.owner)) continue;
+    const lane = shared ? people.indexOf(occ.routine.owner) : 0;
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
-      map.get(place(s.dateKey, occ.routine.owner))!.routines.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane: 0, lanes: 1 });
+      map.get(place(s.dateKey, occ.routine.owner))!.routines.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane, lanes: shared ? people.length : 1 });
     }
   }
   for (const occ of events) {
@@ -251,7 +253,9 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const taskOcc = useTaskOccurrences(rangeStart, rangeEnd, people);
   const schedOcc = useRoutineOccurrences(rangeStart, rangeEnd, people);
   const eventOcc = useEventOccurrences(rangeStart, rangeEnd, people);
-  const columns = useMemo(() => buildColumns(allDates, people, taskOcc, schedOcc, eventOcc, merged), [allDates, people, taskOcc, schedOcc, eventOcc, merged]);
+  // Settings → Timeline: routines in the day view, and in the iPad's week (the merged view), on this device.
+  const showRoutines = usePrefs((s) => (merged ? s.routinesInWeek : s.routinesInDay));
+  const columns = useMemo(() => buildColumns(allDates, people, taskOcc, showRoutines ? schedOcc : [], eventOcc, merged), [allDates, people, taskOcc, schedOcc, showRoutines, eventOcc, merged]);
   // Days side by side in one column each (the iPad's week, or one person's days): something on several of them is one
   // bar across them at the top, as in the month; with a column per person, each day has its own chips.
   const spanning = days > 1 && colPeople.length === 1;
@@ -663,7 +667,7 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
     <GestureDetector gesture={longPress}>
       <View style={[styles.subCol, divider && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
         {data.routines.map((seg) => (
-          <RoutineBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
+          <RoutineBand key={seg.key} seg={seg} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
         ))}
         {data.events.map((seg) => (
           <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} edges={edges} onShift={onShift} />
@@ -680,14 +684,21 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
  * Routine band: the person's (or the routine's own) colour mixed into the background at the chosen intensity, a
  * solid 3pt accent bar, and a bright (dark mode) or deep (light mode) tint for the title — like Apple Calendar.
  */
-const RoutineBand = memo(function RoutineBand({ seg, info, hourH, metrics, intensity, dark, colors, onMenu, onTap }: { seg: Seg<RoutineOccurrence>; info: PersonInfo; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: RoutineOccurrence) => void; onTap: (occ: RoutineOccurrence) => void }) {
+const RoutineBand = memo(function RoutineBand({ seg, hourH, metrics, intensity, dark, colors, onMenu, onTap }: { seg: Seg<RoutineOccurrence>; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: RoutineOccurrence) => void; onTap: (occ: RoutineOccurrence) => void }) {
+  // Its owner's colour (a week column holds both people's), or the routine's own.
+  const owner = usePerson(seg.occ.routine.owner);
   const sleep = seg.occ.routine.kind === "sleep";
   const top = (seg.startMin / 60) * hourH;
   const height = Math.max(6, ((seg.endMin - seg.startMin) / 60) * hourH);
-  const base = seg.occ.routine.color ? colorHex(seg.occ.routine.color, dark) : colorHex(info.color, dark);
+  const base = seg.occ.routine.color ? colorHex(seg.occ.routine.color, dark) : colorHex(owner.color, dark);
   const pct = Math.min(0.95, Math.max(0.1, intensity * (sleep ? 0.8 : 1)));
   return (
-    <Pressable onPress={() => onTap(seg.occ)} onLongPress={() => onMenu(seg.occ)} delayLongPress={420} style={[styles.band, { top, height, backgroundColor: mix(base, colors.bg, pct), borderLeftColor: base }]}>
+    <Pressable
+      onPress={() => onTap(seg.occ)}
+      onLongPress={() => onMenu(seg.occ)}
+      delayLongPress={420}
+      style={[styles.band, { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: mix(base, colors.bg, pct), borderLeftColor: base }]}
+    >
       {seg.startMin > 0 || height > 30 ? (
         <Text allowFontScaling={false} numberOfLines={1} style={[styles.bandTitle, { color: tintText(base, dark), fontSize: 11 * metrics.day, lineHeight: 13.5 * metrics.day }]}>
           {seg.occ.icon} {seg.occ.title}
@@ -1165,7 +1176,7 @@ const styles = StyleSheet.create({
   dateBody: { flex: 1, flexDirection: "row" },
   subCol: { flex: 1, minWidth: 0 },
   nowLine: { position: "absolute", left: 0, right: 0, height: 2, zIndex: 20 },
-  band: { position: "absolute", left: 1, right: 1, borderRadius: 5, borderLeftWidth: 3, overflow: "hidden" },
+  band: { position: "absolute", marginHorizontal: 1, borderRadius: 5, borderLeftWidth: 3, overflow: "hidden" },
   bandTitle: { paddingHorizontal: 5, paddingTop: 3, fontSize: 11, fontWeight: "600", lineHeight: 13 },
   event: { position: "absolute", borderRadius: 5, overflow: "hidden", zIndex: 10, marginHorizontal: 1.5 },
   eventBar: { position: "absolute", left: 3, top: 3, bottom: 3, width: 3, borderRadius: 1.5 },

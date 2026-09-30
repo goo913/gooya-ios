@@ -11,6 +11,7 @@ import { signOutUser } from "@/lib/auth";
 import { patchSettings, patchUser } from "@/lib/db";
 import { env } from "@/lib/env";
 import { tzAbbrev } from "@/lib/format";
+import { useIsPad } from "@/lib/layout";
 import { useMe, usePerson } from "@/lib/people";
 import { forgetPushToken, notificationsAllowed, refreshPushToken, requestNotifications } from "@/lib/push";
 import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref } from "@/store/prefs";
@@ -32,6 +33,13 @@ export default function SettingsSheet() {
   const setHourHeight = usePrefs((s) => s.setHourHeight);
   const appearance = usePrefs((s) => s.appearance);
   const setAppearance = usePrefs((s) => s.setAppearance);
+  const routinesInDay = usePrefs((s) => s.routinesInDay);
+  const routinesInWeek = usePrefs((s) => s.routinesInWeek);
+  const setRoutinesInDay = usePrefs((s) => s.setRoutinesInDay);
+  const setRoutinesInWeek = usePrefs((s) => s.setRoutinesInWeek);
+  // The week view is the iPad's (a narrow iPad window has the iPhone's screens).
+  const pad = useIsPad();
+  const device = pad ? "iPad" : "iPhone";
   useEffect(() => {
     void notificationsAllowed().then(setPush);
   }, []);
@@ -70,7 +78,7 @@ export default function SettingsSheet() {
           </Row>
         </Group>
 
-        <Group header="Appearance" footer="Remembered on this phone. Dark is the default.">
+        <Group header="Appearance" footer={`Remembered on this ${device}. Dark is the default.`}>
           <Row label="Theme">
             <Segmented<AppearancePref>
               options={[
@@ -96,7 +104,10 @@ export default function SettingsSheet() {
           </Row>
         </Group>
 
-        <Group header="Timeline" footer={`Routine intensity sets how strongly Work, Sleep and other routines are filled in the day views. Shows ${other.name}’s local hours next to yours when the second gutter is on.`}>
+        <Group
+          header="Timeline"
+          footer={`Routine intensity sets how strongly Work, Sleep and other routines are filled in. Showing routines in the day${pad ? " and week views" : " view"} is remembered on this ${device}. Shows ${other.name}’s local hours next to yours when the second gutter is on.`}
+        >
           <View style={styles.sliderBlock}>
             <View style={styles.sliderHead}>
               <Text style={[styles.sliderLabel, { color: colors.label }]}>Routine intensity</Text>
@@ -122,6 +133,14 @@ export default function SettingsSheet() {
               <Text style={[styles.sliderEnd, { color: colors.label2 }]}>Bold</Text>
             </View>
           </View>
+          <Row label="Routines in Day View">
+            <Switch label="Routines in Day View" value={routinesInDay} onChange={setRoutinesInDay} />
+          </Row>
+          {pad ? (
+            <Row label="Routines in Week View">
+              <Switch label="Routines in Week View" value={routinesInWeek} onChange={setRoutinesInWeek} />
+            </Row>
+          ) : null}
           <Row label="Second time gutter">
             <Switch label="Second time gutter" value={mine.settings.secondGutter} onChange={(v) => saveSetting("secondGutter", v)} />
           </Row>
