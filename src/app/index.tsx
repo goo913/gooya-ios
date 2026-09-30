@@ -11,10 +11,17 @@ import { useSheets } from "@/store/sheets";
 import { usePrefs } from "@/store/prefs";
 import { MonthView } from "@/views/MonthView";
 import { useNav } from "@/store/nav";
+import { useIsPad } from "@/lib/layout";
+import { PadCalendar } from "@/pad/PadCalendar";
 import { useColors } from "@/theme";
 
-/** The month screen, the app's home: the scrolling months with the floating pills over them. */
-export default function MonthScreen() {
+/** The app's home: the iPhone's month screen, or the iPad's calendar (src/pad) in a wide window. */
+export default function Home() {
+  return useIsPad() ? <PadCalendar /> : <MonthScreen />;
+}
+
+/** The month screen, the phone's home: the scrolling months with the floating pills over them. */
+function MonthScreen() {
   const colors = useColors();
   const { month } = useLocalSearchParams<{ month?: string }>();
   const monthKey: DateKey = month && /^\d{4}-\d{2}-01$/.test(month) ? month : `${todayKey(deviceTimeZone()).slice(0, 7)}-01`;

@@ -2,6 +2,7 @@
 /**
  * GOOYA on an iPhone or the iPhone Simulator with one command (docs/running.md explains every step):
  *
+ *   npm run ipad              the same on the iPad plugged into this Mac (GOOYA is one app for both; the iPad has its layout)
  *   npm run iphone            the iPhone plugged into this Mac: a Release build of the real app, signed by HyberTec LLC's
  *                             Apple team, installed over the cable. Runs on its own afterwards, no Mac needed.
  *   npm run iphone:sim        the iPhone Simulator, in demo mode (sample data, no sign-in), with the development server
@@ -338,9 +339,9 @@ async function iphoneSim() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// A real iPhone: a Release build, signed by HyberTec LLC, installed over the cable.
+// A real iPhone (or iPad: npm run ipad): a Release build, signed by HyberTec LLC, installed over the cable.
 
-function connectedIphone(env) {
+function connectedIphone(env, kind = "iPhone") {
   const out = path.join(os.tmpdir(), `gooya-devices-${process.pid}.json`);
   spawnSync("xcrun", ["devicectl", "list", "devices", "--json-output", out], { env, stdio: "ignore" });
   let devices = [];
@@ -350,17 +351,17 @@ function connectedIphone(env) {
     /* none */
   }
   fs.rmSync(out, { force: true });
-  const iphones = devices.filter((d) => d.hardwareProperties?.deviceType === "iPhone" && !["virtual", "simulated"].includes(d.hardwareProperties?.reality) && d.connectionProperties?.transportType !== "sameMachine");
+  const iphones = devices.filter((d) => d.hardwareProperties?.deviceType === kind && !["virtual", "simulated"].includes(d.hardwareProperties?.reality) && d.connectionProperties?.transportType !== "sameMachine");
   const reachable = (d) => d.connectionProperties?.tunnelState === "connected" || d.connectionProperties?.transportType === "wired";
   const phone = iphones.find(reachable) ?? iphones.find((d) => d.connectionProperties?.transportType);
   if (!phone) {
     stop([
-      "No iPhone is plugged in. Plug your iPhone into this Mac with its cable and unlock it.",
-      'If the iPhone asks "Trust This Computer?", tap Trust and enter its passcode. If the Mac asks to allow the accessory to connect, click Allow.',
+      `No ${kind} is plugged in. Plug your ${kind} into this Mac with its cable and unlock it.`,
+      `If the ${kind} asks "Trust This Computer?", tap Trust and enter its passcode. If the Mac asks to allow the accessory to connect, click Allow.`,
       "Then run this again. (For the iPhone Simulator instead: npm run iphone:sim)",
     ]);
   }
-  const name = phone.deviceProperties?.name ?? "your iPhone";
+  const name = phone.deviceProperties?.name ?? `your ${kind}`;
   if (phone.connectionProperties?.pairingState && phone.connectionProperties.pairingState !== "paired") stop([`${name} doesn't trust this Mac yet. Unlock it, and when it asks "Trust This Computer?", tap Trust. Then run this again.`]);
   if (phone.deviceProperties?.developerModeStatus === "disabled") stop([`Developer Mode is off on ${name}: Settings → Privacy & Security → Developer Mode → on → Restart. Then run this again.`]);
   return { name, udid: phone.hardwareProperties?.udid ?? phone.identifier };
@@ -373,13 +374,13 @@ function readProfile(file) {
   return { expires: expires ? new Date(expires) : null };
 }
 
-async function iphone() {
+async function iphone(kind = "iPhone") {
   ensurePackages();
   const xenv = xcode();
   ensureCocoaPods();
   await ensureFirebaseFile();
   const env = { ...xenv, ...appSettings("live") };
-  const phone = connectedIphone(env);
+  const phone = connectedIphone(env, kind);
   ensureNativeProject(env);
   const { iosDir, workspace: ws, scheme } = workspace();
   step(`Building ${APP_NAME} for ${phone.name}, signed by the Apple team "${TEAM.name}" (10 to 20 minutes the first time)`);
@@ -392,7 +393,7 @@ async function iphone() {
   );
   if (!built) stop([`The app didn't build for ${phone.name}.`, ...explainXcodeProblem(log)]);
   const app = path.join(derived, "Build", "Products", "Release-iphoneos", `${scheme}.app`);
-  step(`Installing it on ${phone.name} (keep the iPhone unlocked)`);
+  step(`Installing it on ${phone.name} (keep the ${kind} unlocked)`);
   const installLog = logFile("iphone-install.log");
   const installed = spawnSync("xcrun", ["devicectl", "device", "install", "app", "--device", phone.udid, app], { env, encoding: "utf8" });
   fs.writeFileSync(installLog, `${installed.stdout ?? ""}${installed.stderr ?? ""}`);
@@ -400,9 +401,9 @@ async function iphone() {
   const launched = spawnSync("xcrun", ["devicectl", "device", "process", "launch", "--terminate-existing", "--device", phone.udid, APP_ID], { env, encoding: "utf8" });
   const expires = readProfile(path.join(app, "embedded.mobileprovision"))?.expires ?? null;
   console.log(`\n✓ ${APP_NAME} is on ${phone.name}, and runs without the Mac. Sign in with Google.`);
-  if (launched.status !== 0) console.log(`  Open ${APP_NAME} on the iPhone (it didn't open by itself).`);
+  if (launched.status !== 0) console.log(`  Open ${APP_NAME} on the ${kind} (it didn't open by itself).`);
   if (expires) console.log(`  This copy keeps opening until ${expires.toLocaleString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })} (a year, as the team is a paid one).`);
-  console.log("  After any change to the app, run npm run iphone again with the iPhone plugged in: only what changed is rebuilt.\n");
+  console.log(`  After any change to the app, run npm run ${kind.toLowerCase()} again with the ${kind} plugged in: only what changed is rebuilt.\n`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -460,6 +461,7 @@ function help() {
 try {
   if (process.platform !== "darwin") stop("GOOYA's iPhone app is built on a Mac (Xcode).");
   if (command === "iphone" || command === "ios") await (onSim ? iphoneSim() : iphone());
+  else if (command === "ipad") await iphone("iPad");
   else if (command === "prepare") await prepare();
   else if (command === "setup") await setup();
   else help();

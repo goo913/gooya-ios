@@ -6,9 +6,17 @@ import { BottomChrome, TopChrome } from "@/components/Chrome";
 import { useNewItem } from "@/lib/actions";
 import { useNav } from "@/store/nav";
 import { YearView } from "@/views/YearView";
+import { useIsPad } from "@/lib/layout";
+import { PadRedirect } from "@/pad/PadRedirect";
 import { useColors } from "@/theme";
 
-export default function YearScreen() {
+export default function YearRoute() {
+  const { year } = useLocalSearchParams<{ year?: string }>();
+  const y = Number(year) || Number(todayKey(deviceTimeZone()).slice(0, 4));
+  return useIsPad() ? <PadRedirect view="year" date={`${y}-01-01`} /> : <YearScreen />;
+}
+
+function YearScreen() {
   const colors = useColors();
   const { year } = useLocalSearchParams<{ year?: string }>();
   const y = Number(year) || Number(todayKey(deviceTimeZone()).slice(0, 4));

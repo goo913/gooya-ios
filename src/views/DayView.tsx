@@ -9,7 +9,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EventChip, TaskChip, TaskRing } from "@/components/Chips";
 import { mix, readableTint, tintText } from "@/lib/color";
-import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
+import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, WEEKDAY_SHORT, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { useMetrics, type Metrics } from "@/lib/metrics";
 import { useEventOccurrences, useRoutineOccurrences, useTaskOccurrences } from "@/lib/occurrences";
 import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib/people";
@@ -85,39 +85,47 @@ function formatDayTitle(key: DateKey): string {
   return `${WEEKDAY_LONG[new Date(Date.UTC(y, mo - 1, d)).getUTCDay()]} – ${MONTH_SHORT[mo - 1]} ${d}, ${y}`;
 }
 
-function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurrence[], routines: RoutineOccurrence[], events: EventOccurrence[]): Map<string, ColumnData> {
+/**
+ * The columns: one per day and person, or one per day with everyone's items (`merged`, the iPad's week). Routines only
+ * where one person's column is: across a merged column they would cover each other.
+ */
+function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurrence[], routines: RoutineOccurrence[], events: EventOccurrence[], merged = false): Map<string, ColumnData> {
   const map = new Map<string, ColumnData>();
-  for (const d of dates) for (const p of people) map.set(colKey(d, p), { timed: [], allDay: [], routines: [], events: [], allDayEvents: [] });
+  const colPeople = merged ? people.slice(0, 1) : people;
+  for (const d of dates) for (const p of colPeople) map.set(colKey(d, p), { timed: [], allDay: [], routines: [], events: [], allDayEvents: [] });
   const dateSet = new Set(dates);
+  /** The column an item of `owner` goes into on `date`. */
+  const place = (date: DateKey, owner: PersonKey) => colKey(date, merged ? colPeople[0] : owner);
+  if (merged && people.length > 1) routines = [];
   for (const occ of tasks) {
     if (!people.includes(occ.task.owner)) continue;
     if (occ.allDay) {
-      if (dateSet.has(occ.dueDate)) map.get(colKey(occ.dueDate, occ.task.owner))!.allDay.push(occ);
+      if (dateSet.has(occ.dueDate)) map.get(place(occ.dueDate, occ.task.owner))!.allDay.push(occ);
       continue;
     }
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
-      map.get(colKey(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
+      map.get(place(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
     }
   }
   for (const occ of routines) {
     if (!people.includes(occ.routine.owner)) continue;
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
-      map.get(colKey(s.dateKey, occ.routine.owner))!.routines.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane: 0, lanes: 1 });
+      map.get(place(s.dateKey, occ.routine.owner))!.routines.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: s.endMin, lane: 0, lanes: 1 });
     }
   }
   for (const occ of events) {
     if (!people.includes(occ.event.owner)) continue;
     if (occ.allDay) {
-      for (const d of dates) if (occ.startDate <= d && d <= occ.endDate) map.get(colKey(d, occ.event.owner))!.allDayEvents.push(occ);
+      for (const d of dates) if (occ.startDate <= d && d <= occ.endDate) map.get(place(d, occ.event.owner))!.allDayEvents.push(occ);
       continue;
     }
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
       // A schedule without an end time takes the room of a task (half an hour), so what follows does not cover it.
       const endMin = occ.end > occ.start ? Math.max(s.endMin, s.startMin + 1) : Math.min(24 * 60, s.startMin + TASK_MINUTES);
-      map.get(colKey(s.dateKey, occ.event.owner))!.events.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin, lane: 0, lanes: 1 });
+      map.get(place(s.dateKey, occ.event.owner))!.events.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin, lane: 0, lanes: 1 });
     }
   }
   for (const c of map.values()) {
@@ -138,11 +146,30 @@ function sheet(options: { label: string; destructive?: boolean; onSelect: () => 
   );
 }
 
-export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; onChangeDate: (k: DateKey) => void; actions: DayActions }) {
+export interface DayViewProps {
+  dateKey: DateKey;
+  onChangeDate: (k: DateKey) => void;
+  actions: DayActions;
+  /** The view's width (the iPad's day pane); the window's by default. */
+  width?: number;
+  /** Days side by side (7 for the iPad's week); the person's Single Day / Multi Day by default. */
+  days?: number;
+  /** One column per day with both people's items (the iPad's week) instead of a column per person. */
+  merged?: boolean;
+  /** The phone's room for the bar above and its week strip; the iPad draws its own above the view. */
+  chrome?: boolean;
+  /** The item open in the iPad's details pane, drawn as selected. */
+  selectedKey?: string | null;
+  /** Apple's iPad proportions: 65-point hours (50 on the iPhone) and a 93-point column of hours. */
+  pad?: boolean;
+}
+
+export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days: daysProp, merged = false, chrome = true, selectedKey = null, pad = false }: DayViewProps) {
   const colors = useColors();
   const dark = useIsDark();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
+  const window = useWindowDimensions();
+  const width = paneWidth ?? window.width;
   const me = useMe();
   const other = otherPerson(me);
   const m = useMetrics();
@@ -150,15 +177,19 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const timelinePeople = usePrefs((s) => s.timelinePeople);
   // The zoom is stored at the default Text Size; Apple's hour grows with Text Size (50 points, 61.7 two steps up).
   const hourBase = usePrefs((s) => s.hourHeight);
-  const hourH = Math.min(260, Math.max(20, hourBase * m.fontScale));
+  // The pinch zoom is kept for the default Text Size on a phone; the iPad's hours are 1.3 times the phone's.
+  const zoomScale = m.fontScale * (pad ? 1.3 : 1);
+  const hourH = Math.min(260, Math.max(20, hourBase * zoomScale));
   const setHourHeight = usePrefs((s) => s.setHourHeight);
   const meInfo = usePerson(me);
   const otherInfo = usePerson(other);
   const infos: Record<PersonKey, PersonInfo> = me === "gooya" ? { gooya: meInfo, eunbi: otherInfo } : { gooya: otherInfo, eunbi: meInfo };
   const secondGutter = meInfo.settings.secondGutter;
   const intensity = meInfo.settings.routineIntensity ?? (dark ? 0.5 : 0.35);
-  const days = timelineDays;
+  const days = daysProp ?? timelineDays;
   const people = useMemo<PersonKey[]>(() => (timelinePeople === "me" ? [me] : timelinePeople === "other" ? [other] : [me, other]), [timelinePeople, me, other]);
+  // The columns' people: each person, or the first standing for everyone in a merged week.
+  const colPeople = useMemo(() => (merged ? people.slice(0, 1) : people), [merged, people]);
   const todayNonce = useNav((s) => s.todayNonce);
   const today = useToday();
   const now = useNow(30_000);
@@ -170,20 +201,20 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
   const taskOcc = useTaskOccurrences(rangeStart, rangeEnd, people);
   const schedOcc = useRoutineOccurrences(rangeStart, rangeEnd, people);
   const eventOcc = useEventOccurrences(rangeStart, rangeEnd, people);
-  const columns = useMemo(() => buildColumns(allDates, people, taskOcc, schedOcc, eventOcc), [allDates, people, taskOcc, schedOcc, eventOcc]);
+  const columns = useMemo(() => buildColumns(allDates, people, taskOcc, schedOcc, eventOcc, merged), [allDates, people, taskOcc, schedOcc, eventOcc, merged]);
   const allDayRows = useMemo(() => {
     let max = 0;
-    for (const d of pageDates[1]) for (const p of people) {
+    for (const d of pageDates[1]) for (const p of colPeople) {
       const c = columns.get(colKey(d, p));
       max = Math.max(max, Math.min(2, (c?.allDay.length ?? 0) + (c?.allDayEvents.length ?? 0)));
     }
     return max;
-  }, [columns, pageDates, people]);
+  }, [columns, pageDates, colPeople]);
 
-  const gutterW = m.gutter + (secondGutter ? 32 * m.day : 0);
+  const gutterW = (pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
   const pageW = width - gutterW;
   const titleH = m.dayTitle * 1.34;
-  const namesH = people.length > 1 ? m.personName * 1.3 : 0;
+  const namesH = colPeople.length > 1 ? m.personName * 1.3 : 0;
   const allDayTop = 7 + titleH + namesH + 2;
   const allDayRowH = m.chipHeight + 3;
   const headerH = Math.max(m.dayTitleBand, allDayTop + 3) + (allDayRows ? allDayRows * allDayRowH + 4 : 0);
@@ -197,10 +228,10 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
     hourHRef.current = hourH;
   }, [hourH]);
   const scrollTop = useRef(0);
-  const fontScaleRef = useRef(m.fontScale);
+  const fontScaleRef = useRef(zoomScale);
   useEffect(() => {
-    fontScaleRef.current = m.fontScale;
-  }, [m.fontScale]);
+    fontScaleRef.current = zoomScale;
+  }, [zoomScale]);
 
   const scrollToMinutes = useCallback((min: number, animated: boolean) => {
     scrollRef.current?.scrollTo({ y: Math.max(0, (min / 60) * hourHRef.current), animated });
@@ -319,14 +350,23 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondGutter, pageDates, otherInfo.timezone]);
 
-  const subW = pageW / days / people.length;
-  const subCols = useMemo(() => pageDates[1].flatMap((d) => people.map((p) => ({ date: d, person: p }))), [pageDates, people]);
+  const subW = pageW / days / colPeople.length;
+  const subCols = useMemo(() => pageDates[1].flatMap((d) => colPeople.map((p) => ({ date: d, person: p }))), [pageDates, colPeople]);
+  // In a merged week a task dragged to another day stays its owner's (the column stands for both people).
+  const onMoveTask = useCallback(
+    (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => commitMove(seg, startMin, date, merged ? seg.occ.task.owner : person),
+    [commitMove, merged],
+  );
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg }]}>
       <View style={{ backgroundColor: colors.bar }}>
-      <View style={{ height: insets.top + m.barHeight }} />
-      <WeekStrip anchor={dateKey} days={days} today={today} width={width} colors={colors} metrics={m} onPick={onChangeDate} />
+      {chrome ? (
+        <>
+          <View style={{ height: insets.top + m.barHeight }} />
+          <WeekStrip anchor={dateKey} days={days} today={today} width={width} colors={colors} metrics={m} onPick={onChangeDate} />
+        </>
+      ) : null}
 
       {/* Column headers (+ all-day strip) */}
       <View style={[styles.header, { height: headerH, borderBottomColor: colors.separator }]}>
@@ -358,11 +398,12 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                       days === 1 && { marginLeft: -gutterW, paddingLeft: 0 },
                     ]}
                   >
-                    {days === 1 ? formatDayTitle(date) : formatColumnHeader(date)}
+                    {days === 1 ? formatDayTitle(date) : days >= 5 ? "" : formatColumnHeader(date)}
                   </Text>
-                  {people.length > 1 ? (
+                  {days >= 5 ? <WeekColumnHeader date={date} today={today} colors={colors} top={people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2} height={titleH} /> : null}
+                  {colPeople.length > 1 ? (
                     <View style={[styles.names, { height: namesH }]}>
-                      {people.map((pk) => (
+                      {colPeople.map((pk) => (
                         <Text key={pk} allowFontScaling={false} numberOfLines={1} style={[styles.name, { color: colorHex(infos[pk].color, dark), fontSize: m.personName, lineHeight: namesH }]}>
                           {infos[pk].name}
                         </Text>
@@ -371,7 +412,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                   ) : null}
                   {allDayRows ? (
                     <View style={[styles.allDayRow, { top: allDayTop }]}>
-                      {people.map((pk) => {
+                      {colPeople.map((pk) => {
                         const col = columns.get(colKey(date, pk));
                         const list: (TaskOccurrence | EventOccurrence)[] = [...(col?.allDayEvents ?? []), ...(col?.allDay ?? [])];
                         const overflow = list.length > 2 ? list.length - 1 : 0;
@@ -451,7 +492,7 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                   <View style={{ flexDirection: "row", height: 24 * hourH }}>
                     {dates.map((date, di) => (
                       <View key={date} style={[styles.dateBody, di > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
-                        {people.map((pk, pi) => (
+                        {colPeople.map((pk, pi) => (
                           <SubColumn
                             key={pk}
                             date={date}
@@ -465,12 +506,14 @@ export function DayView({ dateKey, onChangeDate, actions }: { dateKey: DateKey; 
                             dark={dark}
                             colors={colors}
                             subW={subW}
-                            subIndex={p === 1 ? di * people.length + pi : -1}
+                            subIndex={p === 1 ? di * colPeople.length + pi : -1}
                             subCols={subCols}
+                            shown={people.length}
+                            selectedKey={selectedKey}
                             actions={actions}
                             onRoutineMenu={routineMenu}
                             onTaskMenu={taskMenu}
-                            onMove={commitMove}
+                            onMove={onMoveTask}
                             onMoveEvent={commitEventMove}
                           />
                         ))}
@@ -503,6 +546,9 @@ interface SubColumnProps {
   /** This column's index among the middle page's sub-columns (for drag targets), or -1 on the side pages. */
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
+  /** How many people the view shows (a task's ring is its list's colour when one). */
+  shown: number;
+  selectedKey: string | null;
   actions: DayActions;
   onRoutineMenu: (occ: RoutineOccurrence) => void;
   onTaskMenu: (occ: TaskOccurrence) => void;
@@ -510,7 +556,7 @@ interface SubColumnProps {
   onMoveEvent: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
 }
 
-const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
+const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, shown, selectedKey, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
   const longPress = useMemo(
     () =>
       Gesture.LongPress()
@@ -529,10 +575,10 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
           <RoutineBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
         ))}
         {data.events.map((seg) => (
-          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} onTap={actions.openEvent} onMove={onMoveEvent} />
+          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} />
         ))}
         {data.timed.map((seg) => (
-          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} />
+          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} shown={shown} selected={seg.occ.key === selectedKey} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} />
         ))}
       </View>
     </GestureDetector>
@@ -570,6 +616,7 @@ interface EventBlockProps {
   subW: number;
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
+  selected: boolean;
   onTap: (occ: EventOccurrence) => void;
   onMove: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
 }
@@ -579,7 +626,7 @@ interface EventBlockProps {
  * bar inset at the left, the title in the calendar's colour, the time under it when there is room. An event of a
  * two-way calendar can be lifted with a long press and dragged to another time or day (its own person's columns).
  */
-const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, onTap, onMove }: EventBlockProps) {
+const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, selected, onTap, onMove }: EventBlockProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
   const [lifted, setLifted] = useState(false);
   const previewRef = useRef<{ startMin: number; dx: number; target: number } | null>(null);
@@ -638,7 +685,8 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   const startMin = preview?.startMin ?? seg.startMin;
   const top = (startMin / 60) * hourH;
   const height = Math.max(metrics.eventTitle * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
-  const text = readableTint(c, dark);
+  // Selected (the iPad's details pane shows it): filled with its colour, the text white, as Apple marks it.
+  const text = selected ? "#ffffff" : readableTint(c, dark);
   const titleH = metrics.eventTitle * 1.25;
   const timeH = metrics.eventTime * 1.3;
   // As many title lines as fit, keeping one line for the time when there is room for it (never a half-cut line).
@@ -654,7 +702,7 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
         accessibilityLabel={seg.occ.title}
         style={[
           styles.event,
-          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2), zIndex: lifted ? 40 : undefined, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
+          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: selected ? c : dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2), zIndex: lifted ? 40 : undefined, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
           lifted && styles.pillLifted,
         ]}
       >
@@ -686,6 +734,8 @@ interface TaskPillProps {
   subW: number;
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
+  shown: number;
+  selected: boolean;
   onTap: (occ: TaskOccurrence) => void;
   onMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
@@ -696,7 +746,7 @@ interface TaskPillProps {
  * hour, the owner's ring (tap it to complete) and the title. Long-press lifts it and dragging moves it (across days and
  * people); a tap opens it.
  */
-const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, onTap, onMenu, onMove }: TaskPillProps) {
+const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, shown, selected, onTap, onMenu, onMove }: TaskPillProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
   const [lifted, setLifted] = useState(false);
   const moved = useRef(false);
@@ -764,8 +814,8 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
   const height = Math.max(metrics.taskRing + 8, (Math.min(TASK_MINUTES, 24 * 60 - seg.startMin) / 60) * hourH - 1);
   const previewTime = preview ? formatHM(Math.floor(startMin / 60) % 24, startMin % 60) : null;
   const bangs = ["", "!", "!!", "!!!"][o.task.priority ?? 0];
-  // Both people's columns: whose task it is; one person's: which list.
-  const ring = useTaskColor(o.task, new Set(subCols.map((c) => c.person)).size);
+  // Both people shown: whose task it is; one person: which list.
+  const ring = useTaskColor(o.task, shown);
   return (
     <GestureDetector gesture={gesture}>
       <View
@@ -773,7 +823,7 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
         accessibilityLabel={o.title}
         style={[
           styles.pill,
-          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: colors.taskBlock, borderColor: colors.taskBlockRim, zIndex: lifted ? 40 : 30, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
+          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: selected ? colors.fill : colors.taskBlock, borderColor: selected ? ring : colors.taskBlockRim, zIndex: lifted ? 40 : 30, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
           lifted && styles.pillLifted,
         ]}
       >
@@ -789,6 +839,26 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
     </GestureDetector>
   );
 });
+
+/** A week column's date as Apple's iPad week has it: "Tue 29", today's number in a red circle. */
+function WeekColumnHeader({ date, today, colors, top, height }: { date: DateKey; today: DateKey; colors: Colors; top: number; height: number }) {
+  const [y, mo, d] = date.split("-").map(Number);
+  const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  const isToday = date === today;
+  const weekend = wd === 0 || wd === 6;
+  return (
+    <View style={[styles.weekHead, { top, height }]}>
+      <Text allowFontScaling={false} style={[styles.weekHeadText, { color: weekend ? colors.label2 : colors.label }]}>
+        {WEEKDAY_SHORT[wd]}{" "}
+      </Text>
+      <View style={[styles.weekHeadNum, isToday && { backgroundColor: colors.red }]}>
+        <Text allowFontScaling={false} style={[styles.weekHeadText, { color: isToday ? "#ffffff" : weekend ? colors.label2 : colors.label, fontWeight: isToday ? "600" : "400" }]}>
+          {d}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 interface WeekStripProps {
   anchor: DateKey;
@@ -863,6 +933,9 @@ function WeekStrip({ anchor, days, today, width, colors, metrics: m, onPick }: W
 }
 
 const styles = StyleSheet.create({
+  weekHead: { position: "absolute", left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  weekHeadText: { fontSize: 17 },
+  weekHeadNum: { minWidth: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
   fill: { flex: 1 },
   header: { flexDirection: "row", borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
   tzRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 8 },

@@ -9,6 +9,7 @@
     "lint": "expo lint",
     "test": "tsx --test shared/*.test.ts functions/src/integrations/*.test.ts",
     "iphone": "node scripts/phone.mjs iphone",
+    "ipad": "node scripts/phone.mjs ipad",
     "iphone:sim": "node scripts/phone.mjs iphone --sim",
     "iphone:sim:live": "node scripts/phone.mjs iphone --sim --live",
     "phone:setup": "node scripts/phone.mjs setup",

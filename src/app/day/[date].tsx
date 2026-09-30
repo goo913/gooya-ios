@@ -13,9 +13,17 @@ import { usePrefs, type TimelinePeople } from "@/store/prefs";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
 import { DayView, type DayActions } from "@/views/DayView";
+import { useIsPad } from "@/lib/layout";
+import { PadRedirect } from "@/pad/PadRedirect";
 import { ListView } from "@/views/ListView";
 
-export default function DayScreen() {
+/** A day: the phone's day screen, or on an iPad the calendar's Day view (a notification or a search opens it). */
+export default function DayRoute() {
+  const { date } = useLocalSearchParams<{ date: string }>();
+  return useIsPad() ? <PadRedirect view="day" date={date as DateKey} /> : <DayScreen />;
+}
+
+function DayScreen() {
   const colors = useColors();
   const { date } = useLocalSearchParams<{ date: string }>();
   const dateKey = date as DateKey;

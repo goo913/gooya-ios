@@ -120,7 +120,9 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       buildNumber: String(release.build),
       appleTeamId: APPLE_TEAM_ID,
       googleServicesFile: plist.file,
-      supportsTablet: false,
+      // iPhone and iPad (the iPad layout: src/app/pad). The iPhone stays portrait; iPad windows take any size and
+      // orientation (Expo adds the four iPad orientations and leaves full-screen off, as iPad multitasking needs).
+      supportsTablet: true,
       ...(APP_GROUP ? { entitlements: { "com.apple.security.application-groups": [APP_GROUP] } } : {}),
       infoPlist: {
         // Only the standard HTTPS kind of encryption (exempt): App Store Connect never asks the export-compliance question.
