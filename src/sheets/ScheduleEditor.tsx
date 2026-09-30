@@ -10,6 +10,7 @@ import { DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/comp
 import { Segmented } from "@/components/Segmented";
 import { DetailsBar } from "@/components/SheetHeader";
 import { SourceBadge } from "@/components/SourceBadge";
+import { WhenRow, useWhenLayout } from "@/components/WhenRows";
 import { dateFromKey, keyFromDate } from "@/lib/dates";
 import { deleteSchedule, newId, patchEvent, patchSchedule, saveEventLocal, saveSchedule } from "@/lib/db";
 import { useMe, usePersonColor } from "@/lib/people";
@@ -239,6 +240,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
     ]);
   };
 
+  const when = useWhenLayout();
   const picker = (mode: "date" | "time", value: Date, onChange: (d: Date) => void, min?: Date) => (
     <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
   );
@@ -273,40 +275,31 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           </Group>
         ) : null}
 
+        {/* Each row its own child, so the group draws the lines between them. */}
         <Group footer={endless ? "No end time: it is at its start time." : undefined}>
           <Row label="All-day">
             <Switch label="All-day" value={allDay} onChange={setAllDay} />
           </Row>
           {allDay ? (
-            <>
-              <Row label="Starts">
-                {picker("date", dateFromKey(startDate), (d) => {
-                  const k = keyFromDate(d);
-                  setEndDate(addDaysKey(k, Math.max(0, diffDaysKey(startDate, endDate))));
-                  setStartDate(k);
-                })}
-              </Row>
-              <Row label="Ends">{picker("date", dateFromKey(endDate), (d) => setEndDate(keyFromDate(d)), dateFromKey(startDate))}</Row>
-            </>
+            <WhenRow
+              layout={when}
+              label="Starts"
+              date={picker("date", dateFromKey(startDate), (d) => {
+                const k = keyFromDate(d);
+                setEndDate(addDaysKey(k, Math.max(0, diffDaysKey(startDate, endDate))));
+                setStartDate(k);
+              })}
+            />
           ) : (
-            <>
-              <Row label="Starts">
-                {picker("date", start, (d) => setStartKeepingLength(withDay(start, d)))}
-                {picker("time", start, setStartKeepingLength)}
-              </Row>
-              {inGooya ? (
-                <Row label="End Time">
-                  <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
-                </Row>
-              ) : null}
-              {!endless ? (
-                <Row label="Ends">
-                  {picker("date", end, (d) => setEnd(withDay(end, d)), start)}
-                  {picker("time", end, (d) => setEnd(withDay(d, end)))}
-                </Row>
-              ) : null}
-            </>
+            <WhenRow layout={when} label="Starts" date={picker("date", start, (d) => setStartKeepingLength(withDay(start, d)))} time={picker("time", start, setStartKeepingLength)} />
           )}
+          {allDay ? <WhenRow layout={when} label="Ends" date={picker("date", dateFromKey(endDate), (d) => setEndDate(keyFromDate(d)), dateFromKey(startDate))} /> : null}
+          {!allDay && inGooya ? (
+            <Row label="End Time">
+              <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
+            </Row>
+          ) : null}
+          {!allDay && !endless ? <WhenRow layout={when} label="Ends" date={picker("date", end, (d) => setEnd(withDay(end, d)), start)} time={picker("time", end, (d) => setEnd(withDay(d, end)))} /> : null}
         </Group>
 
         <Group footer={where ? `Changes go to ${where} as you save them.` : "Copied to the GOOYA calendar in your Google or iCloud when that is on (Settings → Calendar integrations)."}>
