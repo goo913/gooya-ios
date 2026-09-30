@@ -553,7 +553,7 @@ async function syncAppleExport(person: PersonKey, accountId: string, client: Dav
         await ref.create({
           owner: person, createdBy: person, title: c.copy.title.trim(), notes: plainNotes(c.copy.notes), location: c.copy.location, allDay: c.copy.allDay, start: c.copy.start,
           end: c.copy.end, startDate: c.copy.startDate, endDate: c.copy.endDate, timezone: parsed?.timezone ?? tz, rrule: parsed?.rrule ?? null, exdates: [], overrides: {},
-          createdAt: now, updatedAt: now,
+          private: false, createdAt: now, updatedAt: now,
         })
         await client.deleteCalendarObject({ calendarObject: { url: obj.url, etag: '' } }).catch(() => undefined)
         logger.info('apple copy: new schedule from the GOOYA calendar', { person, schedule: ref.id })

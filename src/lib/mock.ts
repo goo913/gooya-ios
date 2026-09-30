@@ -47,8 +47,10 @@ export function startMockData(): void {
     task("eunbi", "엄마 생신", d(9), null, { flagged: true }),
     task("eunbi", "Vacation", d(20), null, { listId: "trip" }),
     task("eunbi", "Yoga", d(0), "07:30", { rrule: "FREQ=WEEKLY;BYDAY=SA,SU" }),
-    task("gooya", "Pick up package", d(0), "12:00"),
-    task("gooya", "Read chapter 4", d(0), "16:00", { listId: "home" }),
+    task("gooya", "Pick up package", d(0), "12:00", { listId: "groceries" }),
+    task("gooya", "Read chapter 4", d(0), "16:00", { listId: "school" }),
+    task("gooya", "Birthday gift for 은비", d(6), null, { listId: "home", private: true }),
+    task("eunbi", "Secret: surprise for 구야", d(6), null, { private: true }),
     task("gooya", "Laundry", d(0), "18:00", { listId: "home" }),
     task("eunbi", "Groceries", d(0), "12:00", { createdBy: "gooya", listId: "home", tags: ["errand"] }),
     task("gooya", "Someday: learn Korean cooking", null, null, { listId: "home" }),
@@ -70,6 +72,9 @@ export function startMockData(): void {
     { id: "tasks", name: "Tasks", color: "#0091ff", icon: "list", order: 0, createdBy: "gooya", createdAt: 0, updatedAt: 0 },
     { id: "home", name: "Home", color: "#30d158", icon: "house", order: 1, createdBy: "gooya", createdAt: 0, updatedAt: 0 },
     { id: "trip", name: "Trip", color: "#ff9230", icon: "airplane", order: 2, createdBy: "eunbi", createdAt: 0, updatedAt: 0 },
+    { id: "groceries", name: "Groceries", color: "#34c759", icon: "cart", order: 3, createdBy: "gooya", createdAt: 0, updatedAt: 0 },
+    { id: "school", name: "School", color: "#5856d6", icon: "graduationcap", order: 4, createdBy: "gooya", createdAt: 0, updatedAt: 0 },
+    { id: "hospital", name: "Hospital", color: "#ff2d55", icon: "heart", order: 5, createdBy: "eunbi", createdAt: 0, updatedAt: 0 },
   ];
 
   const ev = (owner: PersonKey, source: "google" | "apple", title: string, date: string, start: string | null, end: string | null, extra: Partial<CalendarEvent> = {}): CalendarEvent => {
@@ -132,15 +137,31 @@ export function startMockData(): void {
     const e = allDay ? zonedMs(addDaysKey(date, 1), "00:00", tz2) : end ? zonedMs(date, end, tz2) : s;
     return { id: id(), owner, createdBy: owner, title, notes: "", location: "", allDay, start: s, end: e, startDate: date, endDate: date, timezone: tz2, rrule: null, exdates: [], overrides: {}, createdAt: 0, updatedAt: 0, ...extra };
   };
+  const multiDay = (owner: PersonKey, title: string, from: string, to: string, start: string | null, end: string | null, extra: Partial<Schedule>): Schedule => {
+    const tz2 = PEOPLE[owner].timezone;
+    const allDay = !start;
+    const s = allDay ? zonedMs(from, "00:00", tz2) : zonedMs(from, start!, tz2);
+    const e = allDay ? zonedMs(addDaysKey(to, 1), "00:00", tz2) : zonedMs(to, end!, tz2);
+    return { id: id(), owner, createdBy: owner, title, notes: "", location: "", allDay, start: s, end: e, startDate: from, endDate: to, timezone: tz2, rrule: null, exdates: [], overrides: {}, createdAt: 0, updatedAt: 0, ...extra };
+  };
   const schedules: Schedule[] = [
     schedule("gooya", "Lunch with Minho", d(0), "12:30", "13:30", { location: "Ponce City Market" }),
     schedule("eunbi", "Dentist", d(1), "15:00", "16:00"),
     schedule("gooya", "Pick up 은비 at the airport", d(2), "18:45", null),
     schedule("eunbi", "Family dinner", d(5), "19:00", "21:00", { createdBy: "gooya" }),
+    schedule("eunbi", "산부인과", d(2), "10:00", "11:00", { categoryId: "hospital" }),
+    // Several days: a bar across them in the month.
+    multiDay("gooya", "Test 2", d(0), d(3), "19:00", "20:00", {}),
+    multiDay("eunbi", "Seoul trip", d(8), d(11), null, null, { categoryId: "trip" }),
+    schedule("gooya", "Costco run", d(1), "11:00", "12:00", { categoryId: "groceries", color: "#ff9500" }),
+    schedule("gooya", "Therapy (private)", d(3), "08:00", "09:00", { private: true }),
+    schedule("eunbi", "Hidden from 구야", d(1), "09:00", "10:00", { private: true }),
   ];
   const { setTasks, setSchedules, setRoutines, setUsers, setLists, setEvents, setAccounts } = useData.getState();
-  setTasks(tasks);
-  setSchedules(schedules);
+  // As Firestore gives them: the other person's private things never come.
+  const visible = <T extends { owner: PersonKey; private?: boolean }>(x: T) => !x.private || x.owner === mockMe;
+  setTasks(tasks.filter(visible));
+  setSchedules(schedules.filter(visible));
   setRoutines(routines);
   setUsers(users);
   setLists(lists);

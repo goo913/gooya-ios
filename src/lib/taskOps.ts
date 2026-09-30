@@ -23,6 +23,8 @@ export interface TaskFields {
   tags: string[]
   flagged: boolean
   priority: Priority
+  /** Only its owner sees it (Share off). Always written, so the other person's query can ask for shared ones. */
+  private: boolean
 }
 
 export function makeTask(fields: TaskFields, createdBy: PersonKey): Task {
@@ -43,13 +45,16 @@ export function makeTask(fields: TaskFields, createdBy: PersonKey): Task {
 }
 
 /**
- * Whether a change to this task has to reach Apple Reminders: it is one of its owner's reminders, or it is in (or
- * moves to or from) one of their Reminders lists. The owner's iPhone takes it there (src/lib/reminders.ts).
+ * Whether a change to this task has to reach Apple Reminders: it is one of its owner's reminders, it is in (or moves to
+ * or from) one of their Reminders lists, or its owner syncs Reminders (every category is a list there). The owner's
+ * iPhone takes it there (src/lib/reminders.ts).
  */
-function touchesReminders(task: Pick<Task, 'source' | 'externalRefs' | 'listId'>, listId?: string): boolean {
+function touchesReminders(task: Pick<Task, 'source' | 'externalRefs' | 'listId' | 'owner'>, fields?: Pick<TaskFields, 'listId' | 'owner'>): boolean {
   if (reminderIdOf(task)) return true
   const lists = useData.getState().lists
-  return [task.listId, listId].some((id) => id && isReminderList(lists.find((l) => l.id === id)))
+  const owners = [task.owner, fields?.owner]
+  if (lists.some((l) => isReminderList(l) && owners.includes(l.owner))) return true
+  return [task.listId, fields?.listId].some((id) => id && isReminderList(lists.find((l) => l.id === id)))
 }
 
 export async function createTask(fields: TaskFields, createdBy: PersonKey): Promise<Task> {
@@ -78,7 +83,7 @@ export async function applyTaskEdit(task: Task, occ: TaskOccurrence | null, fiel
   // iPhone then takes it out of their Reminders; it becomes one of the new owner's reminders if it is in their list).
   if (reminderIdOf(task) && fields.owner !== task.owner) await patchTask(task.id, { source: 'gooya', externalRefs: [] })
   await applyEdit(task, occ, fields, scope)
-  if (touchesReminders(task, fields.listId)) syncRemindersSoon()
+  if (touchesReminders(task, fields)) syncRemindersSoon()
 }
 
 async function applyEdit(task: Task, occ: TaskOccurrence | null, fields: TaskFields, scope: EditScope): Promise<void> {
@@ -180,10 +185,6 @@ export function fieldsOf(task: Task): TaskFields {
     tags: task.tags ?? [],
     flagged: !!task.flagged,
     priority: task.priority ?? 0,
+    private: !!task.private,
   }
-}
-
-/** Fields for a drag move: new due date/time (viewer-local wall clock) and owner. */
-export function movedFields(task: Task, occ: TaskOccurrence, dueDate: DateKey, dueTime: HHmm | null, owner: PersonKey, viewerTz: string): TaskFields {
-  return { ...fieldsOf(task), title: occ.title, notes: occ.notes, owner, dueDate, dueTime, timezone: dueTime ? viewerTz : task.timezone || viewerTz }
 }

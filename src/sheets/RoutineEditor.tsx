@@ -1,9 +1,9 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { ColorPicker, Host } from "@expo/ui/swift-ui";
 import type { DateKey, Routine, RoutineKind } from "@shared/model";
-import { PERSON_KEYS, type PersonKey } from "@shared/people";
+import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import { buildRuleBody, parseRuleFields } from "@shared/recurrence";
-import { addDaysKey, minutesOf } from "@shared/time";
+import { addDaysKey, minutesOf, zonedMs } from "@shared/time";
 import { useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/components/Form";
@@ -15,6 +15,7 @@ import { formatMediumDate } from "@/lib/format";
 import { useMe, usePerson } from "@/lib/people";
 import { overrideRoutineDay } from "@/lib/routineOps";
 import { useToday } from "@/lib/useNow";
+import { clockOf, useEditZones } from "@/lib/zones";
 import { useColors, useIsDark } from "@/theme";
 
 const PRESETS: Record<RoutineKind, { title: string; icon: string; start: string; end: string; freq: "daily" | "weekly"; days: number[] }> = {
@@ -58,10 +59,19 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
   const [hasEnd, setHasEnd] = useState(!!routine?.endDate);
   const [endDate, setEndDate] = useState<DateKey>(routine?.endDate ?? addDaysKey(initialDate ?? today, 90));
   const [color, setColor] = useState<string | null>(routine?.color ?? null);
+  const [shared, setShared] = useState(!routine?.private);
   const [busy, setBusy] = useState(false);
+  const otherName = usePerson(otherPerson(me)).name;
 
   const ownerInfo = usePerson(owner);
   const crossesMidnight = minutesOf(endTime) <= minutesOf(startTime);
+  // A routine is on its owner's clock (9 to 5 where they are); this phone's clock shows the same hours on the day it
+  // starts (or today), and takes changes too.
+  const zone = routine?.timezone ?? ownerInfo.timezone;
+  const refDate = dayOnly ?? (startDate > today ? startDate : today);
+  const startAt = zonedMs(refDate, startTime, zone);
+  const endAt = zonedMs(crossesMidnight ? addDaysKey(refDate, 1) : refDate, endTime, zone);
+  const zones = useEditZones(owner, startAt, zone);
 
   const applyPreset = (k: RoutineKind) => {
     setKind(k);
@@ -99,6 +109,8 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
           endDate: hasEnd ? endDate : null,
           exdates: routine?.exdates ?? [],
           overrides: routine?.overrides ?? {},
+          // Only one's own routine can be kept to oneself.
+          private: owner === me && !shared,
           createdAt: routine?.createdAt ?? now,
           updatedAt: now,
         });
@@ -112,6 +124,10 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
   const tzNote = useMemo(() => `Times are in ${ownerInfo.name}’s time zone (${ownerInfo.timezone.replace("_", " ")}).`, [ownerInfo]);
   const timePicker = (value: string, onChange: (t: string) => void) => (
     <DateTimePicker value={dateFromHHmm(value)} mode="time" display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(hhmmFromDate(d))} />
+  );
+  /** A time on the other clock: picked there, kept as the owner's wall-clock time. */
+  const otherPicker = (at: number, onChange: (t: string) => void) => (
+    <DateTimePicker value={new Date(at)} mode="time" display="compact" minuteInterval={5} timeZoneName={zones[1]?.zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(clockOf(d.getTime(), zone).time)} />
   );
   const datePicker = (value: DateKey, onChange: (k: DateKey) => void, min?: DateKey) => (
     <DateTimePicker value={dateFromKey(value)} minimumDate={min ? dateFromKey(min) : undefined} mode="date" display="compact" themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(keyFromDate(d))} />
@@ -154,10 +170,16 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
           />
         </Group>
 
-        <Group footer={crossesMidnight ? "Ends the next day." : undefined}>
+        <Group header={zones.length > 1 ? zones[0].label : undefined} footer={crossesMidnight ? "Ends the next day." : undefined}>
           <Row label="Starts">{timePicker(startTime, setStartTime)}</Row>
           <Row label="Ends">{timePicker(endTime, setEndTime)}</Row>
         </Group>
+        {zones.length > 1 ? (
+          <Group header={zones[1].label} footer={`The same hours on ${formatMediumDate(refDate, false)} on this clock; change either one and the other follows.`}>
+            <Row label="Starts">{otherPicker(startAt, setStartTime)}</Row>
+            <Row label="Ends">{otherPicker(endAt, setEndTime)}</Row>
+          </Group>
+        ) : null}
 
         {!dayOnly ? (
           <>
@@ -185,19 +207,29 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
               {hasEnd ? <Row label="Ends on">{datePicker(endDate, setEndDate, startDate)}</Row> : null}
             </Group>
 
-            <Group header="Color" footer={color ? undefined : `Uses ${ownerInfo.name}’s colour.`}>
+            <Group header="Color" footer={color ? undefined : `Uses ${ownerInfo.name}’s color.`}>
               <Row label="Color">
                 {color ? (
                   <Pressable accessibilityRole="button" onPress={() => setColor(null)} hitSlop={8}>
                     <Text style={{ color: colors.blue, fontSize: 17 }}>Use owner’s</Text>
                   </Pressable>
                 ) : null}
-                <Host matchContents style={styles.colorHost}>
-                  <ColorPicker selection={color ?? (dark ? ownerInfo.hexDark : ownerInfo.hexLight)} supportsOpacity={false} onSelectionChange={(c) => setColor(c.slice(0, 7))} />
-                </Host>
+                <View style={styles.colorWell}>
+                  <Host matchContents>
+                    <ColorPicker selection={color ?? (dark ? ownerInfo.hexDark : ownerInfo.hexLight)} supportsOpacity={false} onSelectionChange={(c) => setColor(c.slice(0, 7))} />
+                  </Host>
+                </View>
               </Row>
             </Group>
           </>
+        ) : null}
+
+        {!dayOnly && owner === me ? (
+          <Group footer={shared ? `${otherName} sees it too.` : `Only you see it: not in ${otherName}’s day view.`}>
+            <Row label={`Share with ${otherName}`}>
+              <Switch label={`Share with ${otherName}`} value={shared} onChange={setShared} />
+            </Row>
+          </Group>
         ) : null}
 
         {editing && !dayOnly ? <DestructiveButton onPress={() => void deleteRoutine(routine.id).then(onClose)}>Delete Routine</DestructiveButton> : null}
@@ -211,5 +243,5 @@ const styles = StyleSheet.create({
   content: { gap: 20, paddingBottom: 60, paddingTop: 4 },
   icon: { fontSize: 22 },
   iconInput: { width: 34, textAlign: "center", fontSize: 22 },
-  colorHost: { width: 44, height: 32 },
+  colorWell: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 });

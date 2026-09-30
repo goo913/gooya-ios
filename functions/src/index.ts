@@ -22,6 +22,14 @@ export const onTaskWritten = onDocumentWritten('tasks/{taskId}', async (event) =
   const after = event.data?.after
   const before = event.data?.before
   const task: Task | null = after?.exists ? normalizeTask(taskId, after.data() as Record<string, unknown>) : null
+  // Written by a build from before Share: it is shared (functions/src/privacy.ts), so the other person's phone finds it.
+  if (after?.exists && typeof after.data()?.private !== 'boolean') {
+    try {
+      await after.ref.set({ private: false }, { merge: true })
+    } catch (e) {
+      logger.error('marking a task shared failed', { taskId, error: String(e) })
+    }
+  }
   try {
     await rebuildQueueForTask(taskId, task)
   } catch (e) {
@@ -59,4 +67,5 @@ export const extendAlerts = onSchedule({ schedule: '0 3 * * *', timeZone: 'Ameri
 })
 
 export { widgetFeed } from './widget'
+export { routinesSharedByDefault, schedulesSharedByDefault } from './privacy'
 export * from './integrations/index'

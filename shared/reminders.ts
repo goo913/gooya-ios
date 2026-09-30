@@ -2,11 +2,15 @@
 // change wins. The iPhone app reads Reminders with EventKit (src/lib/reminders.ts) and sends them to the server's
 // remindersImport (functions/src/integrations/reminders.ts), which applies the same rules as reminderFields below.
 //
-// Each Reminders list on the iPhone is a GOOYA list (the list's name and colour, owned by that person). A task made in
-// GOOYA in one of those lists becomes a reminder there; a reminder deleted, moved or changed on either side is deleted,
-// moved or changed on the other. GOOYA's own lists (Tasks, Home, …) stay in GOOYA.
+// Each Reminders list on the iPhone is a GOOYA list (the list's name and colour, owned by that person) that stands for
+// one of GOOYA's categories, which both people share (shared/categories.ts). A task in a category becomes a reminder in
+// the owner's list for it, a list the iPhone makes when there is none, named and coloured as the category is (so
+// Reminders and Apple Calendar show the category too); a reminder deleted, moved or changed on either side is deleted,
+// moved or changed on the other, and a list renamed or recoloured on either side is on the other.
 
+import { categoryKey, isCategory } from './categories'
 import type { DateKey, HHmm, Priority, Task, TaskList } from './model'
+import { fieldsInZone, formatHHmm, makeKey, zonedMs } from './time'
 
 export const REMINDERS_SOURCE = 'apple-reminders'
 /** The one list all reminders went into before each Reminders list became a GOOYA list. */
@@ -38,10 +42,23 @@ export interface DeviceList {
   title: string
   /** #rrggbb */
   color: string
-  /** Reminders lets apps change it (not a subscribed or view-only shared list). */
+  /** Reminders lets apps change what is in it (not a subscribed or view-only shared list). */
   writable: boolean
+  /** Reminders lets apps rename and recolour it (not someone else's shared list); unknown from older builds. */
+  editable?: boolean
   /** New reminders go here on this iPhone. */
   isDefault: boolean
+  /** Sent to the server: the category the phone linked this list to (it made the list for it, or found it by name). */
+  categoryId?: string
+  /** Sent to the server: the list was renamed or recoloured in Reminders, so its category is too. */
+  categoryName?: string
+  categoryColor?: string
+}
+
+/** A Reminders list's name and colour as GOOYA and the iPhone last agreed on them. */
+export interface ListFields {
+  title: string
+  color: string
 }
 
 /** One reminder as remindersImport receives it. */
@@ -168,12 +185,22 @@ export function reminderListDocId(person: string, deviceListId: string, hash: (s
 /** Whether a GOOYA list is one of someone's Reminders lists. */
 export const isReminderList = (l: Pick<TaskList, 'source'> | undefined | null): boolean => l?.source === REMINDERS_SOURCE
 
-function taskFields(t: Task, deviceListOf: (listId: string) => string | null): ReminderFields {
+/**
+ * A task's due day and time on the phone's clock. A task with a time is at an instant (its time in its own zone): made
+ * for someone in another time zone, it is at that moment on their iPhone too. A day without a time is that day anywhere.
+ */
+export function dueOnPhone(t: Pick<Task, 'dueDate' | 'dueTime' | 'timezone'>, zone: string | undefined): Pick<ReminderFields, 'dueDate' | 'dueTime'> {
+  if (!t.dueDate) return { dueDate: null, dueTime: null }
+  if (!t.dueTime || !zone || !t.timezone || t.timezone === zone) return { dueDate: t.dueDate, dueTime: t.dueTime }
+  const f = fieldsInZone(zonedMs(t.dueDate, t.dueTime, t.timezone), zone)
+  return { dueDate: makeKey(f.y, f.m, f.d), dueTime: formatHHmm(f.h, f.min) }
+}
+
+function taskFields(t: Task, deviceListOf: (listId: string) => string | null, zone?: string): ReminderFields {
   return {
     title: t.title,
     notes: t.notes ?? '',
-    dueDate: t.dueDate,
-    dueTime: t.dueDate ? t.dueTime : null,
+    ...dueOnPhone(t, zone),
     completed: !!t.completed,
     priority: t.priority ?? 0,
     listId: deviceListOf(t.listId) ?? '',
@@ -194,6 +221,10 @@ const sameFields = (a: ReminderFields, b: ReminderFields) =>
  * reminders for and GOOYA has not heard about yet (task id → reminder id).
  *
  * A date cleared in GOOYA is not cleared in Reminders.
+ *
+ * With `categoryTargets` (the phone's list for each category, from planCategoryLists), a task in a category is a
+ * reminder in that list; without, a task in one of GOOYA's own lists leaves Reminders (builds before categories).
+ * `zone` is the phone's: a task with a time made in another zone is at the same moment on the phone's clock.
  */
 export function planReminderSync(
   device: DeviceReminder[],
@@ -203,16 +234,21 @@ export function planReminderSync(
   lists: TaskList[] = [],
   links: Record<string, string> = {},
   writableLists?: Set<string>,
+  opts: { categoryTargets?: Record<string, string>; zone?: string } = {},
 ): ReminderPlan {
   const listById = new Map(lists.map((l) => [l.id, l]))
+  const targets = opts.categoryTargets
   const deviceListOf = (listId: string): string | null => {
     const l = listById.get(listId)
-    return l && isReminderList(l) && l.owner === owner && l.externalId ? l.externalId : null
+    if (l && isReminderList(l) && l.owner === owner && l.externalId) return l.externalId
+    return targets && l && isCategory(l) ? (targets[l.id] ?? null) : null
   }
   /** What a task's list asks of its reminder: a Reminders list to be in, to leave Reminders, or nothing said. */
   const intentOf = (t: Task): { kind: 'list'; listId: string } | { kind: 'leave' } | { kind: 'none' } => {
     const device = deviceListOf(t.listId)
     if (device) return { kind: 'list', listId: device }
+    // A category with no list on this phone (it could not be made): the reminder stays where it is.
+    if (targets) return { kind: 'none' }
     const l = listById.get(t.listId)
     // One of GOOYA's own lists. (The old single "Apple Reminders" list, or a list not loaded, says nothing.)
     if (l && !isReminderList(l) && t.listId !== LEGACY_REMINDERS_LIST_ID) return { kind: 'leave' }
@@ -251,7 +287,7 @@ export function planReminderSync(
       plan.reminders.push(r)
       continue
     }
-    const gooya = taskFields(task, deviceListOf)
+    const gooya = taskFields(task, deviceListOf, opts.zone)
     const change: ReminderChange = { id: r.id }
     const next = { ...r }
     const intent = intentOf(task)
@@ -294,12 +330,15 @@ export function planReminderSync(
     if (Object.keys(change).length > 1) plan.changes.push(change)
     plan.reminders.push(next)
   }
-  // GOOYA's own tasks put in one of this person's Reminders lists become reminders there.
+  // GOOYA's own tasks put in one of this person's Reminders lists (or in a category) become reminders there. One that
+  // repeats stays GOOYA's (Reminders would get a single reminder: its repeat is GOOYA's to keep), and so does one
+  // already done when it was put in a category.
   for (const t of mine) {
     if (reminderIdOf(t) || (links[t.id] && deviceIds.has(links[t.id]))) continue
     const intent = intentOf(t)
     if (intent.kind !== 'list' || !canWrite(intent.listId)) continue
-    plan.creates.push({ taskId: t.id, listId: intent.listId, title: t.title, notes: t.notes ?? '', dueDate: t.dueDate, dueTime: t.dueDate ? t.dueTime : null, completed: !!t.completed, priority: applePriority(t.priority ?? 0) })
+    if (isCategory(listById.get(t.listId)) && (t.completed || t.rrule)) continue
+    plan.creates.push({ taskId: t.id, listId: intent.listId, title: t.title, notes: t.notes ?? '', ...dueOnPhone(t, opts.zone), completed: !!t.completed, priority: applePriority(t.priority ?? 0) })
   }
   return plan
 }
@@ -307,6 +346,89 @@ export function planReminderSync(
 /** What GOOYA and the iPhone agree on after a sync: the next sync's baseline. */
 export function baselineOf(reminders: DeviceReminder[]): Record<string, ReminderFields> {
   return Object.fromEntries(reminders.map((r) => [r.id, reminderFields(r)]))
+}
+
+// ---------------------------------------------------------------- categories as Reminders lists (the iPhone)
+
+/** Colours the same to the eye: Reminders gives back a colour set through EventKit off by a step at most. */
+export function sameColor(a: string | null | undefined, b: string | null | undefined): boolean {
+  const rgb = (c: string | null | undefined) => (c && /^#[0-9a-f]{6}/i.test(c) ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : null)
+  const x = rgb(a)
+  const y = rgb(b)
+  return !!x && !!y && x.every((v, i) => Math.abs(v - y[i]) <= 3)
+}
+
+export interface CategoryListsPlan {
+  /** Category id → this phone's list for it (lists still to be made are added once made). */
+  targets: Record<string, string>
+  /** Categories that need a list made on this phone, in their name and colour. */
+  create: { categoryId: string; title: string; color: string }[]
+  /** Lists this phone finds for a category by name (in no category yet): the server links them. */
+  link: { listId: string; categoryId: string }[]
+  /** A category's name or colour to give its list here. */
+  update: { listId: string; title?: string; color?: string }[]
+  /** A list renamed or recoloured in Reminders: its category takes it. */
+  report: { listId: string; name?: string; color?: string }[]
+}
+
+/**
+ * The phone's Reminders lists as GOOYA's categories, for one person (`owner`). Every category their tasks are in (not a
+ * done or repeating task that never was a reminder) gets a list here: the one that stands for it, one of the same name in no category
+ * yet, or a new one. A list that stands for a category has its name and colour: what changed since `baseline` (what
+ * both last agreed on) wins, a change in Reminders over one in GOOYA; with no baseline GOOYA's is taken.
+ */
+export function planCategoryLists(owner: string, device: DeviceList[], tasks: Task[], lists: TaskList[], baseline: Record<string, ListFields>): CategoryListsPlan {
+  const byId = new Map(lists.map((l) => [l.id, l]))
+  const plan: CategoryListsPlan = { targets: {}, create: [], link: [], update: [], report: [] }
+  /** Device list → its category, as GOOYA has it (or as linked now). */
+  const linked = new Map<string, string>()
+  for (const l of lists) {
+    if (!isReminderList(l) || l.owner !== owner || !l.externalId || !l.categoryId) continue
+    if (isCategory(byId.get(l.categoryId)) && device.some((d) => d.id === l.externalId)) linked.set(l.externalId, l.categoryId)
+  }
+  const needed: string[] = []
+  for (const t of tasks) {
+    if (t.owner !== owner) continue
+    const l = byId.get(t.listId)
+    if (!l || !isCategory(l) || needed.includes(l.id)) continue
+    if ((t.completed || t.rrule) && !reminderIdOf(t)) continue
+    needed.push(l.id)
+  }
+  for (const id of needed) {
+    const category = byId.get(id)!
+    const own = device.find((d) => linked.get(d.id) === id && d.writable)
+    if (own) {
+      plan.targets[id] = own.id
+      continue
+    }
+    const named = device.find((d) => d.writable && !linked.has(d.id) && categoryKey(d.title) === categoryKey(category.name))
+    if (named) {
+      plan.targets[id] = named.id
+      plan.link.push({ listId: named.id, categoryId: id })
+      linked.set(named.id, id)
+      continue
+    }
+    plan.create.push({ categoryId: id, title: category.name, color: category.color })
+  }
+  for (const d of device) {
+    const id = linked.get(d.id)
+    const category = id ? byId.get(id) : undefined
+    if (!category) continue
+    const base = baseline[d.id]
+    const update: { title?: string; color?: string } = {}
+    const report: { name?: string; color?: string } = {}
+    if (d.title !== category.name) {
+      if (base && d.title !== base.title) report.name = d.title
+      else update.title = category.name
+    }
+    if (!sameColor(d.color, category.color)) {
+      if (base && !sameColor(d.color, base.color)) report.color = d.color
+      else update.color = category.color
+    }
+    if ((update.title || update.color) && d.editable !== false) plan.update.push({ listId: d.id, ...update })
+    if (report.name || report.color) plan.report.push({ listId: d.id, ...report })
+  }
+  return plan
 }
 
 /**
@@ -369,6 +491,8 @@ export interface ImportOutcome {
   tasks: { id: string; create: boolean; fields: Partial<Task> }[]
   deleteTasks: string[]
   lists: TaskList[]
+  /** Categories to write: made from a Reminders list of a name GOOYA had none of, or renamed or recoloured there. */
+  categories: TaskList[]
   deleteLists: string[]
   kept: number
   created: number
@@ -384,18 +508,42 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i
  * differs is written. `hash` makes the ids of lists and tasks (the server's shortHash).
  */
 export function applyReminderImport(person: string, mine: Task[], lists: TaskList[], payload: ImportPayload, now: number, hash: (s: string, n: number) => string): ImportOutcome {
-  const out: ImportOutcome = { tasks: [], deleteTasks: [], lists: [], deleteLists: [], kept: 0, created: 0, updated: 0, removed: 0, unlinked: 0 }
+  const out: ImportOutcome = { tasks: [], deleteTasks: [], lists: [], categories: [], deleteLists: [], kept: 0, created: 0, updated: 0, removed: 0, unlinked: 0 }
   const withLists = Array.isArray(payload.lists)
   const deviceLists = (payload.lists ?? []).filter((l) => l && typeof l.id === 'string' && l.id)
   const listIdOf = new Map(deviceLists.map((l) => [l.id, reminderListDocId(person, l.id, (s) => hash(s, 16))]))
+  // Each Reminders list stands for a category: the one it stood for, one of its name, or one made from it.
+  const categories = lists.filter((l) => isCategory(l))
+  const made: TaskList[] = []
+  const changed = new Map<string, TaskList>()
+  const known = () => [...categories, ...made]
+  const byName = (name: string) => known().find((c) => categoryKey(c.name) === categoryKey(name))
+  const exists = (id: string) => known().some((c) => c.id === id)
+  const lastOrder = Math.max(0, ...categories.map((c) => c.order))
+  const categoryFor = (l: DeviceList, prev: TaskList | undefined, name: string, color: string): string => {
+    if (typeof l.categoryId === 'string' && l.categoryId && exists(l.categoryId)) return l.categoryId
+    if (prev?.categoryId && exists(prev.categoryId)) return prev.categoryId
+    // Its category was deleted in GOOYA: it stands for one again only when one of its name is made.
+    if (prev?.categoryId === '') return byName(name)?.id ?? ''
+    const found = byName(name)
+    if (found) return found.id
+    const id = `c_${hash(`category:${categoryKey(name)}`, 16)}`
+    // Made from this name before and renamed since: still that one.
+    if (lists.some((x) => x.id === id && isCategory(x))) return id
+    made.push({ id, name, color, icon: 'list', order: lastOrder + 1 + made.length, createdBy: person as TaskList['createdBy'], createdAt: now, updatedAt: now })
+    return id
+  }
   if (withLists) {
     deviceLists.forEach((l, i) => {
       const id = listIdOf.get(l.id)!
       const prev = lists.find((x) => x.id === id)
+      const name = String(l.title || 'Reminders').slice(0, 100)
+      const color = HEX_COLOR.test(l.color) ? l.color.toLowerCase() : '#ff9500'
+      const categoryId = categoryFor(l, prev, name, color)
       const next: TaskList = {
         id,
-        name: String(l.title || 'Reminders').slice(0, 100),
-        color: HEX_COLOR.test(l.color) ? l.color.toLowerCase() : '#ff9500',
+        name,
+        color,
         icon: 'list',
         order: 100 + i,
         createdBy: (prev?.createdBy ?? person) as TaskList['createdBy'],
@@ -406,10 +554,23 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
         externalId: l.id,
         readOnly: l.writable === false,
         isDefault: !!l.isDefault,
+        categoryId,
       }
-      const same = prev && prev.name === next.name && prev.color === next.color && prev.order === next.order && prev.source === next.source && prev.owner === next.owner && prev.externalId === next.externalId && !!prev.readOnly === next.readOnly && !!prev.isDefault === next.isDefault
+      const same = prev && prev.name === next.name && prev.color === next.color && prev.order === next.order && prev.source === next.source && prev.owner === next.owner && prev.externalId === next.externalId && !!prev.readOnly === next.readOnly && !!prev.isDefault === next.isDefault && prev.categoryId === next.categoryId
       if (!same) out.lists.push(next)
+      // Renamed or recoloured in Reminders: so is the category (and so the other person's list for it, by their iPhone).
+      const category = categoryId ? categories.find((c) => c.id === categoryId) : undefined
+      if (category && (l.categoryName || l.categoryColor)) {
+        const was = changed.get(category.id) ?? category
+        changed.set(category.id, {
+          ...was,
+          ...(l.categoryName && l.categoryName.trim() ? { name: l.categoryName.trim().slice(0, 100) } : {}),
+          ...(l.categoryColor && HEX_COLOR.test(l.categoryColor) ? { color: l.categoryColor.toLowerCase() } : {}),
+          updatedAt: now,
+        })
+      }
     })
+    out.categories = [...made, ...changed.values()]
     // Lists gone from the phone (deleted there, or left out in GOOYA's settings) go from GOOYA with their reminders.
     for (const l of lists) if (isReminderList(l) && l.owner === person && ![...listIdOf.values()].includes(l.id)) out.deleteLists.push(l.id)
   }
@@ -461,7 +622,7 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
       out.tasks.push({
         id: `ar_${hash(`${person}:${r.id}`, 20)}`,
         create: true,
-        fields: { ...fields, createdBy: person as Task['createdBy'], rrule: null, exdates: [], overrides: {}, completedDates: [], earlyReminders: [], tags: [], flagged: false, createdAt: now, updatedAt: now },
+        fields: { ...fields, createdBy: person as Task['createdBy'], rrule: null, exdates: [], overrides: {}, completedDates: [], earlyReminders: [], tags: [], flagged: false, private: false, createdAt: now, updatedAt: now },
       })
       out.created++
       continue

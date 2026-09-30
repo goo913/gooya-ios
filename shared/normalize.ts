@@ -62,6 +62,7 @@ export function normalizeTask(id: string, d: Data): Task {
     priority: PRIORITY(d.priority),
     source: str(d.source, 'gooya') || 'gooya',
     externalRefs: arr<ExternalRef>(d.externalRefs),
+    ...(d.private === true ? { private: true } : {}),
     createdAt: num(d.createdAt),
     updatedAt: num(d.updatedAt),
   }
@@ -78,7 +79,14 @@ export function normalizeList(id: string, d: Data): TaskList {
     createdAt: num(d.createdAt),
     updatedAt: num(d.updatedAt),
     ...(d.source === 'apple-reminders'
-      ? { source: 'apple-reminders' as const, owner: isPersonKey(d.owner) ? d.owner : undefined, externalId: str(d.externalId), readOnly: !!d.readOnly, isDefault: !!d.isDefault }
+      ? {
+          source: 'apple-reminders' as const,
+          owner: isPersonKey(d.owner) ? d.owner : undefined,
+          externalId: str(d.externalId),
+          readOnly: !!d.readOnly,
+          isDefault: !!d.isDefault,
+          ...(typeof d.categoryId === 'string' ? { categoryId: d.categoryId } : {}),
+        }
       : {}),
   }
 }
@@ -113,6 +121,9 @@ export function normalizeSchedule(id: string, d: Data): Schedule | null {
     rrule: typeof d.rrule === 'string' && d.rrule ? d.rrule : null,
     exdates: arr<string>(d.exdates),
     overrides: obj(d.overrides),
+    categoryId: typeof d.categoryId === 'string' && d.categoryId ? d.categoryId : null,
+    color: typeof d.color === 'string' && d.color ? d.color : null,
+    ...(d.private === true ? { private: true } : {}),
     createdAt: num(d.createdAt),
     updatedAt: num(d.updatedAt),
   }
@@ -134,6 +145,7 @@ export function normalizeRoutine(id: string, d: Data): Routine {
     endDate: typeof d.endDate === 'string' && d.endDate ? d.endDate : null,
     exdates: arr<string>(d.exdates),
     overrides: obj(d.overrides),
+    ...(d.private === true ? { private: true } : {}),
     createdAt: num(d.createdAt),
     updatedAt: num(d.updatedAt),
   }

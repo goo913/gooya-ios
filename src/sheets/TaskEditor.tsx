@@ -1,22 +1,26 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { DEFAULT_LIST_ID, type DateKey, type HHmm, type Priority, type Task, type TaskOccurrence } from "@shared/model";
-import { PERSON_KEYS, type PersonKey } from "@shared/people";
+import { categoryOfList, defaultListFor, listForCategory } from "@shared/categories";
+import type { DateKey, HHmm, Priority, Task, TaskOccurrence } from "@shared/model";
+import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPresetKey } from "@shared/recurrence";
 import { isReminderList } from "@shared/reminders";
-import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey } from "@shared/time";
+import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey, zonedMs } from "@shared/time";
 import { router } from "expo-router";
 import { useMemo, useState, type ReactNode } from "react";
 import { ActionSheetIOS, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, SectionTitle, Switch, ValueRow, pickOption } from "@/components/Form";
+import { CategoryValue } from "@/components/ColorSwatches";
 import { ListBadge } from "@/components/ListIcons";
 import { Segmented } from "@/components/Segmented";
 import { DetailsBar } from "@/components/SheetHeader";
 import { EARLY_REMINDERS, earlyReminderLabel } from "@/lib/alerts";
 import { WEEKDAY_SHORT, formatHM, formatMediumDate } from "@/lib/format";
 import { dateFromHHmm, dateFromKey, hhmmFromDate, keyFromDate } from "@/lib/dates";
-import { useMe, usePerson } from "@/lib/people";
+import { listIndexOf, personInfo, useMe, usePerson } from "@/lib/people";
 import { applyTaskEdit, createTask, deleteTaskScope, type EditScope, type TaskFields } from "@/lib/taskOps";
 import { useToday, viewerTz } from "@/lib/useNow";
+import { clockOf, onClock, pickedOn, useEditZones } from "@/lib/zones";
+import { WhenRow, useWhenLayout } from "@/components/WhenRows";
 import { useData } from "@/store/data";
 import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
@@ -88,13 +92,22 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const initialEarly = task?.earlyReminders?.[0] ?? (task ? null : (meInfo.settings.defaultAlertTimed ?? null));
   const initialRule = parseRuleFields(task?.rrule ?? null);
 
-  const [owner, setOwner] = useState<PersonKey>(task?.owner ?? initialOwner ?? me);
+  const users = useData((s) => s.users);
+  const zoneOf = (p: PersonKey) => personInfo(p, users[p]).timezone;
+  const owner0 = task?.owner ?? initialOwner ?? me;
+  // A task's time is kept on its owner's clock (a repeating task on its own, which its repeats follow). A new task
+  // started at a time in a day view was started on this phone's clock.
+  const zone0 = task?.rrule ? task.timezone || zoneOf(owner0) : zoneOf(owner0);
+  const date0 = src?.dueDate ?? task?.dueDate ?? initialDate ?? today;
+  const shown0 = initialTime ? onClock(date0, initialTime, task ? task.timezone || zone0 : viewerTz, zone0) : { date: date0, time: null };
+  const [owner, setOwner] = useState<PersonKey>(owner0);
+  const [editZone, setEditZone] = useState(zone0);
   const [title, setTitle] = useState(src?.title ?? task?.title ?? "");
   const [notes, setNotes] = useState(src?.notes ?? task?.notes ?? "");
   const [dateOn, setDateOn] = useState(!!(src?.dueDate ?? task?.dueDate ?? initialDate) || (!task && !!initialDate));
-  const [dueDate, setDueDate] = useState<DateKey>(src?.dueDate ?? task?.dueDate ?? initialDate ?? today);
+  const [dueDate, setDueDate] = useState<DateKey>(shown0.date);
   const [timeOn, setTimeOn] = useState(!!initialTime);
-  const [dueTime, setDueTime] = useState<HHmm>(initialTime ?? "09:00");
+  const [dueTime, setDueTime] = useState<HHmm>(shown0.time ?? "09:00");
   const [showCal, setShowCal] = useState(false);
   const [showWheel, setShowWheel] = useState(false);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(task?.rrule ?? null));
@@ -106,28 +119,44 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const [customEarly, setCustomEarly] = useState(customInitially);
   const [customEarlyAmount, setCustomEarlyAmount] = useState(customInitially ? (initialEarly! % 1440 === 0 ? initialEarly! / 1440 : initialEarly! % 60 === 0 ? initialEarly! / 60 : initialEarly!) : 10);
   const [customEarlyUnit, setCustomEarlyUnit] = useState<(typeof UNITS)[number]>(customInitially ? (initialEarly! % 1440 === 0 ? "days" : initialEarly! % 60 === 0 ? "hours" : "minutes") : "minutes");
-  // A new task goes to the owner's default Reminders list when they sync Reminders: it becomes a reminder too.
-  const defaultListFor = (p: PersonKey) => lists.find((l) => isReminderList(l) && l.owner === p && l.isDefault && !l.readOnly)?.id ?? DEFAULT_LIST_ID;
-  const [listId, setListId] = useState(task?.listId ?? initialListId ?? defaultListFor(task?.owner ?? initialOwner ?? me));
+  const byId = listIndexOf(lists);
+  // A new task goes to the owner's default Reminders list when they sync Reminders (it becomes a reminder there too), or
+  // to the category it was started in (the owner's Reminders list for it, when they have one).
+  const [listId, setListId] = useState(() => {
+    if (task) return task.listId;
+    const owner0 = initialOwner ?? me;
+    const category0 = initialListId ? (categoryOfList(initialListId, byId)?.id ?? initialListId) : null;
+    return category0 ? listForCategory(category0, owner0, lists) : defaultListFor(owner0, lists);
+  });
   const [tags, setTags] = useState<string[]>(task?.tags ?? []);
   const [flagged, setFlagged] = useState(!!task?.flagged);
   const [priority, setPriority] = useState<Priority>(task?.priority ?? 0);
+  const [shared, setShared] = useState(!task?.private);
   const [busy, setBusy] = useState(false);
+  const otherName = usePerson(owner === me ? otherPerson(me) : owner).name;
   const setListPicker = usePickers((s) => s.setList);
   const setTagPicker = usePickers((s) => s.setTags);
 
   const list = lists.find((l) => l.id === listId) ?? lists[0];
-  const inReminders = isReminderList(list);
-  const readOnly = !!(inReminders && list?.readOnly);
-  // A Reminders list is one person's: the task is theirs. Switching the person takes the task to their lists.
-  const pickList = (id: string) => {
-    setListId(id);
-    const l = lists.find((x) => x.id === id);
-    if (isReminderList(l) && l?.owner) setOwner(l.owner);
+  const category = categoryOfList(listId, byId);
+  // A task of someone who syncs Apple Reminders is one of their reminders, whichever category it is in.
+  const inReminders = isReminderList(list) || lists.some((l) => isReminderList(l) && l.owner === owner);
+  const readOnly = !!(isReminderList(list) && list?.readOnly);
+  // Categories are both people's: a task keeps its category when it changes hands (in the new owner's Reminders list).
+  const pickCategory = (id: string | null) => {
+    if (id) setListId(listForCategory(id, owner, lists));
   };
   const pickOwner = (p: PersonKey) => {
     setOwner(p);
-    if (inReminders && list?.owner !== p) setListId(defaultListFor(p));
+    setListId(category ? listForCategory(category.id, p, lists) : defaultListFor(p, lists));
+    // The same moment on the new owner's clock.
+    const zone = task?.rrule ? editZone : zoneOf(p);
+    if (zone !== editZone && dateOn && timeOn) {
+      const moved = onClock(dueDate, dueTime, editZone, zone);
+      setDueDate(moved.date);
+      setDueTime(moved.time);
+    }
+    setEditZone(zone);
   };
   const rrule = useMemo(() => {
     if (repeatKey === "custom") return buildRuleBody({ freq: customFreq, interval: customInterval, weekdays: customFreq === "weekly" ? customDays : [] });
@@ -136,20 +165,24 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const earlyMinutes = customEarly ? Math.max(1, customEarlyAmount) * (customEarlyUnit === "days" ? 1440 : customEarlyUnit === "hours" ? 60 : 1) : early;
   const valid = title.trim().length > 0 && (repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !readOnly;
 
+  // Unchanged, a task keeps the day, time and zone it had (shown on its owner's clock, it may read differently).
+  const unchanged = !!task && dateOn && timeOn && dueDate === shown0.date && dueTime === shown0.time;
   const fields = (): TaskFields => ({
     owner,
     listId,
     title: title.trim(),
     notes: notes.trim(),
-    dueDate: dateOn ? dueDate : null,
-    dueTime: dateOn && timeOn ? dueTime : null,
-    timezone: dateOn && timeOn ? (task && task.dueTime === dueTime && task.dueDate === dueDate ? task.timezone : viewerTz) : task?.timezone || viewerTz,
+    dueDate: dateOn ? (unchanged ? task!.dueDate : dueDate) : null,
+    dueTime: dateOn && timeOn ? (unchanged ? task!.dueTime : dueTime) : null,
+    timezone: dateOn && timeOn ? (unchanged ? task!.timezone : editZone) : task?.timezone || editZone,
     // Repeating is set in the Reminders app for a reminder; GOOYA does not send a repeat there.
     rrule: dateOn && !inReminders ? rrule : null,
     earlyReminders: dateOn && earlyMinutes != null && earlyMinutes > 0 ? [earlyMinutes] : [],
     tags,
     flagged,
     priority,
+    // Only one's own task can be kept to oneself.
+    private: owner === me && !shared,
   });
 
   const save = async (scope: EditScope = "future", asked = false) => {
@@ -197,6 +230,27 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const earlyLabels = [...EARLY_REMINDERS.map((o) => o.label), "Custom"];
   const earlyLabel = earlyMinutes == null ? "None" : earlyReminderLabel(earlyMinutes);
   const dueTimeParts = parseHHmm(dueTime);
+  // The due time on the other clock too (this phone's, when it is not the owner's): either one can be changed.
+  const dueAt = zonedMs(dueDate, dueTime, editZone);
+  const zones = useEditZones(owner, dueAt, editZone);
+  const dual = dateOn && timeOn && zones.length > 1;
+  const when = useWhenLayout();
+  const setDueAt = (ms: number) => {
+    const c = clockOf(ms, editZone);
+    setDueDate(c.date);
+    setDueTime(c.time);
+  };
+  const otherClock = (what: "date" | "time") => (
+    <DateTimePicker
+      value={new Date(dueAt)}
+      mode={what}
+      display="compact"
+      minuteInterval={5}
+      timeZoneName={zones[1]?.zone}
+      themeVariant={dark ? "dark" : "light"}
+      onChange={(_, d) => d && zones[1] && setDueAt(pickedOn(dueAt, d.getTime(), zones[1].zone, what))}
+    />
+  );
   const people = PERSON_KEYS.map((k) => ({ value: k, label: k === "gooya" ? "구야" : "은비" }));
 
   return (
@@ -225,7 +279,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
         {readOnly ? <Text style={[styles.readOnly, { color: colors.label2 }]}>{list?.name} is read-only in Reminders (a subscribed or shared list), so this can be changed only where it comes from.</Text> : null}
 
         <SectionTitle>Date & Time</SectionTitle>
-        <Group>
+        <Group header={dual ? zones[0].label : undefined}>
           <Row icon="calendar" label="Date" detail={dateOn ? describeDate(dueDate, today) : undefined} onPress={dateOn ? () => setShowCal((v) => !v) : undefined}>
             <Switch
               label="Date"
@@ -271,6 +325,11 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
             </View>
           ) : null}
         </Group>
+        {dual ? (
+          <Group header={zones[1].label} footer="The same moment on both clocks: change either one and the other follows.">
+            <WhenRow layout={when} label="Due" date={otherClock("date")} time={otherClock("time")} />
+          </Group>
+        ) : null}
 
         <Group
           footer={
@@ -318,19 +377,24 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
         <SectionTitle>Organization</SectionTitle>
         <Group>
           <Row
+            accessibilityLabel="Category"
             label={
               <View style={styles.inline}>
-                <ListBadge icon={list?.icon ?? "list"} color={list?.color ?? "#0091ff"} />
-                <Text style={[styles.rowLabel, { color: colors.label }]}>List</Text>
+                <ListBadge icon={category?.icon ?? list?.icon ?? "list"} color={category?.color ?? list?.color ?? "#0091ff"} />
+                <Text style={[styles.rowLabel, { color: colors.label }]}>Category</Text>
               </View>
             }
-            chevron
-            onPress={() => {
-              setListPicker({ value: listId, onPick: pickList });
-              router.push("/sheet/list");
-            }}
+            chevron={!readOnly}
+            onPress={
+              readOnly
+                ? undefined
+                : () => {
+                    setListPicker({ value: category?.id ?? null, onPick: pickCategory });
+                    router.push("/sheet/list");
+                  }
+            }
           >
-            <Text style={[styles.value, { color: colors.label2 }]}>{list?.name ?? "Tasks"}</Text>
+            <CategoryValue name={category?.name ?? list?.name ?? "Tasks"} color={null} />
           </Row>
           <Row
             icon="number"
@@ -350,6 +414,14 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
           </Row>
           <ValueRow icon="exclamationmark" label="Priority" value={PRIORITIES.find((p) => p.value === priority)?.label ?? "None"} options={PRIORITIES.map((p) => p.label)} title="Priority" onPick={(_, i) => setPriority(PRIORITIES[i].value)} />
         </Group>
+
+        {owner === me ? (
+          <Group footer={shared ? `${otherName} sees it too.` : `Only you see it: not on ${otherName}’s calendar, lists or widget.`}>
+            <Row label={`Share with ${otherName}`}>
+              <Switch label={`Share with ${otherName}`} value={shared} onChange={setShared} />
+            </Row>
+          </Group>
+        ) : null}
 
         {editing && !readOnly ? <DestructiveButton onPress={askDelete}>{task?.source === "apple-reminders" || inReminders ? "Delete Reminder" : "Delete Task"}</DestructiveButton> : null}
       </ScrollView>

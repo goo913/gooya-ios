@@ -7,16 +7,20 @@ import { GlassPill } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
 import { ListBadge } from "@/components/ListIcons";
 import { SMART, useListOccurrences } from "@/lib/listOccurrences";
-import { useFilteredPeople, useMe, usePerson } from "@/lib/people";
+import { listIndexOf, useFilteredPeople, useMe, usePerson } from "@/lib/people";
+import { categoriesOf, categoryOfList, isCategory } from "@shared/categories";
 import type { TaskList } from "@shared/model";
 import { otherPerson } from "@shared/people";
-import { isReminderList } from "@shared/reminders";
 import { useToday } from "@/lib/useNow";
 import { useData } from "@/store/data";
+import { usePickers } from "@/store/pickers";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
 
-/** Reminders-style lists: the smart lists, GOOYA's shared lists, then each person's Apple Reminders lists. */
+/**
+ * Reminders-style lists: the smart lists, then the categories both people share (a category counts its tasks in
+ * everyone's Reminders lists for it), then any Reminders list that is in no category.
+ */
 export default function ListsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -31,8 +35,12 @@ export default function ListsScreen() {
   const openEditor = useSheets((s) => s.openEditor);
   const counts = useMemo(() => {
     const open = occ.filter((o) => !o.completed);
+    const byId = listIndexOf(lists);
     const byList = new Map<string, number>();
-    for (const o of open) byList.set(o.task.listId, (byList.get(o.task.listId) ?? 0) + 1);
+    for (const o of open) {
+      const key = categoryOfList(o.task.listId, byId)?.id ?? o.task.listId;
+      byList.set(key, (byList.get(key) ?? 0) + 1);
+    }
     return {
       today: open.filter((o) => o.dueDate && o.dueDate <= today).length,
       scheduled: open.filter((o) => !!o.dueDate).length,
@@ -41,7 +49,7 @@ export default function ListsScreen() {
       completed: occ.filter((o) => o.completed).length,
       byList,
     };
-  }, [occ, today]);
+  }, [occ, lists, today]);
   const newTask = () => {
     openEditor({ kind: "task", initialOwner: me });
     router.push("/sheet/edit");
@@ -62,19 +70,26 @@ export default function ListsScreen() {
             </Pressable>
           ))}
         </View>
-        <Text style={[styles.h2, { color: colors.label }]}>My Lists</Text>
-        <ListCard lists={lists.filter((l) => !isReminderList(l))} counts={counts.byList} />
-        <Pressable onPress={() => router.push("/sheet/listEdit")} style={styles.add}>
+        <Text style={[styles.h2, { color: colors.label }]}>Categories</Text>
+        <ListCard lists={categoriesOf(lists)} counts={counts.byList} />
+        <Pressable
+          onPress={() => {
+            usePickers.getState().setList(null);
+            router.push("/sheet/listEdit");
+          }}
+          style={styles.add}
+        >
           <Icon name="plus" size={16} color={colors.blue} weight="semibold" />
-          <Text style={[styles.addText, { color: colors.blue }]}>Add List</Text>
+          <Text style={[styles.addText, { color: colors.blue }]}>Add Category</Text>
         </Pressable>
         {[mine, other].map((p) => {
-          const theirs = lists.filter((l) => isReminderList(l) && l.owner === p.key);
-          if (!theirs.length) return null;
+          // A Reminders list in no category (its category was deleted): its tasks are still somewhere to find.
+          const loose = lists.filter((l) => !isCategory(l) && l.owner === p.key && !categoryOfList(l.id, listIndexOf(lists)));
+          if (!loose.length) return null;
           return (
             <View key={p.key}>
-              <Text style={[styles.h2, { color: colors.label }]}>{p.key === me ? "My Reminders" : `${p.name}’s Reminders`}</Text>
-              <ListCard lists={theirs} counts={counts.byList} />
+              <Text style={[styles.h2, { color: colors.label }]}>{p.key === me ? "My Other Reminders Lists" : `${p.name}’s Other Reminders Lists`}</Text>
+              <ListCard lists={loose} counts={counts.byList} />
             </View>
           );
         })}

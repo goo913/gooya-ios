@@ -51,6 +51,8 @@ export interface Task {
   source: string
   /** Mapping to external items (Google/Apple export, Reminders import). */
   externalRefs: ExternalRef[]
+  /** Only its owner sees it (Share turned off). Shared is the default; older documents have no field. */
+  private?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -64,6 +66,12 @@ export interface ExternalRef {
   updatedAt?: number
 }
 
+/**
+ * A list of tasks. GOOYA's own lists (no `source`) are the categories both people share: a task is in one, a schedule
+ * may be, and the category's colour is theirs (a task's ring, a schedule's fill). A person's Apple Reminders lists are
+ * lists too (source 'apple-reminders', one person's): each stands for a category (`categoryId`) on that iPhone, so a
+ * task in a category is a reminder in the list of that name, in the category's colour, in Reminders and Apple Calendar.
+ */
 export interface TaskList {
   id: string
   name: string
@@ -88,6 +96,11 @@ export interface TaskList {
   readOnly?: boolean
   /** The list new reminders go to on that iPhone. */
   isDefault?: boolean
+  /**
+   * A Reminders list's category: the GOOYA list it is on this person's iPhone. '' when it stands for none (its category
+   * was deleted in GOOYA); not set until the server first links it (by name, or a category made from the list).
+   */
+  categoryId?: string
 }
 
 export const DEFAULT_LIST_ID = 'tasks'
@@ -116,6 +129,12 @@ export interface Schedule {
   rrule: string | null
   exdates: DateKey[]
   overrides: Record<DateKey, EventOverride>
+  /** Its category (a GOOYA list), or null. */
+  categoryId?: string | null
+  /** Its own colour, over the category's; null → the category's colour, or the owner's without a category. */
+  color?: string | null
+  /** Only its owner sees it (Share turned off). */
+  private?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -149,6 +168,8 @@ export interface Routine {
   endDate: DateKey | null
   exdates: DateKey[]
   overrides: Record<DateKey, RoutineOverride>
+  /** Only its owner sees it (Share turned off). */
+  private?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -156,6 +177,8 @@ export interface Routine {
 export interface UserSettings {
   /** Show completed tasks everywhere (month, timeline, lists, search, widget). */
   showCompleted: boolean
+  /** Show schedules and calendar events that have ended (month, timeline, list, widget). */
+  showPastSchedules: boolean
   /** Routine band fill strength 0–1 (0.5 dark / 0.35 light by default). Stored as scheduleIntensity before routines had their name. */
   routineIntensity: number | null
   /** Hide the same external event arriving from two calendars. */
@@ -223,6 +246,7 @@ export interface RoutineOccurrence {
 
 export const DEFAULT_SETTINGS: UserSettings = {
   showCompleted: true,
+  showPastSchedules: true,
   routineIntensity: null,
   avoidDuplicates: true,
   secondGutter: false,

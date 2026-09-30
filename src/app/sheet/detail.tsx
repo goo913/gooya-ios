@@ -1,3 +1,4 @@
+import { categoryOfList, isCategory } from "@shared/categories";
 import type { AttendeeStatus, DateKey, Task, TaskOccurrence } from "@shared/model";
 import { findConference } from "@shared/conference";
 import { describeRule, expandEvent, expandRoutine, expandTask } from "@shared/recurrence";
@@ -18,7 +19,7 @@ import { deleteRoutine } from "@/lib/db";
 import { functions } from "@/lib/firebase";
 import { isMock } from "@/lib/mock";
 import { MONTH_NAMES, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
-import { colorHex, useMe, usePerson, usePersonColor, useTaskColor } from "@/lib/people";
+import { colorHex, listIndexOf, scheduleHex, useMe, usePerson, useTaskColor } from "@/lib/people";
 import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
 import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
@@ -191,6 +192,7 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
   const dark = useIsDark();
   const task = useData((s) => s.tasks.find((t) => t.id === taskId));
   const list = useData((s) => s.lists.find((l) => l.id === task?.listId));
+  const category = useData((s) => (task ? categoryOfList(task.listId, listIndexOf(s.lists)) : null));
   const owner = usePerson(task?.owner ?? "gooya");
   const occ = useTaskOccurrence(task, dateKey);
   const openEditor = useSheets((s) => s.openEditor);
@@ -247,7 +249,13 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
           <Text style={[styles.factValue, { color: colors.label2 }]}>{owner.name}</Text>
         </View>
       </Fact>
-      <Fact label="List">{list?.name ?? "Tasks"}</Fact>
+      <Fact label="Category">
+        <View style={styles.inline}>
+          <View style={[styles.dot, { backgroundColor: ring }]} />
+          <Text style={[styles.factValue, { color: colors.label2 }]}>{category?.name ?? list?.name ?? "Tasks"}</Text>
+        </View>
+      </Fact>
+      {task.private ? <Fact label="Sharing">Only you</Fact> : null}
       {fromReminders ? <Fact label="From">{`${reminderOwnerName(task) ?? owner.name}’s Apple Reminders${task.tags?.[0] ? ` · ${task.externalRefs?.[0]?.calendarId || task.tags[0]}` : ""}`}</Fact> : null}
       {task.earlyReminders?.length ? <Fact label="Early Reminder">{earlyReminderLabel(task.earlyReminders[0])}</Fact> : null}
       {task.tags?.length ? <Fact label="Tags">{task.tags.map((t) => `#${t}`).join("  ")}</Fact> : null}
@@ -337,6 +345,7 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
           <Text style={[styles.factValue, { color: colors.label2 }]}>{owner.name}</Text>
         </View>
       </Fact>
+      {routine.private ? <Fact label="Sharing">Only you</Fact> : null}
       <MiniTimeline startMin={startMin} endMin={endMin}>
         {(hourH, firstHour) => (
           <View style={[styles.miniEvent, { top: ((startMin - firstHour * 60) / 60) * hourH, height: Math.max(18, ((endMin - startMin) / 60) * hourH), backgroundColor: mix(color, colors.bg3, dark ? 0.35 : 0.22) }]}>
@@ -362,8 +371,11 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   // An imported event, or one of GOOYA's own schedules (drawn as an event in its owner's colour).
   const imported = useData((s) => s.events.find((e) => e.id === eventId));
   const schedule = useData((s) => s.schedules.find((x) => x.id === eventId));
-  const scheduleColor = usePersonColor(schedule?.owner ?? "gooya");
-  const event = useMemo(() => imported ?? (schedule ? scheduleAsEvent(schedule, scheduleColor) : undefined), [imported, schedule, scheduleColor]);
+  const category = useData((s) => (schedule?.categoryId ? s.lists.find((l) => l.id === schedule.categoryId && isCategory(l)) : undefined));
+  const users = useData((s) => s.users);
+  const lists = useData((s) => s.lists);
+  const dark = useIsDark();
+  const event = useMemo(() => imported ?? (schedule ? scheduleAsEvent(schedule, scheduleHex(schedule, users, lists, dark)) : undefined), [imported, schedule, users, lists, dark]);
   const calendarConfig = useData((s) => s.accounts.find((a) => a.id === event?.accountId)?.calendars?.[event?.calendarId ?? ""]);
   const me = useMe();
   const openEditor = useSheets((s) => s.openEditor);
@@ -446,6 +458,25 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         <OptionRow icon="person" label="Person">
           {owner.name}
         </OptionRow>
+        {category ? (
+          <>
+            <OptionLine />
+            <OptionRow icon="tag" label="Category">
+              <View style={[styles.dot, { backgroundColor: category.color }]} />
+              <Text numberOfLines={1} style={[styles.optionText, { color: colors.label2 }]}>
+                {category.name}
+              </Text>
+            </OptionRow>
+          </>
+        ) : null}
+        {schedule?.private ? (
+          <>
+            <OptionLine />
+            <OptionRow icon="lock" label="Sharing">
+              Only you
+            </OptionRow>
+          </>
+        ) : null}
         {event.showAs ? (
           <>
             <OptionLine />

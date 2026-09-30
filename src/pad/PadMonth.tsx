@@ -1,11 +1,13 @@
 import type { DateKey, EventOccurrence, TaskOccurrence } from "@shared/model";
+import { layoutRow } from "@shared/monthRows";
 import { DAY_MS, addDaysKey, fieldsInZone, makeKey, parseKey, startOfDayMs, weekdayOfKey } from "@shared/time";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { TaskRing } from "@/components/Chips";
+import { DragPiece, MonthDragContext, MonthDragLayer, useMonthDrag, type MonthDragHost } from "@/components/MonthDrag";
 import { mix, readableTint } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_SHORT } from "@/lib/format";
-import { useEventsByDay, useTasksByDay } from "@/lib/occurrences";
+import { daysOf, useEventsByDay, useTasksByDay } from "@/lib/occurrences";
 import { useFilteredPeople, useTaskColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { usePad } from "@/store/pad";
@@ -14,7 +16,8 @@ import { useColors, useIsDark, type Colors } from "@/theme";
 // Apple Calendar's iPad month (iPadOS 27), measured at 820 points wide: a grid of the months' weeks, each month starting
 // on its own row, days' numbers at the top right (18 points; the 1st says "Oct 1"), up to three lines of what is on
 // the day (14 points: a colour bar or a task's ring, the title, the time at the right in gray), all-day items as tinted
-// capsules, "+2 more" when there are more. The weekend columns are shaded; hairlines between days and weeks.
+// capsules, something on several days as one capsule across them, "+2 more" when there are more. The weekend columns
+// are shaded; hairlines between days and weeks.
 
 const FIRST_YEAR = 2015;
 const LAST_YEAR = 2039;
@@ -148,12 +151,54 @@ export function PadMonth({ width, onMonth, onPickDay, onHoldDay, onOpen }: { wid
 
   const renderItem = useCallback(
     ({ item, index }: { item: Block; index: number }) => (
-      <MonthRows block={item} titled={index === titleIdx} colW={colW} rowH={rowH} today={today} byDay={byDay} eventsByDay={eventsByDay} colors={colors} shown={people.length} onPick={onPickDay} onHold={onHoldDay} onOpen={onOpen} />
+      <MonthRows block={item} titled={index === titleIdx} colW={colW} rowH={rowH} today={today} byDay={byDay} eventsByDay={eventsByDay} colors={colors} onPick={onPickDay} onHold={onHoldDay} onOpen={onOpen} />
     ),
-    [titleIdx, colW, rowH, today, byDay, eventsByDay, colors, people.length, onPickDay, onHoldDay, onOpen],
+    [titleIdx, colW, rowH, today, byDay, eventsByDay, colors, onPickDay, onHoldDay, onOpen],
   );
 
+  // Dragging a task or schedule to another day: the days' places in the window, and scrolling near the edges.
+  const box = useRef<View>(null);
+  const frame = useRef({ top: 0, height: 0 });
+  const geometry = useRef({ colW, rowH, offsets });
+  useLayoutEffect(() => {
+    geometry.current = { colW, rowH, offsets };
+  }, [colW, rowH, offsets]);
+  const dragHost = useMemo<MonthDragHost>(
+    () => ({
+      dayAt: (x, y) => {
+        const g = geometry.current;
+        const contentY = y - frame.current.top + scrollY.current;
+        let idx = 0;
+        while (idx + 1 < BLOCKS.length && g.offsets[idx + 1] <= contentY) idx++;
+        const b = BLOCKS[idx];
+        const col = Math.max(0, Math.min(6, Math.floor(x / g.colW)));
+        const i = Math.floor((contentY - g.offsets[idx]) / g.rowH) * 7 + col - b.startCol;
+        return contentY >= 0 && i >= 0 && i < b.days ? makeKey(b.y, b.m, i + 1) : null;
+      },
+      cellRect: (day) => {
+        const g = geometry.current;
+        const idx = blockOf(day);
+        const pos = Number(day.slice(8, 10)) - 1 + BLOCKS[idx].startCol;
+        return { x: (pos % 7) * g.colW, y: frame.current.top + g.offsets[idx] + Math.floor(pos / 7) * g.rowH - scrollY.current, w: g.colW, h: g.rowH };
+      },
+      scrollBy: (dy) => {
+        const g = geometry.current;
+        const last = BLOCKS.length - 1;
+        const next = Math.max(0, Math.min(g.offsets[last] + BLOCKS[last].rows * g.rowH - frame.current.height, scrollY.current + dy));
+        if (Math.abs(next - scrollY.current) < 0.5) return false;
+        scrollY.current = next;
+        listRef.current?.scrollToOffset({ offset: next, animated: false });
+        return true;
+      },
+      bounds: () => ({ top: frame.current.top, bottom: frame.current.top + frame.current.height }),
+    }),
+    [],
+  );
+  const dragging = useMonthDrag((s) => !!s.item);
+
   return (
+    <MonthDragContext.Provider value={dragHost}>
+    <View ref={box} style={styles.fill} onLayout={() => box.current?.measureInWindow((_, top, __, height) => (frame.current = { top, height }))}>
     <FlatList
       key={rowH}
       ref={listRef}
@@ -165,12 +210,29 @@ export function PadMonth({ width, onMonth, onPickDay, onHoldDay, onOpen }: { wid
       onLayout={(e) => setViewportH(e.nativeEvent.layout.height)}
       onScroll={onScroll}
       scrollEventThrottle={32}
-      windowSize={5}
+      windowSize={dragging ? 15 : 5}
       initialNumToRender={3}
       maxToRenderPerBatch={2}
       showsVerticalScrollIndicator={false}
       style={styles.fill}
     />
+    <MonthDragLayer width={colW - 10} renderGhost={(o) => <GhostLine occ={o} colors={colors} />} />
+    </View>
+    </MonthDragContext.Provider>
+  );
+}
+
+/** What is dragged, as a capsule of its colour with its title (Apple lifts an event like this on the iPad). */
+function GhostLine({ occ, colors }: { occ: TaskOccurrence | EventOccurrence; colors: Colors }) {
+  const dark = useIsDark();
+  const ring = useTaskColor(occ.kind === "task" ? occ.task : { owner: occ.event.owner, listId: "" });
+  const c = occ.kind === "event" ? occ.event.color || colors.blue : ring;
+  return (
+    <View style={[styles.capsule, { marginHorizontal: 0, height: 22, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}>
+      <Text allowFontScaling={false} numberOfLines={1} style={[styles.capsuleText, { color: readableTint(c, dark) }]}>
+        {occ.title}
+      </Text>
+    </View>
   );
 }
 
@@ -184,42 +246,70 @@ interface MonthRowsProps {
   byDay: Map<DateKey, TaskOccurrence[]>;
   eventsByDay: Map<DateKey, EventOccurrence[]>;
   colors: Colors;
-  shown: number;
   onPick: (key: DateKey) => void;
   onHold: (key: DateKey) => void;
   onOpen: (o: TaskOccurrence | EventOccurrence) => void;
 }
 
-const MonthRows = memo(function MonthRows({ block, titled, colW, rowH, today, byDay, eventsByDay, colors, shown, onPick, onHold, onOpen }: MonthRowsProps) {
+type Item = TaskOccurrence | EventOccurrence;
+
+/** A day's order: all-day first (events before tasks), then by time. */
+const byTime = (a: Item, b: Item) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.allDay && a.kind !== b.kind ? (a.kind === "event" ? -1 : 1) : a.start - b.start);
+
+const MonthRows = memo(function MonthRows({ block, titled, colW, rowH, today, byDay, eventsByDay, colors, onPick, onHold, onOpen }: MonthRowsProps) {
   const dark = useIsDark();
   const { y, m, startCol, days, rows } = block;
   const shade = dark ? "#151515" : "#f6f6f8";
-  const cells = [];
+  const lines = Math.max(1, Math.floor((rowH - LINES_TOP - 4) / LINE));
+  const cells: ReactElement[] = [];
+  const items: ReactElement[] = [];
   for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < 7; c++) {
+    const rowDays = Array.from({ length: 7 }, (_, c) => {
       const i = r * 7 + c - startCol;
-      if (i < 0 || i >= days) continue;
-      const key = makeKey(y, m, i + 1);
+      return i >= 0 && i < days ? makeKey(y, m, i + 1) : null;
+    });
+    const spans = new Map<string, { item: Item; key: string; days: DateKey[] }>();
+    const singles = new Map<DateKey, { item: Item; key: string }[]>();
+    rowDays.forEach((key, c) => {
+      if (!key) return;
+      const list: Item[] = [];
+      for (const o of eventsByDay.get(key) ?? []) {
+        const covered = daysOf(o);
+        if (covered.length < 2) list.push(o);
+        else if (!spans.has(o.key)) spans.set(o.key, { item: o, key: o.key, days: covered });
+      }
+      list.push(...(byDay.get(key) ?? []));
+      singles.set(key, list.sort(byTime).map((o) => ({ item: o, key: o.key })));
+      const count = (eventsByDay.get(key)?.length ?? 0) + (byDay.get(key)?.length ?? 0);
       cells.push(
-        <DayCell
-          key={key}
-          dateKey={key}
-          day={i + 1}
-          month={titled ? 0 : m}
-          left={c * colW}
-          top={r * rowH}
-          width={colW}
-          height={rowH}
-          weekend={c === 0 || c === 6}
-          isToday={key === today}
-          tasks={byDay.get(key)}
-          events={eventsByDay.get(key)}
-          colors={colors}
-          shown={shown}
-          onPick={onPick}
-          onHold={onHold}
-          onOpen={onOpen}
-        />,
+        <DayCell key={key} dateKey={key} day={Number(key.slice(8))} month={titled ? 0 : m} left={c * colW} top={r * rowH} width={colW} height={rowH} weekend={c === 0 || c === 6} isToday={key === today} count={count} colors={colors} onPick={onPick} onHold={onHold} />,
+      );
+    });
+    const { pieces, more } = layoutRow({ days: rowDays, spans: [...spans.values()], singles, lines });
+    const top = r * rowH + LINES_TOP;
+    for (const p of pieces) {
+      const o = p.item;
+      if (p.kind === "bar" && o.kind === "event") {
+        const left = p.from * colW + (p.openStart ? 0 : 5);
+        const right = (p.to + 1) * colW - (p.openEnd ? 0 : 5);
+        items.push(
+          <DragPiece key={`${r}:${p.key}`} item={o} onTap={() => onOpen(o)} style={[styles.piece, { top: top + p.line * LINE + 1, left, width: right - left }]}>
+            <SpanCapsule occ={o} openStart={p.openStart} openEnd={p.openEnd} />
+          </DragPiece>,
+        );
+      } else {
+        items.push(
+          <DragPiece key={`${r}:${p.key}`} item={o} onTap={() => onOpen(o)} style={[styles.piece, { top: top + p.line * LINE, left: p.from * colW, width: colW }]}>
+            <ItemLine occ={o} colors={colors} />
+          </DragPiece>,
+        );
+      }
+    }
+    for (const [c, n] of more) {
+      items.push(
+        <Text key={`${r}:more${c}`} pointerEvents="none" allowFontScaling={false} numberOfLines={1} style={[styles.more, styles.piece, { top: top + (lines - 1) * LINE, left: c * colW, width: colW, color: colors.label2 }]}>
+          +{n} more
+        </Text>,
       );
     }
   }
@@ -235,9 +325,31 @@ const MonthRows = memo(function MonthRows({ block, titled, colW, rowH, today, by
         <View key={`h${r}`} pointerEvents="none" style={[styles.hline, { top: r * rowH, backgroundColor: colors.separator }]} />
       ))}
       {cells}
+      {items}
     </View>
   );
 });
+
+/** Something on several days: one tinted capsule across them, square where it goes on into another week. */
+function SpanCapsule({ occ, openStart, openEnd }: { occ: EventOccurrence; openStart: boolean; openEnd: boolean }) {
+  const dark = useIsDark();
+  const colors = useColors();
+  const c = occ.event.color || colors.blue;
+  return (
+    <View
+      style={[
+        styles.capsule,
+        { marginVertical: 0, marginHorizontal: 0, backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) },
+        openStart && { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 },
+        openEnd && { borderTopRightRadius: 0, borderBottomRightRadius: 0 },
+      ]}
+    >
+      <Text allowFontScaling={false} numberOfLines={1} style={[styles.capsuleText, { color: readableTint(c, dark) }]}>
+        {occ.title}
+      </Text>
+    </View>
+  );
+}
 
 interface DayCellProps {
   dateKey: DateKey;
@@ -250,29 +362,19 @@ interface DayCellProps {
   height: number;
   weekend: boolean;
   isToday: boolean;
-  tasks?: TaskOccurrence[];
-  events?: EventOccurrence[];
+  /** How many things are on the day (for VoiceOver; they are drawn over the days, week by week). */
+  count: number;
   colors: Colors;
-  shown: number;
   onPick: (key: DateKey) => void;
   onHold: (key: DateKey) => void;
-  onOpen: (o: TaskOccurrence | EventOccurrence) => void;
 }
 
-const DayCell = memo(function DayCell({ dateKey, day, month, left, top, width, height, weekend, isToday, tasks, events, colors, shown, onPick, onHold, onOpen }: DayCellProps) {
-  // All-day first, then by time (tasks among events, as Apple lists reminders).
-  const items = useMemo(() => {
-    const list: (TaskOccurrence | EventOccurrence)[] = [...(events ?? []), ...(tasks ?? [])];
-    return list.sort((a, b) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.allDay && a.kind !== b.kind ? (a.kind === "event" ? -1 : 1) : a.start - b.start));
-  }, [tasks, events]);
-  const slots = Math.max(1, Math.floor((height - LINES_TOP - 4) / LINE));
-  const more = items.length > slots ? items.length - (slots - 1) : 0;
-  const visible = more ? items.slice(0, slots - 1) : items;
+const DayCell = memo(function DayCell({ dateKey, day, month, left, top, width, height, weekend, isToday, count, colors, onPick, onHold }: DayCellProps) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={dateKey}
-      accessibilityValue={{ text: items.length ? `${items.length} ${items.length === 1 ? "item" : "items"}` : "" }}
+      accessibilityValue={{ text: count ? `${count} ${count === 1 ? "item" : "items"}` : "" }}
       onPress={() => onPick(dateKey)}
       onLongPress={() => onHold(dateKey)}
       delayLongPress={450}
@@ -283,37 +385,28 @@ const DayCell = memo(function DayCell({ dateKey, day, month, left, top, width, h
           {day === 1 && month && !isToday ? `${MONTH_SHORT[month - 1]} 1` : day}
         </Text>
       </View>
-      <View style={styles.lines}>
-        {visible.map((o) => (
-          <ItemLine key={o.key} occ={o} colors={colors} shown={shown} onOpen={onOpen} />
-        ))}
-        {more ? (
-          <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2 }]}>
-            +{more} more
-          </Text>
-        ) : null}
-      </View>
     </Pressable>
   );
 });
 
-function ItemLine({ occ, colors, shown, onOpen }: { occ: TaskOccurrence | EventOccurrence; colors: Colors; shown: number; onOpen: (o: TaskOccurrence | EventOccurrence) => void }) {
+/** One line of a day: an all-day event's capsule, or a colour bar or task ring with the title and time (taps and drags are its DragPiece's). */
+function ItemLine({ occ, colors }: { occ: TaskOccurrence | EventOccurrence; colors: Colors }) {
   const dark = useIsDark();
-  const ring = useTaskColor(occ.kind === "task" ? occ.task : { owner: occ.event.owner, listId: "" }, shown);
+  const ring = useTaskColor(occ.kind === "task" ? occ.task : { owner: occ.event.owner, listId: "" });
   if (occ.kind === "event" && occ.allDay) {
     const c = occ.event.color || colors.blue;
     return (
-      <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => onOpen(occ)} style={[styles.capsule, { backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}>
+      <View style={[styles.capsule, { backgroundColor: dark ? mix(c, "#000000", 0.3) : mix(c, "#ffffff", 0.2) }]}>
         <Text allowFontScaling={false} numberOfLines={1} style={[styles.capsuleText, { color: readableTint(c, dark) }]}>
           {occ.title}
         </Text>
-      </Pressable>
+      </View>
     );
   }
   const task = occ.kind === "task";
   const done = task && occ.completed;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => onOpen(occ)} style={styles.line}>
+    <View style={styles.line}>
       {task ? <TaskRing color={ring} done={done} size={12} /> : <View style={[styles.bar, { backgroundColor: occ.event.color || colors.blue }]} />}
       <Text allowFontScaling={false} numberOfLines={1} style={[styles.lineTitle, { color: done ? colors.label2 : colors.label }]}>
         {occ.title}
@@ -323,7 +416,7 @@ function ItemLine({ occ, colors, shown, onOpen }: { occ: TaskOccurrence | EventO
           {shortTime(occ.start)}
         </Text>
       ) : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -345,4 +438,5 @@ const styles = StyleSheet.create({
   capsule: { height: 17, marginVertical: 1, marginHorizontal: 5, borderRadius: 4, justifyContent: "center", paddingHorizontal: 6 },
   capsuleText: { fontSize: 14, fontWeight: "500" },
   more: { fontSize: 14, paddingLeft: 8, lineHeight: LINE },
+  piece: { position: "absolute" },
 });

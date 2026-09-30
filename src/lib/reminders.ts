@@ -8,11 +8,13 @@ import {
   baselineOf,
   gooyaPriority,
   isReminderList,
+  planCategoryLists,
   planReminderSync,
   reminderIdOf,
   toImport,
   type DeviceList,
   type DeviceReminder,
+  type ListFields,
   type ReminderFields,
   type ReminderPlan,
 } from "@shared/reminders";
@@ -35,6 +37,9 @@ import { isMock } from "./mock";
  * deleted), makes reminders for tasks made in GOOYA in a Reminders list, and sends the result to the server's
  * remindersImport, where each Reminders list is a GOOYA list of this person. shared/reminders.ts decides which side wins.
  *
+ * Each category a person's tasks are in is a list in their Reminders, named and coloured as the category (made here
+ * when there is none); a list renamed or recoloured in Reminders renames or recolours its category.
+ *
  * It runs when the app opens or comes back to the front, when something changes in Reminders while GOOYA is open, a
  * moment after a reminder is changed in GOOYA, on Sync Now, and when the server's silent push says one of this
  * person's reminders was changed elsewhere (the other person's GOOYA, another device). Only one device per person does
@@ -50,6 +55,8 @@ interface RemindersState {
   excluded: string[];
   /** What GOOYA and this phone last agreed on, per reminder id. */
   baseline: Record<string, ReminderFields>;
+  /** What GOOYA and this phone last agreed a list's name and colour were, per list id (its category's). */
+  listBaseline: Record<string, ListFields>;
   /** Reminders this phone made for GOOYA tasks, until GOOYA has taken them over (task id → reminder id). */
   links: Record<string, string>;
   lastSync: number | null;
@@ -73,6 +80,7 @@ export const useReminders = create<RemindersState>()(
       enabled: false,
       excluded: [],
       baseline: {},
+      listBaseline: {},
       links: {},
       lastSync: null,
       lastCount: 0,
@@ -86,15 +94,16 @@ export const useReminders = create<RemindersState>()(
     }),
     {
       name: "gooya-reminders",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => AsyncStorage),
       // Version 1 (expo-calendar) had the same reminder ids and a baseline without list and priority; those two are
-      // filled in from the phone at the next sync.
-      migrate: (persisted) => ({ links: {}, problems: [], ...(persisted as Partial<RemindersState>) }) as RemindersState,
+      // filled in from the phone at the next sync. Version 2 had no list baseline (categories).
+      migrate: (persisted) => ({ links: {}, problems: [], listBaseline: {}, ...(persisted as Partial<RemindersState>) }) as RemindersState,
       partialize: (s) => ({
         enabled: s.enabled,
         excluded: s.excluded,
         baseline: s.baseline,
+        listBaseline: s.listBaseline,
         links: s.links,
         lastSync: s.lastSync,
         lastCount: s.lastCount,
@@ -175,7 +184,8 @@ function importLocally(body: ImportBody): { kept: number } {
   const me = useSession.getState().me ?? "gooya";
   const { tasks, lists } = useData.getState();
   const out = applyReminderImport(me, tasks.filter((t) => t.owner === me), lists, body, Date.now(), demoHash);
-  const listsNext = [...lists.filter((l) => l.id !== LEGACY_REMINDERS_LIST_ID && !out.deleteLists.includes(l.id) && !out.lists.some((n) => n.id === l.id)), ...out.lists];
+  const written = new Set([...out.lists, ...out.categories].map((l) => l.id));
+  const listsNext = [...lists.filter((l) => l.id !== LEGACY_REMINDERS_LIST_ID && !out.deleteLists.includes(l.id) && !written.has(l.id)), ...out.categories, ...out.lists];
   const tasksNext = tasks.filter((t) => !out.deleteTasks.includes(t.id));
   for (const w of out.tasks) {
     const i = tasksNext.findIndex((t) => t.id === w.id);
@@ -305,6 +315,54 @@ export function remindersElsewhere(): { id: string; name: string; at: number } |
   return owner && owner.id !== useReminders.getState().deviceId ? owner : null;
 }
 
+/**
+ * GOOYA's categories as Reminders lists on this phone (shared/reminders.ts planCategoryLists decides): makes the lists
+ * categories need, gives lists their category's name and colour, and notes what to tell the server (lists linked to a
+ * category here, names and colours changed in Reminders). `included` is updated in place with what was made or changed.
+ */
+async function alignCategoryLists(
+  me: string,
+  included: ReminderListInfo[],
+  tasks: Task[],
+  lists: TaskList[],
+): Promise<{ targets: Record<string, string>; extra: Record<string, Partial<DeviceList>>; problems: string[]; sent: string[] }> {
+  const plan = planCategoryLists(me, included, tasks, lists, useReminders.getState().listBaseline);
+  const extra: Record<string, Partial<DeviceList>> = {};
+  const problems: string[] = [];
+  const sent: string[] = [];
+  const targets = { ...plan.targets };
+  for (const l of plan.link) extra[l.listId] = { ...extra[l.listId], categoryId: l.categoryId };
+  for (const r of plan.report) extra[r.listId] = { ...extra[r.listId], ...(r.name ? { categoryName: r.name } : {}), ...(r.color ? { categoryColor: r.color } : {}) };
+  const replace = (list: Native.NativeReminderList) => {
+    const i = included.findIndex((x) => x.id === list.id);
+    if (i >= 0) included[i] = list;
+    else included.push(list);
+  };
+  quietUntil = Date.now() + 4000;
+  for (const c of plan.create) {
+    try {
+      const made = await Native.saveList({ title: c.title, color: c.color });
+      replace(made);
+      targets[c.categoryId] = made.id;
+      extra[made.id] = { ...extra[made.id], categoryId: c.categoryId };
+      sent.push(`The list “${made.title}” made in Reminders`);
+    } catch (e) {
+      problems.push(`The list “${c.title}” couldn't be made in Reminders: ${message(e)}`);
+    }
+  }
+  for (const u of plan.update) {
+    const was = included.find((x) => x.id === u.listId);
+    try {
+      const saved = await Native.saveList({ id: u.listId, ...(u.title ? { title: u.title } : {}), ...(u.color ? { color: u.color } : {}) });
+      replace(saved);
+      sent.push(`The list “${was?.title ?? saved.title}” ${[u.title ? `renamed “${saved.title}”` : null, u.color ? "recolored" : null].filter(Boolean).join(" and ")}`);
+    } catch (e) {
+      problems.push(`The list “${was?.title ?? "?"}” couldn't be changed in Reminders: ${message(e)}`);
+    }
+  }
+  return { targets, extra, problems, sent };
+}
+
 let running: Promise<void> | null = null;
 let again = false;
 let lastRun = 0;
@@ -338,11 +396,13 @@ export function syncReminders(force = false): Promise<void> {
       const allLists = await loadReminderLists();
       const { excluded } = useReminders.getState();
       const included = allLists.filter((l) => !excluded.includes(l.id));
-      const device = (await Native.reminders(included.map((l) => l.id), Date.now() - COMPLETED_DAYS * 86_400_000)).map(deviceReminder);
       const { tasks, lists } = useData.getState();
+      // The categories as lists here: made, linked, renamed and recoloured before the reminders are read and planned.
+      const categories = Native.canSaveLists ? await alignCategoryLists(me, included, tasks, lists) : null;
+      const device = (await Native.reminders(included.map((l) => l.id), Date.now() - COMPLETED_DAYS * 86_400_000)).map(deviceReminder);
       const baseline = completeBaseline(useReminders.getState().baseline, device);
       const writable = new Set(included.filter((l) => l.writable).map((l) => l.id));
-      const plan = planReminderSync(device, tasks, baseline, me, lists, useReminders.getState().links, writable);
+      const plan = planReminderSync(device, tasks, baseline, me, lists, useReminders.getState().links, writable, { categoryTargets: categories?.targets, zone: deviceTimeZone() });
       // Many reminders at once looking deleted in GOOYA is more likely a problem than a wish: they stay.
       const skipped = plan.deletes.length > 10 && plan.deletes.length > device.length * 0.3 ? plan.deletes.splice(0) : [];
       if (skipped.length) plan.reminders.push(...device.filter((r) => skipped.includes(r.id)));
@@ -356,7 +416,7 @@ export function syncReminders(force = false): Promise<void> {
       const answer = await send({
         full: true,
         timezone: deviceTimeZone(),
-        lists: included.map(({ id, title, color, writable: w, isDefault }) => ({ id, title, color, writable: w, isDefault })),
+        lists: included.map(({ id, title, color, writable: w, editable, isDefault }) => ({ id, title, color, writable: w, ...(editable === undefined ? {} : { editable }), isDefault, ...(categories?.extra[id] ?? {}) })),
         reminders: done.reminders.map((r) => toImport(r, { taskId: done.taskIds[r.id], base: baseline[r.id] })),
         unlink: plan.unlink.map((u) => u.taskId),
       });
@@ -366,8 +426,10 @@ export function syncReminders(force = false): Promise<void> {
       quietUntil = Date.now() + 4000;
       const taken = new Set(Object.values(done.taskIds));
       const links = Object.fromEntries(Object.entries(useReminders.getState().links).filter(([taskId]) => !taken.has(taskId)));
-      const problems = [...done.problems, ...(skipped.length ? [`${skipped.length} reminders look deleted in GOOYA, so they were kept in Reminders. Delete them there if that is what you want.`] : [])];
-      useReminders.setState({ baseline: baselineOf(done.reminders), links, lastSync: Date.now(), lastCount: done.reminders.filter((r) => !r.completed).length, lastError: null, problems, ...(done.sent.length ? { sent: { at: Date.now(), lines: done.sent } } : {}) });
+      const problems = [...(categories?.problems ?? []), ...done.problems, ...(skipped.length ? [`${skipped.length} reminders look deleted in GOOYA, so they were kept in Reminders. Delete them there if that is what you want.`] : [])];
+      const sent = [...(categories?.sent ?? []), ...done.sent];
+      const listBaseline = Object.fromEntries(included.map((l) => [l.id, { title: l.title, color: l.color }]));
+      useReminders.setState({ baseline: baselineOf(done.reminders), listBaseline, links, lastSync: Date.now(), lastCount: done.reminders.filter((r) => !r.completed).length, lastError: null, problems, ...(sent.length ? { sent: { at: Date.now(), lines: sent } } : {}) });
     } catch (e) {
       useReminders.setState({ lastError: message(e) });
     } finally {

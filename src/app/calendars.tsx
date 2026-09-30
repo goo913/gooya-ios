@@ -64,7 +64,7 @@ export default function CalendarsSheet() {
 
         <SectionHeader>GOOYA</SectionHeader>
         <Card>
-          <CheckRow color={colors.blue} checked={!hidden.includes("gooya:schedules")} onPress={() => toggleCalendar("gooya:schedules")} title="Schedules" subtitle="GOOYA's own, in each person's colour" />
+          <CheckRow color={colors.blue} checked={!hidden.includes("gooya:schedules")} onPress={() => toggleCalendar("gooya:schedules")} title="Schedules" subtitle="GOOYA's own, in their category's or person's color" />
         </Card>
 
         {imported.map(({ account, calendars }) => (

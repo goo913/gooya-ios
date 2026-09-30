@@ -87,8 +87,9 @@ function normalized(r: IncomingReminder, tz: string): ReminderImport {
 /**
  * POST /remindersImport  { token, full?, timezone?, lists?, reminders: [...], unlink? }
  * Apple Reminders → GOOYA, sent by the iPhone app (src/lib/reminders.ts reads Reminders with EventKit and takes
- * GOOYA's changes to Reminders itself). Each Reminders list is a GOOYA list of that person, each reminder a task in
- * it (shared/reminders.ts applyReminderImport decides what to write). When `full` is true, the person's reminder tasks
+ * GOOYA's changes to Reminders itself). Each Reminders list is a GOOYA list of that person, standing for one of the
+ * categories both people share (made from the list when none has its name), each reminder a task in it
+ * (shared/reminders.ts applyReminderImport decides what to write). When `full` is true, the person's reminder tasks
  * missing from the payload are removed (deleted in Reminders). `kept` in the answer counts fields GOOYA changed after
  * the phone read GOOYA; the phone takes them to Reminders on its next sync. Older apps send neither lists nor bases:
  * their reminders go to the single "Apple Reminders" list as before.
@@ -127,6 +128,11 @@ export const remindersImport = onRequest({ cors: true, invoker: 'public', memory
   if (!Array.isArray(body.lists) && !lists.some((l) => l.id === LEGACY_REMINDERS_LIST_ID)) {
     await add((b) => b.set(db.collection('lists').doc(LEGACY_REMINDERS_LIST_ID), { name: 'Apple Reminders', color: '#ff4245', icon: 'checkmark', order: 99, createdBy: person, createdAt: now, updatedAt: now }))
   }
+  // Categories first (a list made from a Reminders list stands for one), then the Reminders lists.
+  for (const c of outcome.categories) {
+    const { id, ...rest } = c
+    await add((b) => b.set(db.collection('lists').doc(id), rest))
+  }
   for (const l of outcome.lists) {
     const { id, ...rest } = l
     await add((b) => b.set(db.collection('lists').doc(id), rest))
@@ -147,6 +153,6 @@ export const remindersImport = onRequest({ cors: true, invoker: 'public', memory
   }
   await db.collection('users').doc(person).set({ remindersImportedAt: now, remindersImportedCount: incoming.length }, { merge: true })
   const { created, updated, removed, kept, unlinked } = outcome
-  logger.info('remindersImport', { person, created, updated, removed, kept, unlinked, lists: outcome.lists.length, listsRemoved: outcome.deleteLists.length })
+  logger.info('remindersImport', { person, created, updated, removed, kept, unlinked, lists: outcome.lists.length, listsRemoved: outcome.deleteLists.length, categories: outcome.categories.length })
   res.json({ ok: true, created, updated, removed, kept, unlinked })
 })

@@ -40,17 +40,43 @@ export function TaskRing({ color, done, size }: { color: string; done: boolean; 
   );
 }
 
-/** A task on a month cell or the all-day strip: the ring (owner's or list's colour) and the title. */
-export function TaskChip({ occ, shown }: { occ: TaskOccurrence; shown?: number }) {
+/** A task on a month cell or the all-day strip: the ring in its category's colour, and the title. */
+export function TaskChip({ occ }: { occ: TaskOccurrence }) {
   const colors = useColors();
   const dark = useIsDark();
   const m = useMetrics();
-  const color = useTaskColor(occ.task, shown);
+  const color = useTaskColor(occ.task);
   const bg = dark ? "#2c2c2e" : "#e9e9ee";
   return (
     <View style={[styles.chip, { height: m.chipHeight, borderRadius: m.chipRadius, backgroundColor: bg, paddingLeft: 2.3, gap: 4.8 * m.grid }]}>
       <TaskRing color={color} done={occ.completed} size={m.chipRing} />
       <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="clip" style={[styles.text, { fontSize: m.chipText, color: occ.completed ? colors.label2 : colors.label }]}>
+        {occ.title}
+      </Text>
+      <EdgeFade color={bg} height={m.chipHeight} />
+    </View>
+  );
+}
+
+/**
+ * Something on several days, as one bar across them: tinted like its chip, the title at the start of each week's part,
+ * square where it goes on into the week before or after (flush with the day's edge).
+ */
+export function EventBar({ occ, openStart, openEnd }: { occ: EventOccurrence; openStart: boolean; openEnd: boolean }) {
+  const dark = useIsDark();
+  const colors = useColors();
+  const m = useMetrics();
+  const c = occ.event.color || colors.blue;
+  const bg = dark ? mix(c, "#000000", 0.27) : mix(c, "#ffffff", 0.2);
+  const r = m.chipRadius;
+  return (
+    <View
+      style={[
+        styles.chip,
+        { height: m.chipHeight, backgroundColor: bg, paddingLeft: openStart ? 4 : 2.7, borderTopLeftRadius: openStart ? 0 : r, borderBottomLeftRadius: openStart ? 0 : r, borderTopRightRadius: openEnd ? 0 : r, borderBottomRightRadius: openEnd ? 0 : r },
+      ]}
+    >
+      <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="clip" style={[styles.text, { fontSize: m.chipText, color: readableTint(c, dark) }]}>
         {occ.title}
       </Text>
       <EdgeFade color={bg} height={m.chipHeight} />

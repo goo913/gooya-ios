@@ -12,9 +12,9 @@ import { OccurrenceRow } from "@/components/OccurrenceRow";
 import { patchSettings } from "@/lib/db";
 import { MONTH_SHORT, WEEKDAY_LONG } from "@/lib/format";
 import { SMART, useListOccurrences, type SmartList } from "@/lib/listOccurrences";
-import { useFilteredPeople, useMe, usePerson } from "@/lib/people";
+import { listIndexOf, useFilteredPeople, useMe, usePerson } from "@/lib/people";
 import { useToday } from "@/lib/useNow";
-import { isReminderList } from "@shared/reminders";
+import { categoryOfList, isCategory } from "@shared/categories";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors } from "@/theme";
@@ -33,13 +33,15 @@ export default function ListScreen() {
   const showCompleted = usePerson(me).settings.showCompleted;
   const smart = listId.startsWith("smart:") ? (listId.slice(6) as SmartList) : null;
   const list = smart ? null : lists.find((l) => l.id === listId);
+  const byId = listIndexOf(lists);
   const rows = useMemo(() => {
     let items = occ;
     if (smart === "today") items = items.filter((o) => !o.completed && o.dueDate && o.dueDate <= today);
     else if (smart === "scheduled") items = items.filter((o) => !!o.dueDate);
     else if (smart === "flagged") items = items.filter((o) => o.task.flagged);
     else if (smart === "completed") items = items.filter((o) => o.completed);
-    else if (smart !== "all") items = items.filter((o) => o.task.listId === listId);
+    // A category: its tasks, through their owners' Reminders lists too; a Reminders list in no category: its own.
+    else if (smart !== "all") items = items.filter((o) => o.task.listId === listId || categoryOfList(o.task.listId, byId)?.id === listId);
     if (smart !== "completed" && !showCompleted) items = items.filter((o) => !o.completed);
     items = [...items].sort((a, b) => ((a.dueDate || "9999") < (b.dueDate || "9999") ? -1 : (a.dueDate || "9999") > (b.dueDate || "9999") ? 1 : a.start - b.start));
     const groups = new Map<string, TaskOccurrence[]>();
@@ -50,7 +52,7 @@ export default function ListScreen() {
       g.push(o);
     }
     return groups;
-  }, [occ, smart, listId, showCompleted, today]);
+  }, [occ, smart, listId, byId, showCompleted, today]);
   const title = smart ? (SMART.find((s) => s.key === smart)?.label ?? "List") : (list?.name ?? "List");
   const color = smart ? (SMART.find((s) => s.key === smart)?.color ?? "#0091ff") : (list?.color ?? "#0091ff");
   const total = Array.from(rows.values()).reduce((n, g) => n + g.length, 0);
@@ -63,8 +65,8 @@ export default function ListScreen() {
     router.push("/sheet/edit");
   };
   const more = () =>
-    // A Reminders list is named and coloured in Reminders (a change here would come back as it was).
-    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(list && !isReminderList(list) ? ["Edit List"] : [])], null, (_, i) => {
+    // A Reminders list in no category is named and coloured in Reminders (a change here would come back as it was).
+    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(list && isCategory(list) ? ["Edit Category"] : [])], null, (_, i) => {
       if (i === 0) void patchSettings(me, { showCompleted: !showCompleted });
       else if (list) router.push({ pathname: "/sheet/listEdit", params: { id: list.id } });
     });

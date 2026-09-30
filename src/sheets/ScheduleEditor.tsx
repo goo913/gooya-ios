@@ -1,11 +1,15 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
+import { ColorPicker, Host } from "@expo/ui/swift-ui";
+import { isCategory } from "@shared/categories";
 import type { CalendarEvent, DateKey, EventOccurrence, EventOverride, Schedule } from "@shared/model";
-import { PERSON_KEYS, type PersonKey } from "@shared/people";
+import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import { REPEAT_PRESETS, describeRule, repeatPresetKey } from "@shared/recurrence";
 import { SCHEDULE_CALENDAR, hasEndTime } from "@shared/schedules";
-import { addDaysKey, deviceTimeZone, diffDaysKey, keyInZone, zonedMs } from "@shared/time";
+import { addDaysKey, deviceTimeZone, diffDaysKey, fieldsInZone, formatHHmm, keyInZone, zonedMs } from "@shared/time";
+import { router } from "expo-router";
 import { useMemo, useState, type ReactNode } from "react";
-import { ActionSheetIOS, Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActionSheetIOS, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { CategoryValue } from "@/components/ColorSwatches";
 import { DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/components/Form";
 import { Segmented } from "@/components/Segmented";
 import { DetailsBar } from "@/components/SheetHeader";
@@ -13,9 +17,11 @@ import { SourceBadge } from "@/components/SourceBadge";
 import { WhenRow, useWhenLayout } from "@/components/WhenRows";
 import { dateFromKey, keyFromDate } from "@/lib/dates";
 import { deleteSchedule, newId, patchEvent, patchSchedule, saveEventLocal, saveSchedule } from "@/lib/db";
-import { useMe, usePersonColor } from "@/lib/people";
-import { useToday } from "@/lib/useNow";
+import { useMe, usePerson, usePersonColor } from "@/lib/people";
+import { useToday, viewerTz } from "@/lib/useNow";
+import { useEditZones } from "@/lib/zones";
 import { useData } from "@/store/data";
+import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
 
 /** A calendar of a connected account whose events can be changed in GOOYA (Two-way, and writable). */
@@ -80,7 +86,6 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const calendars = useTwoWayCalendars();
   const stored = useData((s) => (event?.source === GOOYA ? s.schedules.find((x) => x.id === event.id) : undefined));
   const editing = !!event;
-  const tz = event?.timezone || deviceTimeZone();
   const ov: EventOverride | undefined = event && occ ? event.overrides?.[occ.dateKey] : undefined;
   const start0 = occ?.start ?? event?.start ?? defaultStart(initialDate ?? today, initialMinutes, today).getTime();
   const end0 = occ?.end ?? event?.end ?? start0 + 3600_000;
@@ -97,12 +102,27 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const [owner, setOwner] = useState<PersonKey>(event?.owner ?? initialOwner ?? me);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(event?.rrule ?? null));
   const [calendarKey, setCalendarKey] = useState(event ? (event.source === GOOYA ? GOOYA : `${event.accountId}/${event.calendarId}`) : GOOYA);
+  const [categoryId, setCategoryId] = useState<string | null>(stored?.categoryId ?? null);
+  const [ownColor, setOwnColor] = useState<string | null>(stored?.color ?? null);
+  const [shared, setShared] = useState(!stored?.private);
   const [busy, setBusy] = useState(false);
+  const category = useData((s) => (categoryId ? s.lists.find((l) => l.id === categoryId && isCategory(l)) : undefined));
+  const ownerInfo = usePerson(owner);
+  const otherName = usePerson(otherPerson(me)).name;
+  // The clock the schedule is kept on: its owner's (a schedule made for someone is in their time zone), or an imported
+  // event's own.
+  const tz = event && (event.source !== GOOYA || owner === event.owner) ? event.timezone || ownerInfo.timezone : ownerInfo.timezone;
+  const editZones = useEditZones(owner, start.getTime());
+  // Only one's own schedule can be kept to oneself.
+  const isPrivate = owner === me && !shared;
   const calendar = calendars.find((c) => `${c.accountId}/${c.calendarId}` === calendarKey);
   const inGooya = calendarKey === GOOYA;
   // Only GOOYA's own schedules may go without an end time: Google and iCloud events always have one.
   const endless = inGooya && !allDay && !hasEnd;
   const ownerColor = usePersonColor(owner);
+  // Its own colour, else its category's, else its owner's: as it is drawn.
+  const drawnColor = ownColor ?? category?.color ?? ownerColor;
+  const setListPicker = usePickers((s) => s.setList);
   const rrule = repeatKey === "custom" ? (event?.rrule ?? null) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null);
 
   const valid = title.trim().length > 0 && (inGooya || !!calendar) && (allDay ? endDate >= startDate : endless || end.getTime() > start.getTime());
@@ -130,7 +150,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
 
   const saveAll = async (ev: CalendarEvent) => {
     const common = { title: title.trim(), location, notes, allDay, ...fieldsForAll(ev) };
-    if (ev.source === GOOYA) await patchSchedule(ev.id, { ...common, owner, rrule });
+    if (ev.source === GOOYA) await patchSchedule(ev.id, { ...common, owner, rrule, categoryId: category ? categoryId : null, color: ownColor, private: isPrivate });
     else await patchEvent(ev.id, common);
   };
 
@@ -151,7 +171,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
     const repeating = !!(event && occ && event.rrule);
     if (repeating && event && occ) {
       // Apple's question for a repeating schedule. Switching all-day, the repeat or the person is for all of them.
-      const allOnly = allDay !== event.allDay || rrule !== event.rrule || owner !== event.owner;
+      const allOnly = allDay !== event.allDay || rrule !== event.rrule || owner !== event.owner || (stored?.categoryId ?? null) !== categoryId || (stored?.color ?? null) !== ownColor || !!stored?.private !== isPrivate;
       const options = allOnly ? ["Save for All Events", "Cancel"] : ["Save for This Event Only", "Save for All Events", "Cancel"];
       ActionSheetIOS.showActionSheetWithOptions({ title: "This is a repeating schedule.", options, cancelButtonIndex: options.length - 1 }, (i) => {
         const label = options[i];
@@ -179,6 +199,9 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           rrule,
           exdates: [],
           overrides: {},
+          categoryId: category ? categoryId : null,
+          color: ownColor,
+          private: isPrivate,
           createdAt: now,
           updatedAt: now,
         };
@@ -241,19 +264,40 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   };
 
   const when = useWhenLayout();
-  const picker = (mode: "date" | "time", value: Date, onChange: (d: Date) => void, min?: Date) => (
-    <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
+  // A day's pickers (all-day) are on this phone's calendar; a time's on the clock of their zone.
+  const picker = (mode: "date" | "time", value: Date, zone: string | undefined, onChange: (d: Date) => void, min?: Date) => (
+    <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} timeZoneName={zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
   );
   const setStartKeepingLength = (d: Date) => {
     const length = end.getTime() - start.getTime();
     setStart(d);
     setEnd(new Date(d.getTime() + Math.max(length, 5 * MIN_MS)));
   };
-  const withDay = (d: Date, day: Date) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), d.getHours(), d.getMinutes(), 0, 0);
+  const clockIn = (d: Date, zone: string) => {
+    const f = fieldsInZone(d.getTime(), zone);
+    return formatHHmm(f.h, f.min);
+  };
+  /** The day picked on a zone's calendar, at the time `was` had on that clock. */
+  const withDay = (was: Date, picked: Date, zone: string) => new Date(zonedMs(keyInZone(picked.getTime(), zone), clockIn(was, zone), zone));
+  /** The time picked on a zone's clock, on the day `was` had there. */
+  const withTime = (was: Date, picked: Date, zone: string) => new Date(zonedMs(keyInZone(was.getTime(), zone), clockIn(picked, zone), zone));
+  // GOOYA's own schedule is shown on its owner's clock and, when it reads differently, on this phone's too; an imported
+  // event on this phone's.
+  const zones = inGooya ? editZones : [{ zone: viewerTz, label: "" }];
+  const dual = zones.length > 1;
+  const timedRows = (zone: string, withEndSwitch: boolean) => [
+    <WhenRow key="s" layout={when} label="Starts" date={picker("date", start, zone, (d) => setStartKeepingLength(withDay(start, d, zone)))} time={picker("time", start, zone, (d) => setStartKeepingLength(withTime(start, d, zone)))} />,
+    withEndSwitch && inGooya ? (
+      <Row key="e" label="End Time">
+        <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
+      </Row>
+    ) : null,
+    !endless ? <WhenRow key="t" layout={when} label="Ends" date={picker("date", end, zone, (d) => setEnd(withDay(end, d, zone)), start)} time={picker("time", end, zone, (d) => setEnd(withTime(end, d, zone)))} /> : null,
+  ];
   const people = PERSON_KEYS.map((k) => ({ value: k, label: k === "gooya" ? "구야" : "은비" }));
   const places = [{ key: GOOYA, name: SCHEDULE_CALENDAR }, ...calendars.map((c) => ({ key: `${c.accountId}/${c.calendarId}`, name: c.name }))];
   const shown = inGooya
-    ? { name: SCHEDULE_CALENDAR, color: ownerColor, source: GOOYA as CalendarEvent["source"] }
+    ? { name: SCHEDULE_CALENDAR, color: drawnColor, source: GOOYA as CalendarEvent["source"] }
     : (calendar ?? (event ? { name: event.calendarName, color: event.color, source: event.source } : null));
   const where = inGooya ? null : shown?.source === "google" ? "Google Calendar" : "iCloud";
 
@@ -276,7 +320,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
         ) : null}
 
         {/* Each row its own child, so the group draws the lines between them. */}
-        <Group footer={endless ? "No end time: it is at its start time." : undefined}>
+        <Group header={dual && !allDay ? zones[0].label : undefined} footer={endless ? "No end time: it is at its start time." : undefined}>
           <Row label="All-day">
             <Switch label="All-day" value={allDay} onChange={setAllDay} />
           </Row>
@@ -284,23 +328,21 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
             <WhenRow
               layout={when}
               label="Starts"
-              date={picker("date", dateFromKey(startDate), (d) => {
+              date={picker("date", dateFromKey(startDate), undefined, (d) => {
                 const k = keyFromDate(d);
                 setEndDate(addDaysKey(k, Math.max(0, diffDaysKey(startDate, endDate))));
                 setStartDate(k);
               })}
             />
-          ) : (
-            <WhenRow layout={when} label="Starts" date={picker("date", start, (d) => setStartKeepingLength(withDay(start, d)))} time={picker("time", start, setStartKeepingLength)} />
-          )}
-          {allDay ? <WhenRow layout={when} label="Ends" date={picker("date", dateFromKey(endDate), (d) => setEndDate(keyFromDate(d)), dateFromKey(startDate))} /> : null}
-          {!allDay && inGooya ? (
-            <Row label="End Time">
-              <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
-            </Row>
           ) : null}
-          {!allDay && !endless ? <WhenRow layout={when} label="Ends" date={picker("date", end, (d) => setEnd(withDay(end, d)), start)} time={picker("time", end, (d) => setEnd(withDay(d, end)))} /> : null}
+          {allDay ? <WhenRow layout={when} label="Ends" date={picker("date", dateFromKey(endDate), undefined, (d) => setEndDate(keyFromDate(d)), dateFromKey(startDate))} /> : null}
+          {!allDay ? timedRows(zones[0].zone, true) : null}
         </Group>
+        {dual && !allDay ? (
+          <Group header={zones[1].label} footer="The same moment on both clocks: change either one and the other follows.">
+            {timedRows(zones[1].zone, false)}
+          </Group>
+        ) : null}
 
         <Group footer={where ? `Changes go to ${where} as you save them.` : "Copied to the GOOYA calendar in your Google or iCloud when that is on (Settings → Calendar integrations)."}>
           {inGooya ? (
@@ -323,11 +365,50 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           ) : (
             <ValueRow label="Calendar" value={places.find((p) => p.key === calendarKey)?.name ?? SCHEDULE_CALENDAR} options={places.map((p) => p.name)} onPick={(_, i) => setCalendarKey(places[i].key)} />
           )}
+          {inGooya ? (
+            <Row
+              label="Category"
+              accessibilityLabel="Category"
+              chevron
+              onPress={() => {
+                setListPicker({ value: category ? categoryId : null, onPick: setCategoryId, allowNone: true });
+                router.push("/sheet/list");
+              }}
+            >
+              <CategoryValue name={category?.name ?? "None"} color={category?.color ?? null} dim={!category} />
+            </Row>
+          ) : null}
+          {inGooya ? (
+            <Row label="Color" accessibilityLabel="Color">
+              {ownColor ? (
+                <Pressable accessibilityRole="button" onPress={() => setOwnColor(null)} hitSlop={8}>
+                  <Text style={[styles.reset, { color: colors.blue }]}>{category ? "Use Category’s" : `Use ${ownerInfo.name}’s`}</Text>
+                </Pressable>
+              ) : (
+                <Text numberOfLines={1} style={[styles.value, { color: colors.label2 }]}>
+                  {category ? category.name : `${ownerInfo.name}’s`}
+                </Text>
+              )}
+              <View style={styles.colorWell}>
+                <Host matchContents>
+                  <ColorPicker selection={drawnColor} supportsOpacity={false} onSelectionChange={(c) => setOwnColor(c.slice(0, 7).toLowerCase())} />
+                </Host>
+              </View>
+            </Row>
+          ) : null}
         </Group>
 
         <Group>
           <TextRow value={notes} onChange={setNotes} placeholder="Notes" multiline />
         </Group>
+
+        {inGooya && owner === me ? (
+          <Group footer={shared ? `${otherName} sees it too.` : `Only you see it: not on ${otherName}’s calendar or widget. A copy in your own Google or iCloud calendar stays yours.`}>
+            <Row label={`Share with ${otherName}`}>
+              <Switch label={`Share with ${otherName}`} value={shared} onChange={setShared} />
+            </Row>
+          </Group>
+        ) : null}
 
         {editing && (event?.source !== GOOYA || stored) ? <DestructiveButton onPress={remove}>Delete Schedule</DestructiveButton> : null}
       </ScrollView>
@@ -341,4 +422,6 @@ const styles = StyleSheet.create({
   inline: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
   dot: { width: 10, height: 10, borderRadius: 5 },
   value: { fontSize: 17, flexShrink: 1 },
+  reset: { fontSize: 17 },
+  colorWell: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 });

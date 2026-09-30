@@ -859,7 +859,7 @@ async function applyGoogleCopies(person: PersonKey, accountId: string, acc: Acco
         const { rrule } = rruleFromGoogle(e.recurrence)
         await ref.create({
           owner: person, createdBy: person, title: c.title.trim(), notes: plainNotes(c.notes), location: c.location, allDay: c.allDay, start: c.start, end: c.end,
-          startDate: c.startDate, endDate: c.endDate, timezone: tz, rrule, exdates: [], overrides: {}, createdAt: now, updatedAt: now,
+          startDate: c.startDate, endDate: c.endDate, timezone: tz, rrule, exdates: [], overrides: {}, private: false, createdAt: now, updatedAt: now,
         })
         await cal.events.delete({ calendarId, eventId: e.id }).catch(gone)
         logger.info('google copy: new schedule from the GOOYA calendar', { person, schedule: ref.id })

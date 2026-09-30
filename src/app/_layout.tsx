@@ -78,6 +78,7 @@ export default function RootLayout() {
             <Stack.Screen name="sheet/edit" options={{ ...page, gestureEnabled: true }} />
             <Stack.Screen name="sheet/listEdit" options={page} />
             <Stack.Screen name="settings" options={page} />
+            <Stack.Screen name="categories" options={page} />
             <Stack.Screen name="integrations" options={page} />
             <Stack.Screen name="sheet/detail" options={page} />
             <Stack.Screen name="sheet/list" options={{ ...small, sheetAllowedDetents: [0.6, 1] }} />

@@ -1,7 +1,7 @@
-import { collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc, type DocumentData, type QueryDocumentSnapshot } from "@react-native-firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, query, setDoc, updateDoc, where, type DocumentData, type QuerySnapshot, type QueryDocumentSnapshot } from "@react-native-firebase/firestore";
 import { DEFAULT_LIST_ID, type CalendarEvent, type Routine, type Schedule, type Task, type TaskList, type UserDoc } from "@shared/model";
 import { normalizeEvent, normalizeList, normalizeRoutine, normalizeSchedule, normalizeTask, normalizeUser } from "@shared/normalize";
-import { PERSON_KEYS, type PersonKey } from "@shared/people";
+import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import type { LastEdit } from "@shared/reminders";
 import { useData, type IntegrationAccount } from "@/store/data";
 import { useSession } from "@/store/session";
@@ -25,6 +25,27 @@ export function defaultList(): TaskList {
 
 let started = false;
 
+/**
+ * A person's own tasks, schedules or routines, and the other person's shared ones: two queries, one list. The other
+ * person's private ones (Share off) are never asked for, so they never reach this phone. `onData` gets the documents
+ * once both queries have answered, whether both answers came from the server (not only this phone's copy), and whether
+ * a document changed (not only where the answer came from).
+ */
+function subscribeVisible(name: "tasks" | "schedules" | "routines", me: PersonKey, onData: (docs: Snap[], fromServer: boolean, changed: boolean) => void): void {
+  const parts: { docs: Snap[] | null; fresh: boolean }[] = [
+    { docs: null, fresh: false },
+    { docs: null, fresh: false },
+  ];
+  const queries = [query(collection(db, name), where("owner", "==", me)), query(collection(db, name), where("owner", "==", otherPerson(me)), where("private", "==", false))];
+  queries.forEach((q, i) =>
+    onSnapshot(q, { includeMetadataChanges: true }, (qs: QuerySnapshot<DocumentData>) => {
+      const first = !parts[i].docs;
+      parts[i] = { docs: qs.docs, fresh: !qs.metadata.fromCache };
+      if (parts.every((p) => p.docs)) onData([...parts[0].docs!, ...parts[1].docs!], parts.every((p) => p.fresh), first || qs.docChanges().length > 0);
+    }),
+  );
+}
+
 /** Subscribe to everything (tiny dataset; the offline cache makes this cheap). */
 export function startData(): void {
   if (started) return;
@@ -36,10 +57,11 @@ export function startData(): void {
   }
   startWidgetSync();
   const { setTasks, setSchedules, setRoutines, setUsers, setLists, setFresh } = useData.getState();
+  const me = useSession.getState().me ?? "gooya";
   // Metadata changes too, to know when the tasks and lists have come from the server (Reminders sync waits for that).
-  onSnapshot(collection(db, "tasks"), { includeMetadataChanges: true }, (qs) => {
-    if (qs.docChanges().length || !useData.getState().loaded.tasks) setTasks(qs.docs.map(taskFromSnap));
-    setFresh("tasks", !qs.metadata.fromCache);
+  subscribeVisible("tasks", me, (docs, fromServer, changed) => {
+    if (changed || !useData.getState().loaded.tasks) setTasks(docs.map(taskFromSnap));
+    setFresh("tasks", fromServer);
   });
   onSnapshot(collection(db, "lists"), { includeMetadataChanges: true }, (qs) => {
     const lists = qs.docs.map(listFromSnap);
@@ -50,13 +72,12 @@ export function startData(): void {
     if (qs.docChanges().length || !useData.getState().loaded.lists) setLists(lists.length ? lists : [defaultList()]);
     setFresh("lists", !qs.metadata.fromCache);
   });
-  onSnapshot(collection(db, "schedules"), (qs) => setSchedules(qs.docs.map(scheduleFromSnap).filter((s): s is Schedule => !!s)));
-  onSnapshot(collection(db, "routines"), (qs) => setRoutines(qs.docs.map(routineFromSnap)));
+  subscribeVisible("schedules", me, (docs, _fresh, changed) => changed && setSchedules(docs.map(scheduleFromSnap).filter((s): s is Schedule => !!s)));
+  subscribeVisible("routines", me, (docs, _fresh, changed) => changed && setRoutines(docs.map(routineFromSnap)));
   onSnapshot(collection(db, "events"), (qs) => {
     useData.getState().setEvents(qs.docs.map((d) => normalizeEvent(d.id, d.data())).filter((e) => !e.deleted));
   });
-  const me = useSession.getState().me;
-  if (me) {
+  if (useSession.getState().me) {
     onSnapshot(collection(db, "integrations", me, "accounts"), (qs) => {
       useData.getState().setAccounts(qs.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<IntegrationAccount, "id">) })));
     });

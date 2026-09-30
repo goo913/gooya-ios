@@ -10,8 +10,10 @@ export interface NativeReminderList {
   title: string;
   /** #rrggbb */
   color: string;
-  /** Reminders lets apps change it (not a subscribed or view-only shared list). */
+  /** Reminders lets apps change what is in it (not a subscribed or view-only shared list). */
   writable: boolean;
+  /** Reminders lets apps rename and recolour it (not a list someone else shared). Missing from builds before categories. */
+  editable?: boolean;
   isDefault: boolean;
   /** The account it is in ("iCloud", "On My iPhone", …). */
   source: string;
@@ -51,6 +53,14 @@ export interface ReminderSave {
   priority?: number;
 }
 
+export interface ListSave {
+  /** Leave out to make a new list. */
+  id?: string;
+  title?: string;
+  /** #rrggbb */
+  color?: string;
+}
+
 interface GooyaRemindersModule {
   authorization(): "granted" | "denied" | "restricted" | "undetermined";
   requestAccess(): Promise<boolean>;
@@ -58,6 +68,8 @@ interface GooyaRemindersModule {
   reminders(listIds: string[], completedSince: number): Promise<NativeReminder[]>;
   save(input: ReminderSave): Promise<NativeReminder>;
   remove(id: string): Promise<boolean>;
+  /** Missing from builds before categories. */
+  saveList?: (input: ListSave) => Promise<NativeReminderList>;
   isMac(): boolean;
   addListener(event: "onChange", listener: () => void): EventSubscription;
 }
@@ -78,6 +90,13 @@ export const lists = () => need().lists();
 export const reminders = (listIds: string[], completedSince: number) => need().reminders(listIds, completedSince);
 export const save = (input: ReminderSave) => need().save(input);
 export const remove = (id: string) => need().remove(id);
+/** This build can make, rename and recolour Reminders lists (GOOYA's categories). */
+export const canSaveLists = typeof native?.saveList === "function";
+export const saveList = (input: ListSave) => {
+  const m = need();
+  if (!m.saveList) throw new Error("This GOOYA build can't make Reminders lists. Install the latest build (npm run iphone).");
+  return m.saveList(input);
+};
 /** GOOYA running on a Mac (the iPhone app on an Apple silicon Mac). */
 export const isMac = () => (native?.isMac ? native.isMac() : false);
 

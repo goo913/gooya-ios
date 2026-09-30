@@ -62,9 +62,11 @@ export default function SettingsSheet() {
           </Row>
           <ValueRow label="Time Zone" value={`${mine.timezone.replace("_", " ")} (${tzAbbrev(mine.timezone)})`} options={zones.map((z) => `${z.replace("_", " ")} (${tzAbbrev(z)})`)} onPick={(_, i) => save({ timezone: zones[i] })} title="Time Zone" />
           <Row label="Color" accessibilityLabel="My color">
-            <Host matchContents style={styles.colorHost}>
-              <ColorPicker selection={dark ? mine.hexDark : mine.hexLight} supportsOpacity={false} onSelectionChange={(c) => save({ color: c.slice(0, 7) })} />
-            </Host>
+            <View style={styles.colorWell}>
+              <Host matchContents>
+                <ColorPicker selection={dark ? mine.hexDark : mine.hexLight} supportsOpacity={false} onSelectionChange={(c) => save({ color: c.slice(0, 7) })} />
+              </Host>
+            </View>
           </Row>
         </Group>
 
@@ -126,9 +128,19 @@ export default function SettingsSheet() {
           <Row label="Reset zoom" onPress={() => setHourHeight(DEFAULT_HOUR_HEIGHT)} chevron />
         </Group>
 
+        <Group header="Categories" footer={`Shared with ${other.name}. Each has a color: a task's circle and a schedule's color.`}>
+          <Row label="Categories" onPress={() => router.push("/categories")} chevron />
+        </Group>
+
         <Group header="Tasks" footer="When off, completed tasks are hidden in the month, timeline, lists, search and the widget (the Completed list and the search filter still show them).">
           <Row label="Show Completed Tasks">
             <Switch label="Show Completed Tasks" value={mine.settings.showCompleted} onChange={(v) => saveSetting("showCompleted", v)} />
+          </Row>
+        </Group>
+
+        <Group header="Schedules" footer="When off, schedules and calendar events that have ended are hidden in the month, day and list views and the widget (search still finds them).">
+          <Row label="Show Past Schedules">
+            <Switch label="Show Past Schedules" value={mine.settings.showPastSchedules} onChange={(v) => saveSetting("showPastSchedules", v)} />
           </Row>
         </Group>
 
@@ -188,7 +200,7 @@ const styles = StyleSheet.create({
   value: { fontSize: 17 },
   small: { fontSize: 15 },
   swatch: { width: 22, height: 22, borderRadius: 11 },
-  colorHost: { width: 44, height: 32 },
+  colorWell: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
   sliderBlock: { paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   sliderHead: { flexDirection: "row", justifyContent: "space-between" },
   sliderLabel: { fontSize: 15 },

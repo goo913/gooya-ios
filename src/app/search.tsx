@@ -1,5 +1,4 @@
 import type { DateKey, EventOccurrence, Routine, TaskOccurrence } from "@shared/model";
-import { PEOPLE } from "@shared/people";
 import { dedupeEvents, describeRule, eventDays, expandEvent, expandTask, occurrenceDays } from "@shared/recurrence";
 import { scheduleAsEvent } from "@shared/schedules";
 import { addDaysKey, parseHHmm, startOfDayMs } from "@shared/time";
@@ -11,7 +10,7 @@ import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Segmented";
 import { formatHM } from "@/lib/format";
 import { useShowCompleted } from "@/lib/occurrences";
-import { colorHex, useMe, usePerson, usePersonColor } from "@/lib/people";
+import { scheduleHex, useMe, usePerson, usePersonColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
@@ -32,15 +31,16 @@ export default function SearchScreen() {
   const allEvents = useData((s) => s.events);
   const schedules = useData((s) => s.schedules);
   const users = useData((s) => s.users);
+  const lists = useData((s) => s.lists);
   const dark = useIsDark();
   const avoidDuplicates = usePerson(useMe()).settings.avoidDuplicates;
   // GOOYA's schedules, and imported events: the same event from two calendars once, as in the calendar views
   // (Settings → Integrations → Avoid duplicates).
   const events = useMemo(() => {
     const live = allEvents.filter((e) => !e.deleted).sort((a, b) => (a.source === b.source ? 0 : a.source === "google" ? -1 : 1));
-    const own = schedules.map((x) => scheduleAsEvent(x, colorHex(users[x.owner]?.color || PEOPLE[x.owner].color, dark)));
+    const own = schedules.map((x) => scheduleAsEvent(x, scheduleHex(x, users, lists, dark)));
     return [...own, ...(avoidDuplicates ? dedupeEvents(live) : live)];
-  }, [allEvents, schedules, users, dark, avoidDuplicates]);
+  }, [allEvents, schedules, users, lists, dark, avoidDuplicates]);
   const today = useToday();
   const openDetail = useSheets((s) => s.openDetail);
   const needle = q.trim().toLowerCase();

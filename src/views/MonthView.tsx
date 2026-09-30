@@ -3,9 +3,11 @@ import { DAY_MS, addDaysKey, makeKey, parseKey, startOfDayMs, weekdayOfKey } fro
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { EventChip, TaskChip } from "@/components/Chips";
+import { layoutRow } from "@shared/monthRows";
+import { EventBar, EventChip, TaskChip } from "@/components/Chips";
+import { DragPiece, MonthDragContext, MonthDragLayer, useMonthDrag, type MonthDragHost } from "@/components/MonthDrag";
 import { MONTH_NAMES, MONTH_SHORT, WEEKDAY_LETTERS } from "@/lib/format";
-import { useEventsByDay, useTasksByDay } from "@/lib/occurrences";
+import { daysOf, useEventsByDay, useTasksByDay } from "@/lib/occurrences";
 import { useMetrics, type Metrics } from "@/lib/metrics";
 import { useFilteredPeople } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
@@ -145,9 +147,66 @@ export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKe
     scrollToBlock(shown.current, false);
     setTimeout(() => scrollToBlock(shown.current, false), 120);
   }, [scrollToBlock]);
+  // Where the months are in the window and how far they are scrolled, for dragging a chip to another day.
+  const scrollY = useRef(0);
+  const listBox = useRef<View>(null);
+  const listFrame = useRef({ top: 0, height: 0 });
+  const widthRef = useRef(width);
+  useLayoutEffect(() => {
+    widthRef.current = width;
+  }, [width]);
+  const dragHost = useMemo<MonthDragHost>(() => {
+    const blockAt = (contentY: number) => {
+      const { offsets } = layoutRef.current;
+      let lo = 0;
+      let hi = offsets.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (offsets[mid] <= contentY) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo;
+    };
+    return {
+      dayAt: (x, y) => {
+        const l = layoutRef.current;
+        const contentY = y - listFrame.current.top + scrollY.current;
+        const idx = blockAt(contentY);
+        const b = l.blocks[idx];
+        const inBlock = contentY - l.offsets[idx];
+        // The next month's name under the rows is no day.
+        if (inBlock < 0 || inBlock >= b.rows * l.rowH) return null;
+        const col = Math.max(0, Math.min(6, Math.floor(x / (widthRef.current / 7))));
+        const i = Math.floor(inBlock / l.rowH) * 7 + col - b.startCol;
+        return i >= 0 && i < b.days ? makeKey(b.y, b.m, i + 1) : null;
+      },
+      cellRect: (day) => {
+        const l = layoutRef.current;
+        const idx = blockIndexFor(`${day.slice(0, 7)}-01`, l);
+        const b = l.blocks[idx];
+        const pos = Number(day.slice(8, 10)) - 1 + b.startCol;
+        const colW = widthRef.current / 7;
+        return { x: (pos % 7) * colW, y: listFrame.current.top + l.offsets[idx] + Math.floor(pos / 7) * l.rowH - scrollY.current, w: colW, h: l.rowH };
+      },
+      scrollBy: (dy) => {
+        const l = layoutRef.current;
+        const total = l.offsets[l.offsets.length - 1] + l.blocks[l.blocks.length - 1].height;
+        const next = Math.max(0, Math.min(total - listFrame.current.height, scrollY.current + dy));
+        if (Math.abs(next - scrollY.current) < 0.5) return false;
+        scrollY.current = next;
+        listRef.current?.scrollToOffset({ offset: next, animated: false });
+        return true;
+      },
+      bounds: () => ({ top: listFrame.current.top, bottom: listFrame.current.top + listFrame.current.height }),
+    };
+  }, []);
+  // While something is dragged, more months stay drawn (it can be dragged far).
+  const dragging = useMonthDrag((s) => !!s.item);
+
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const y = e.nativeEvent.contentOffset.y;
+      scrollY.current = y;
       const aligned = layoutRef.current.offsets[shown.current];
       if (!settled.current && Math.abs(y - aligned) > 1 && Math.abs(y - aligned) < 80) settle();
       const idx = titleIndexForScroll(y, layoutRef.current);
@@ -192,6 +251,8 @@ export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKe
       {display === "list" ? (
         <ListView />
       ) : (
+      <MonthDragContext.Provider value={dragHost}>
+      <View ref={listBox} style={styles.fill} onLayout={() => listBox.current?.measureInWindow((_, top, __, height) => (listFrame.current = { top, height }))}>
       <FlatList
         key={layout.rowH}
         ref={listRef}
@@ -205,13 +266,16 @@ export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKe
         scrollEventThrottle={16}
         onViewableItemsChanged={onViewable}
         viewabilityConfig={{ itemVisiblePercentThreshold: 1 }}
-        windowSize={5}
+        windowSize={dragging ? 15 : 5}
         initialNumToRender={2}
         maxToRenderPerBatch={2}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}
         style={styles.fill}
       />
+      </View>
+      <MonthDragLayer width={width / 7 - 4} renderGhost={(o) => (o.kind === "event" ? <EventChip occ={o} /> : <TaskChip occ={o} />)} />
+      </MonthDragContext.Provider>
       )}
     </View>
   );
@@ -248,7 +312,51 @@ const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, tod
       if (dayIndex < 0 || dayIndex >= days) continue;
       const day = dayIndex + 1;
       const key = makeKey(y, m, day);
-      cells.push(<DayCell key={key} dateKey={key} day={day} col={c} row={r} colW={colW} rowH={rowH} metrics={metrics} isToday={key === today} occurrences={byDay.get(key)} events={eventsByDay.get(key)} colors={colors} onPick={onPick} onHold={onHold} />);
+      const count = (byDay.get(key)?.length ?? 0) + (eventsByDay.get(key)?.length ?? 0);
+      cells.push(<DayCell key={key} dateKey={key} day={day} col={c} row={r} colW={colW} rowH={rowH} metrics={metrics} isToday={key === today} count={count} colors={colors} onPick={onPick} onHold={onHold} />);
+    }
+  }
+  // What is on the days, week by week: bars across the days of something on several, chips under them.
+  const items = [];
+  const lineH = metrics.chipHeight + metrics.chipGap;
+  for (let r = 0; r < rows; r++) {
+    const rowDays = Array.from({ length: 7 }, (_, c) => {
+      const i = r * 7 + c - startCol;
+      return i >= 0 && i < days ? makeKey(y, m, i + 1) : null;
+    });
+    const spans = new Map<string, { item: Item; key: string; days: DateKey[] }>();
+    const singles = new Map<DateKey, { item: Item; key: string }[]>();
+    for (const d of rowDays) {
+      if (!d) continue;
+      const list: { item: Item; key: string }[] = [];
+      for (const o of eventsByDay.get(d) ?? []) {
+        const covered = daysOf(o);
+        if (covered.length < 2) list.push({ item: o, key: o.key });
+        else if (!spans.has(o.key)) spans.set(o.key, { item: o, key: o.key, days: covered });
+      }
+      for (const o of byDay.get(d) ?? []) list.push({ item: o, key: o.key });
+      singles.set(d, list);
+    }
+    const { pieces, more } = layoutRow({ days: rowDays, spans: [...spans.values()], singles, lines: metrics.chipsPerDay });
+    const top = r * rowH + metrics.chipsTop;
+    for (const p of pieces) {
+      const left = p.from * colW + (p.openStart ? 0 : 2);
+      const right = (p.to + 1) * colW - (p.openEnd ? 0 : 2);
+      const o = p.item;
+      items.push(
+        // A chip or bar opens its details, as in Apple Calendar (touch and hold drags it); the rest of the day opens the day.
+        <DragPiece key={`${r}:${p.key}`} item={o} onTap={() => openChip(o, rowDays[p.from]!)} style={[styles.piece, { top: top + p.line * lineH, left, width: right - left }]}>
+          {p.kind === "bar" && o.kind === "event" ? <EventBar occ={o} openStart={p.openStart} openEnd={p.openEnd} /> : o.kind === "event" ? <EventChip occ={o} /> : <TaskChip occ={o} />}
+        </DragPiece>,
+      );
+    }
+    for (const [c, n] of more) {
+      items.push(
+        // "+3" in the day's last line, as Apple Calendar does.
+        <Text key={`${r}:more${c}`} pointerEvents="none" allowFontScaling={false} numberOfLines={1} style={[styles.more, { top: top + (metrics.chipsPerDay - 1) * lineH, left: c * colW, width: colW, color: colors.label2, fontSize: metrics.chipText, lineHeight: metrics.chipHeight }]}>
+          +{n}
+        </Text>,
+      );
     }
   }
   const next = layout.blocks[(y - FIRST_YEAR) * 12 + m] ?? null;
@@ -256,6 +364,7 @@ const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, tod
     <View style={{ height: block.height, width }}>
       {lines}
       {cells}
+      {items}
       {next ? (
         // The next month's name sits just above its first row's line, over the column of its 1st, as in Apple Calendar.
         <View style={[styles.label, { left: next.startCol * colW + 9.4, top: rows * rowH, height: labelH, paddingBottom: Math.max(0, 7.3 - 0.241 * metrics.monthLabel) }]}>
@@ -268,6 +377,8 @@ const MonthBlock = memo(function MonthBlock({ block, layout, metrics, width, tod
   );
 });
 
+type Item = TaskOccurrence | EventOccurrence;
+
 interface DayCellProps {
   dateKey: DateKey;
   day: number;
@@ -277,25 +388,21 @@ interface DayCellProps {
   rowH: number;
   metrics: Metrics;
   isToday: boolean;
-  occurrences?: TaskOccurrence[];
-  events?: EventOccurrence[];
+  /** How many things are on the day (for VoiceOver; they are drawn over the days, week by week). */
+  count: number;
   colors: Colors;
   onPick: (key: DateKey) => void;
   onHold?: (key: DateKey) => void;
 }
 
-const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metrics, isToday, occurrences, events, colors, onPick, onHold }: DayCellProps) {
+const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metrics, isToday, count, colors, onPick, onHold }: DayCellProps) {
   const weekend = col === 0 || col === 6;
-  const max = metrics.chipsPerDay;
-  const list: (TaskOccurrence | EventOccurrence)[] = [...(events ?? []), ...(occurrences ?? [])];
-  const overflow = list.length > max ? list.length - (max - 1) : 0;
-  const visible = overflow ? list.slice(0, max - 1) : list;
   const d = metrics.todayCircle;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={spokenDate(dateKey)}
-      accessibilityValue={{ text: list.length ? `${list.length} ${list.length === 1 ? "item" : "items"}` : "" }}
+      accessibilityValue={{ text: count ? `${count} ${count === 1 ? "item" : "items"}` : "" }}
       accessibilityHint="Opens the day. Touch and hold to add a task on it."
       testID={dateKey}
       onPress={() => onPick(dateKey)}
@@ -308,20 +415,6 @@ const DayCell = memo(function DayCell({ dateKey, day, col, row, colW, rowH, metr
         <Text allowFontScaling={false} style={[styles.numberText, { fontSize: metrics.dayNumber, color: isToday ? "#ffffff" : weekend ? colors.gray : colors.label }]}>
           {day}
         </Text>
-      </View>
-      <View style={[styles.chips, { top: metrics.chipsTop, gap: metrics.chipGap }]}>
-        {visible.map((o) => (
-          // A chip opens its details, as in Apple Calendar; the rest of the day opens the day.
-          <Pressable key={o.key} accessibilityRole="button" accessibilityLabel={o.title} onPress={() => openChip(o, dateKey)}>
-            {o.kind === "event" ? <EventChip occ={o} /> : <TaskChip occ={o} />}
-          </Pressable>
-        ))}
-        {overflow ? (
-          // Two chips, then "+3" in the third slot, as Apple Calendar does.
-          <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: metrics.chipText, lineHeight: metrics.chipHeight }]}>
-            +{overflow}
-          </Text>
-        ) : null}
       </View>
     </Pressable>
   );
@@ -353,6 +446,6 @@ const styles = StyleSheet.create({
   cell: { position: "absolute", alignItems: "center" },
   number: { alignItems: "center", justifyContent: "center" },
   numberText: { fontWeight: "600" },
-  chips: { position: "absolute", left: 0, right: 0, paddingHorizontal: 2 },
-  more: { textAlign: "center", fontWeight: "500" },
+  piece: { position: "absolute" },
+  more: { position: "absolute", textAlign: "center", fontWeight: "500" },
 });

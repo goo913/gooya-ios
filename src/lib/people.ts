@@ -1,4 +1,5 @@
-import { DEFAULT_SETTINGS, type Task, type UserDoc, type UserSettings } from "@shared/model";
+import { indexLists, scheduleColor, taskColor, type ListIndex } from "@shared/categories";
+import { DEFAULT_SETTINGS, type Schedule, type Task, type TaskList, type UserDoc, type UserSettings } from "@shared/model";
 import { COLORS, PEOPLE, colorPair, otherPerson, type ColorName, type PersonKey } from "@shared/people";
 import { useData } from "@/store/data";
 import { usePrefs, type PersonFilter } from "@/store/prefs";
@@ -50,17 +51,31 @@ export function usePersonColor(key: PersonKey): string {
   return useIsDark() ? p.hexDark : p.hexLight;
 }
 
+const indexes = new WeakMap<TaskList[], ListIndex>();
+
+/** The lists by id (kept per lists array, so every chip does not index them again). */
+export function listIndexOf(lists: TaskList[]): ListIndex {
+  let index = indexes.get(lists);
+  if (!index) {
+    index = indexLists(lists);
+    indexes.set(lists, index);
+  }
+  return index;
+}
+
 /**
- * The colour a task is drawn in. With both people shown it is its owner's colour (whose it is); with one person shown,
- * its list's colour, so lists tell tasks apart (a Reminders list keeps its colour from Reminders). `shown` is how many
- * people the view shows when it chooses that itself (the day view has its own setting), else the filter's.
+ * The colour a task is drawn in: its category's, whoever's it is and however many people are shown (a Reminders list
+ * not in a category yet has its own colour); its owner's when neither is known.
  */
-export function useTaskColor(task: Pick<Task, "owner" | "listId">, shown?: number): string {
+export function useTaskColor(task: Pick<Task, "owner" | "listId">): string {
   const personColor = usePersonColor(task.owner);
-  const filtered = useFilteredPeople().length;
-  const single = (shown ?? filtered) === 1;
-  const listColor = useData((s) => (single ? s.lists.find((l) => l.id === task.listId)?.color : undefined));
-  return single && listColor ? listColor : personColor;
+  const color = useData((s) => taskColor(task, listIndexOf(s.lists)));
+  return color ?? personColor;
+}
+
+/** A schedule's colour: its own, its category's, or its owner's. */
+export function scheduleHex(s: Pick<Schedule, "owner" | "color" | "categoryId">, users: Partial<Record<PersonKey, UserDoc>>, lists: TaskList[], dark: boolean): string {
+  return scheduleColor(s, listIndexOf(lists)) ?? colorHex(users[s.owner]?.color || PEOPLE[s.owner].color, dark);
 }
 
 export function useMe(): PersonKey {

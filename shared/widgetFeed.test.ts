@@ -114,3 +114,39 @@ test('colours as calendars send them', () => {
   assert.equal(hex6('#abc'), '#aabbcc')
   assert.equal(hex6('blue'), null)
 })
+
+const lists = [
+  { id: 'tasks', name: 'Tasks', color: '#007aff', icon: 'list', order: 0, createdBy: 'gooya' as const, createdAt: 0, updatedAt: 0 },
+  { id: 'bills', name: 'Bills', color: '#34c759', icon: 'list', order: 1, createdBy: 'gooya' as const, createdAt: 0, updatedAt: 0 },
+  { id: 'rl_x', name: 'Reminders', color: '#ff9500', icon: 'list', order: 100, createdBy: 'eunbi' as const, createdAt: 0, updatedAt: 0, source: 'apple-reminders' as const, owner: 'eunbi' as const, externalId: 'E1', categoryId: 'bills' },
+]
+
+test('tasks and schedules are in their categories’ colours; a schedule’s own colour comes first', () => {
+  const feed = buildWidgetFeed({
+    ...base,
+    lists,
+    tasks: [task('Pay rent', 'gooya', TODAY, null, { listId: 'bills' }), task('Water bill', 'eunbi', TODAY, null, { listId: 'rl_x' })],
+    schedules: [{ ...schedule('Bank', 'gooya', TODAY, '10:00', '11:00'), categoryId: 'bills' }, { ...schedule('Party', 'gooya', TODAY, '19:00', '20:00'), categoryId: 'bills', color: '#ff2d55' }, schedule('Lunch', 'gooya', TODAY, '12:00', '13:00')],
+  })
+  const color = (t: string) => feed.items.find((i) => i.title === t)?.color
+  // A reminder in 은비's list that stands for Bills is green like Bills; a schedule without a category has none (its owner's).
+  assert.deepEqual(['Pay rent', 'Water bill', 'Bank', 'Party', 'Lunch'].map(color), ['#34c759', '#34c759', '#34c759', '#ff2d55', null])
+})
+
+test('the other person’s private things are not on the widget; one’s own are', () => {
+  const feed = buildWidgetFeed({
+    ...base,
+    tasks: [task('Mine', 'gooya', TODAY, null, { private: true }), task('Hers', 'eunbi', TODAY, null, { private: true }), task('Shared', 'eunbi', TODAY, null)],
+    schedules: [{ ...schedule('Her secret', 'eunbi', TODAY, '10:00', '11:00'), private: true }],
+  })
+  assert.deepEqual(feed.items.map((i) => i.title).sort(), ['Mine', 'Shared'])
+})
+
+test('with Show Past Schedules off, schedules and events that have ended are left out', () => {
+  const now = startOfDayMs(TODAY, TZ) + 12 * H
+  const input = { ...base, now, tasks: [task('Old task', 'gooya', '2026-09-27', null)], schedules: [schedule('Breakfast', 'gooya', TODAY, '08:00', '09:00'), schedule('Dinner', 'gooya', TODAY, '19:00', '20:00')], events: [holiday('Yesterday', '2026-09-27', TODAY)] }
+  const shown = buildWidgetFeed({ ...input, me: user('gooya', { settings: { showPastSchedules: false } }) }).items.map((i) => i.title)
+  // Tasks follow Show Completed Tasks, not this.
+  assert.deepEqual(shown, ['Old task', 'Dinner'])
+  assert.equal(buildWidgetFeed(input).items.length, 4)
+})

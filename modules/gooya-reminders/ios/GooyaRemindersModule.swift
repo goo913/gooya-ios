@@ -3,8 +3,9 @@ import ExpoModulesCore
 import UIKit
 
 /// Apple Reminders for GOOYA, straight from EventKit: the lists, the reminders in them, and saving GOOYA's changes back
-/// (title, notes, due day and time, completed, priority, list). Due days and times are the phone's clock as GOOYA keeps
-/// them ("2026-09-29", "17:00"), so nothing is converted through instants on the way in or out.
+/// (title, notes, due day and time, completed, priority, list), and the lists that are GOOYA's categories (made, named
+/// and coloured as the categories are). Due days and times are the phone's clock as GOOYA keeps them ("2026-09-29",
+/// "17:00"), so nothing is converted through instants on the way in or out.
 public class GooyaRemindersModule: Module {
   private let store = EKEventStore()
   private var observer: NSObjectProtocol?
@@ -65,16 +66,37 @@ public class GooyaRemindersModule: Module {
 
     AsyncFunction("lists") { () -> [[String: Any]] in
       let defaultId = self.store.defaultCalendarForNewReminders()?.calendarIdentifier
-      return self.store.calendars(for: .reminder).map { calendar in
-        [
-          "id": calendar.calendarIdentifier,
-          "title": calendar.title,
-          "color": Self.hex(calendar.cgColor),
-          "writable": calendar.allowsContentModifications,
-          "isDefault": calendar.calendarIdentifier == defaultId,
-          "source": calendar.source?.title ?? "",
-        ]
+      return self.store.calendars(for: .reminder).map { Self.serialize($0, defaultId: defaultId) }
+    }
+
+    /// Makes a Reminders list (no id; in the account new reminders go to) or renames and recolours one: a GOOYA category
+    /// as a list in Reminders. Returns the list as saved.
+    AsyncFunction("saveList") { (input: ListInput) throws -> [String: Any] in
+      let calendar: EKCalendar
+      if let id = input.id {
+        guard let found = self.store.calendar(withIdentifier: id) else {
+          throw ListGoneException()
+        }
+        guard !found.isImmutable, !found.isSubscribed else {
+          throw ReadOnlyListException(found.title)
+        }
+        calendar = found
+      } else {
+        guard let source = self.store.defaultCalendarForNewReminders()?.source ?? self.store.sources.first(where: { $0.sourceType == .local }) else {
+          throw NoRemindersAccountException()
+        }
+        calendar = EKCalendar(for: .reminder, eventStore: self.store)
+        calendar.source = source
+        calendar.title = input.title ?? "GOOYA"
       }
+      if let title = input.title, !title.isEmpty {
+        calendar.title = title
+      }
+      if let color = input.color, let cg = Self.cgColor(color) {
+        calendar.cgColor = cg
+      }
+      try self.store.saveCalendar(calendar, commit: true)
+      return Self.serialize(calendar, defaultId: self.store.defaultCalendarForNewReminders()?.calendarIdentifier)
     }
 
     /// Open reminders, and those completed since `completedSince` (ms), in the given lists.
@@ -237,6 +259,30 @@ public class GooyaRemindersModule: Module {
 
   // MARK: - values for JavaScript
 
+  static func serialize(_ calendar: EKCalendar, defaultId: String?) -> [String: Any] {
+    [
+      "id": calendar.calendarIdentifier,
+      "title": calendar.title,
+      "color": Self.hex(calendar.cgColor),
+      "writable": calendar.allowsContentModifications,
+      "editable": !calendar.isImmutable && !calendar.isSubscribed,
+      "isDefault": calendar.calendarIdentifier == defaultId,
+      "source": calendar.source?.title ?? "",
+    ]
+  }
+
+  /// "#rrggbb" as a colour, or nil.
+  static func cgColor(_ hex: String) -> CGColor? {
+    var s = hex.trimmingCharacters(in: .whitespaces)
+    if s.hasPrefix("#") {
+      s.removeFirst()
+    }
+    guard s.count == 6, let v = UInt32(s, radix: 16) else {
+      return nil
+    }
+    return CGColor(srgbRed: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255, blue: CGFloat(v & 0xff) / 255, alpha: 1)
+  }
+
   static func serialize(_ reminder: EKReminder) -> [String: Any] {
     let due = due(of: reminder)
     return [
@@ -282,6 +328,19 @@ struct ReminderInput: Record {
   @Field var alarmAtDue: Bool = false
   @Field var completed: Bool?
   @Field var priority: Int?
+}
+
+struct ListInput: Record {
+  @Field var id: String?
+  @Field var title: String?
+  /// "#rrggbb"
+  @Field var color: String?
+}
+
+final class NoRemindersAccountException: Exception, @unchecked Sendable {
+  override var reason: String {
+    "This iPhone has no account for Reminders lists."
+  }
 }
 
 final class ReminderGoneException: Exception, @unchecked Sendable {

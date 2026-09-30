@@ -1,3 +1,4 @@
+import { indexLists, scheduleColor, taskColor } from './categories'
 import type { CalendarEvent, DateKey, Schedule, Task, TaskList, UserDoc } from './model'
 import { PEOPLE, PERSON_KEYS, colorPair, otherPerson, type PersonKey } from './people'
 import { dedupeEvents, eventDays, expandEvent, expandTask } from './recurrence'
@@ -40,8 +41,8 @@ export interface WidgetItem {
   priority: number
   listId: string
   /**
-   * An event's calendar colour; a task's list colour (the widget uses it when it shows one person, as the app does);
-   * null for a schedule, which is in its owner's colour.
+   * An event's calendar colour; a task's category colour; a schedule's own or category colour. null for a schedule in
+   * no category, which is in its owner's colour.
    */
   color: string | null
   /** The calendar an event or schedule is in ("accountId:calendarId", "gooya:schedules"), for calendars hidden on the phone. */
@@ -120,10 +121,14 @@ export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, da
   })
 
   const showCompleted = me.settings?.showCompleted !== false
-  const listColor = new Map(lists.map((l) => [l.id, hex6(l.color)]))
+  const showPast = me.settings?.showPastSchedules !== false
+  const byId = indexLists(lists)
+  // The other person's private tasks and schedules (Share off) are theirs alone.
+  const visible = (x: { owner: PersonKey; private?: boolean }) => !x.private || x.owner === me.key
   const items: WidgetItem[] = []
 
   for (const t of tasks) {
+    if (!visible(t)) continue
     for (const occ of expandTask(t, rangeStart, rangeEnd)) {
       if (!showCompleted && occ.completed) continue
       const day = occ.allDay ? occ.dueDate : keyInZone(occ.start, tz)
@@ -144,7 +149,7 @@ export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, da
         flagged: !!t.flagged,
         priority: t.priority ?? 0,
         listId: t.listId,
-        color: listColor.get(t.listId) ?? null,
+        color: hex6(taskColor(t, byId)),
         calendar: null,
       })
     }
@@ -154,7 +159,7 @@ export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, da
   const imported = events.filter((e) => !e.deleted).sort((a, b) => (a.source === b.source ? 0 : a.source === 'google' ? -1 : 1))
   const eventList = [
     ...(me.settings?.avoidDuplicates === false ? imported : dedupeEvents(imported)).map((e) => ({ e, kind: 'event' as const })),
-    ...schedules.map((s) => ({ e: scheduleAsEvent(s, ''), kind: 'schedule' as const })),
+    ...schedules.filter(visible).map((s) => ({ e: scheduleAsEvent(s, hex6(scheduleColor(s, byId)) ?? ''), kind: 'schedule' as const })),
   ]
   for (const { e, kind } of eventList) {
     for (const occ of expandEvent(e, rangeStart, rangeEnd)) {
@@ -162,6 +167,8 @@ export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, da
       const first = covered[0]
       const last = covered[covered.length - 1]
       if (!first || last < from || first >= to) continue
+      // Settings → Show Past Schedules off: what has ended stays off the widget too.
+      if (!showPast && (occ.allDay ? last < today : Math.max(occ.start, occ.end) <= now)) continue
       items.push({
         id: occ.key,
         kind,
@@ -178,7 +185,7 @@ export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, da
         flagged: false,
         priority: 0,
         listId: '',
-        color: kind === 'event' ? hex6(e.color) : null,
+        color: hex6(e.color),
         calendar: kind === 'event' ? `${e.accountId}:${e.calendarId}` : 'gooya:schedules',
       })
     }

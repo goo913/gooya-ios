@@ -1,13 +1,15 @@
 import { useMemo } from 'react'
 import { useData } from '@/store/data'
 import { usePrefs } from '@/store/prefs'
-import { PEOPLE, type PersonKey } from '@shared/people'
+import type { PersonKey } from '@shared/people'
 import type { DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from '@shared/model'
 import { dedupeEvents, eventDays, expandEvent, expandRoutine, expandTask, occurrenceDays } from '@shared/recurrence'
 import { scheduleAsEvent } from '@shared/schedules'
 import { useShallow } from 'zustand/react/shallow'
 import { useIsDark } from '@/theme'
-import { colorHex, useMe, usePerson } from './people'
+import { scheduleHex, useMe, usePerson } from './people'
+import { useNow, viewerTz } from './useNow'
+import { keyInZone } from '@shared/time'
 
 export function sortOccurrences(a: TaskOccurrence, b: TaskOccurrence): number {
   if (a.allDay !== b.allDay) return a.allDay ? -1 : 1
@@ -60,39 +62,63 @@ export function useRoutineOccurrences(start: number, end: number, people: Person
   }, [routines, start, end])
 }
 
+/** Whether an occurrence has ended: an all-day one after its last day, a timed one at its end (or start). */
+export function isPast(o: Pick<EventOccurrence, 'allDay' | 'start' | 'end' | 'endDate'>, now: number, today: string): boolean {
+  return o.allDay ? o.endDate < today : Math.max(o.start, o.end) <= now
+}
+
 /**
- * Schedules for people within [start, end): GOOYA's own (drawn in their owner's colour) and the events of imported
- * calendars (in their calendar's colour, deduped when the setting is on).
+ * Schedules for people within [start, end): GOOYA's own (in their own colour, their category's, or their owner's) and
+ * the events of imported calendars (in their calendar's colour, deduped when the setting is on). Settings → Show Past
+ * Schedules off leaves out those that have ended.
  */
 export function useEventOccurrences(start: number, end: number, people: PersonKey[]): EventOccurrence[] {
   const hidden = usePrefs((s) => s.hiddenCalendars)
   const events = useData(useShallow((s) => s.events.filter((e) => people.includes(e.owner) && !e.deleted && !hidden.includes(`${e.accountId}:${e.calendarId}`))))
   const schedules = useData(useShallow((s) => s.schedules.filter((x) => people.includes(x.owner) && !hidden.includes('gooya:schedules'))))
   const users = useData((s) => s.users)
+  const lists = useData((s) => s.lists)
   const dark = useIsDark()
   const me = useMe()
-  const avoidDuplicates = usePerson(me).settings.avoidDuplicates
+  const settings = usePerson(me).settings
+  const avoidDuplicates = settings.avoidDuplicates
+  const showPast = settings.showPastSchedules
+  // Checked every minute only while past schedules are hidden (a schedule leaves as it ends).
+  const now = useNow(showPast ? 3_600_000 : 60_000)
+  const today = keyInZone(now, viewerTz)
   return useMemo(() => {
     const ordered = [...events].sort((a, b) => (a.source === b.source ? 0 : a.source === 'google' ? -1 : 1))
-    const list = [...(avoidDuplicates ? dedupeEvents(ordered) : ordered), ...schedules.map((x) => scheduleAsEvent(x, colorHex(users[x.owner]?.color || PEOPLE[x.owner].color, dark)))]
+    const list = [...(avoidDuplicates ? dedupeEvents(ordered) : ordered), ...schedules.map((x) => scheduleAsEvent(x, scheduleHex(x, users, lists, dark)))]
     const out: EventOccurrence[] = []
-    for (const e of list) out.push(...expandEvent(e, start, end))
+    for (const e of list) for (const o of expandEvent(e, start, end)) if (showPast || !isPast(o, now, today)) out.push(o)
     out.sort((a, b) => (a.allDay !== b.allDay ? (a.allDay ? -1 : 1) : a.start - b.start))
     return out
-  }, [events, schedules, users, dark, avoidDuplicates, start, end])
+  }, [events, schedules, users, lists, dark, avoidDuplicates, showPast, now, today, start, end])
 }
 
-export function useEventsByDay(start: number, end: number, people: PersonKey[], viewerTz: string): Map<DateKey, EventOccurrence[]> {
+const dayCache = new WeakMap<EventOccurrence, DateKey[]>()
+
+/** The days an event occurrence is on, on this phone's clock (worked out once per occurrence). */
+export function daysOf(o: EventOccurrence): DateKey[] {
+  let days = dayCache.get(o)
+  if (!days) {
+    days = eventDays(o, viewerTz)
+    dayCache.set(o, days)
+  }
+  return days
+}
+
+export function useEventsByDay(start: number, end: number, people: PersonKey[], zone: string): Map<DateKey, EventOccurrence[]> {
   const occ = useEventOccurrences(start, end, people)
   return useMemo(() => {
     const map = new Map<DateKey, EventOccurrence[]>()
     for (const o of occ) {
-      for (const day of eventDays(o, viewerTz)) {
+      for (const day of zone === viewerTz ? daysOf(o) : eventDays(o, zone)) {
         let list = map.get(day)
         if (!list) map.set(day, (list = []))
         list.push(o)
       }
     }
     return map
-  }, [occ, viewerTz])
+  }, [occ, zone])
 }

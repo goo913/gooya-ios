@@ -71,11 +71,10 @@ struct WidgetModel {
 
   func color(_ owner: String) -> Color { Color(hex: personHex(owner)) }
 
-  /// A task's ring: its owner's colour, or its list's when the widget shows one person (as the app does); an event's
-  /// calendar colour; a schedule's owner's colour.
+  /// A task's ring: its category's colour (as the app draws it, however many people are shown); a schedule's own or
+  /// category's colour; an event's calendar colour; the owner's colour for anything without one.
   func hex(_ item: FeedItem) -> String {
-    if item.isTask { return (who != "both" ? item.color : nil) ?? personHex(item.owner) }
-    return item.color ?? personHex(item.owner)
+    item.color ?? personHex(item.owner)
   }
 
   func name(_ owner: String) -> String { feed.person(owner)?.name ?? owner }

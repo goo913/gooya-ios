@@ -1,22 +1,24 @@
-import type { CalendarEvent, DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from "@shared/model";
+import type { DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from "@shared/model";
 import { otherPerson, type PersonKey } from "@shared/people";
 import { splitByDay } from "@shared/recurrence";
-import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, keyInZone, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
+import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { EventChip, TaskChip, TaskRing } from "@/components/Chips";
+import { EventBar, EventChip, TaskChip, TaskRing } from "@/components/Chips";
+import { layoutRow } from "@shared/monthRows";
 import { mix, readableTint, tintText } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, WEEKDAY_SHORT, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { useMetrics, type Metrics } from "@/lib/metrics";
-import { useEventOccurrences, useRoutineOccurrences, useTaskOccurrences } from "@/lib/occurrences";
+import { daysOf, useEventOccurrences, useRoutineOccurrences, useTaskOccurrences } from "@/lib/occurrences";
 import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib/people";
 import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
-import { applyTaskEdit, deleteTaskScope, movedFields, setCompleted, type TaskFields } from "@/lib/taskOps";
+import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
+import { canMove, chooseFrom, moveEventByDays, moveEventTo, moveTaskByDays, moveTaskTo } from "@/lib/moves";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
-import { deleteRoutine, patchEvent, patchSchedule } from "@/lib/db";
+import { deleteRoutine } from "@/lib/db";
 import { useNav } from "@/store/nav";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
@@ -121,6 +123,12 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
       for (const d of dates) if (occ.startDate <= d && d <= occ.endDate) map.get(place(d, occ.event.owner))!.allDayEvents.push(occ);
       continue;
     }
+    // A day or longer (Sep 30, 7 PM to Oct 3): with the all-day ones at the top, as Apple Calendar shows it, instead of
+    // filling whole days of the timeline.
+    if (occ.end - occ.start >= DAY_MS) {
+      for (const d of daysOf(occ)) if (dateSet.has(d)) map.get(place(d, occ.event.owner))!.allDayEvents.push(occ);
+      continue;
+    }
     for (const s of splitByDay(occ, viewerTz)) {
       if (!dateSet.has(s.dateKey)) continue;
       // A schedule without an end time takes the room of a task (half an hour), so what follows does not cover it.
@@ -139,11 +147,53 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
 
 const snapFor = (hourH: number): number => (hourH >= 110 ? 5 : 15);
 
-function sheet(options: { label: string; destructive?: boolean; onSelect: () => void }[]) {
-  ActionSheetIOS.showActionSheetWithOptions(
-    { options: [...options.map((o) => o.label), "Cancel"], cancelButtonIndex: options.length, destructiveButtonIndex: options.map((o, i) => (o.destructive ? i : -1)).filter((i) => i >= 0) },
-    (i) => options[i]?.onSelect(),
+const sheet = chooseFrom;
+
+/** How near the view's left or right edge a dragged item must be held to move a day back or on. */
+const EDGE = 28;
+
+/**
+ * Holding something dragged at the view's left or right edge moves it a day back or on, and another day every 0.7 s it
+ * stays there (as Apple Calendar turns the page): `shift` days in all.
+ */
+function useEdgeShift(edges: { current: { left: number; right: number } }) {
+  const [shift, setShift] = useState(0);
+  const shiftRef = useRef(0);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const side = useRef(0);
+  const stop = useCallback(() => {
+    if (timer.current) clearInterval(timer.current);
+    timer.current = null;
+    side.current = 0;
+  }, []);
+  const track = useCallback(
+    (x: number) => {
+      const e = edges.current;
+      const s = x < e.left + EDGE ? -1 : x > e.right - EDGE ? 1 : 0;
+      if (s === side.current) return;
+      stop();
+      side.current = s;
+      if (!s) return;
+      timer.current = setInterval(() => {
+        shiftRef.current += s;
+        setShift(shiftRef.current);
+        void Haptics.selectionAsync();
+      }, 700);
+    },
+    [edges, stop],
   );
+  const reset = useCallback(() => {
+    stop();
+    shiftRef.current = 0;
+    setShift(0);
+  }, [stop]);
+  useEffect(() => stop, [stop]);
+  return { shift, shiftRef, track, reset };
+}
+
+/** "Thu, Oct 1" for a dragged item's new day. */
+function shortDay(key: DateKey): string {
+  return `${WEEKDAY_SHORT[weekdayOfKey(key)]}, ${MONTH_SHORT[Number(key.slice(5, 7)) - 1]} ${Number(key.slice(8, 10))}`;
 }
 
 export interface DayViewProps {
@@ -202,14 +252,40 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const schedOcc = useRoutineOccurrences(rangeStart, rangeEnd, people);
   const eventOcc = useEventOccurrences(rangeStart, rangeEnd, people);
   const columns = useMemo(() => buildColumns(allDates, people, taskOcc, schedOcc, eventOcc, merged), [allDates, people, taskOcc, schedOcc, eventOcc, merged]);
+  // Days side by side in one column each (the iPad's week, or one person's days): something on several of them is one
+  // bar across them at the top, as in the month; with a column per person, each day has its own chips.
+  const spanning = days > 1 && colPeople.length === 1;
+  const spanLayouts = useMemo(() => {
+    if (!spanning) return null;
+    return pageDates.map((dates) => {
+      const spans = new Map<string, { item: TaskOccurrence | EventOccurrence; key: string; days: DateKey[] }>();
+      const singles = new Map<DateKey, { item: TaskOccurrence | EventOccurrence; key: string }[]>();
+      for (const d of dates) {
+        const c = columns.get(colKey(d, colPeople[0]));
+        const list: { item: TaskOccurrence | EventOccurrence; key: string }[] = [];
+        for (const o of c?.allDayEvents ?? []) {
+          const covered = daysOf(o);
+          if (covered.length < 2) list.push({ item: o, key: o.key });
+          else if (!spans.has(o.key)) spans.set(o.key, { item: o, key: o.key, days: covered });
+        }
+        for (const o of c?.allDay ?? []) list.push({ item: o, key: o.key });
+        singles.set(d, list);
+      }
+      return layoutRow({ days: dates, spans: [...spans.values()], singles, lines: 2 });
+    });
+  }, [spanning, pageDates, columns, colPeople]);
   const allDayRows = useMemo(() => {
+    if (spanLayouts) {
+      const { pieces, more } = spanLayouts[1];
+      return Math.min(2, Math.max(0, ...pieces.map((x) => x.line + 1), more.size ? 2 : 0));
+    }
     let max = 0;
     for (const d of pageDates[1]) for (const p of colPeople) {
       const c = columns.get(colKey(d, p));
       max = Math.max(max, Math.min(2, (c?.allDay.length ?? 0) + (c?.allDayEvents.length ?? 0)));
     }
     return max;
-  }, [columns, pageDates, colPeople]);
+  }, [spanLayouts, columns, pageDates, colPeople]);
 
   const gutterW = (pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
   const pageW = width - gutterW;
@@ -311,32 +387,22 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
     },
     [actions],
   );
+  // A task dragged to a time (and maybe another day or person's column): kept on its owner's clock (src/lib/moves.ts).
   const commitMove = useCallback((seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => {
-    const task = seg.occ.task;
-    const dueTime = formatHHmm(Math.floor(startMin / 60), startMin % 60);
-    const fields: TaskFields = movedFields(task, seg.occ, date, dueTime, person, viewerTz);
-    if (!task.rrule) return void applyTaskEdit(task, seg.occ, fields, "future");
-    sheet([
-      { label: "Save for This Task Only", onSelect: () => void applyTaskEdit(task, seg.occ, fields, "this") },
-      { label: "Save for Future Tasks", onSelect: () => void applyTaskEdit(task, seg.occ, fields, "future") },
-    ]);
+    moveTaskTo(seg.occ, date, formatHHmm(Math.floor(startMin / 60), startMin % 60), person);
   }, []);
 
   // A schedule dragged to another time or day: GOOYA's own, or an event of a two-way calendar (the change goes to
   // Google or iCloud).
   const commitEventMove = useCallback((seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => {
-    const { event, dateKey } = seg.occ;
-    const start = zonedMs(date, formatHHmm(Math.floor(startMin / 60), startMin % 60), viewerTz);
-    const delta = start - seg.occ.start;
-    const days = (s: number, e: number) => ({ startDate: keyInZone(s, event.timezone), endDate: keyInZone(Math.max(s, e - 1), event.timezone) });
-    const save = (patch: Partial<CalendarEvent>) => void (event.source === "gooya" ? patchSchedule(event.id, patch) : patchEvent(event.id, patch));
-    const all = () => save({ start: event.start + delta, end: event.end + delta, ...days(event.start + delta, event.end + delta) });
-    if (!event.rrule) return all();
-    sheet([
-      { label: "Save for This Event Only", onSelect: () => save({ overrides: { ...(event.overrides ?? {}), [dateKey]: { ...(event.overrides?.[dateKey] ?? {}), start, end: seg.occ.end + delta } } }) },
-      { label: "Save for All Events", onSelect: all },
-    ]);
+    moveEventTo(seg.occ, zonedMs(date, formatHHmm(Math.floor(startMin / 60), startMin % 60), viewerTz));
   }, []);
+
+  // The view's left and right edges in the window: holding a dragged item there moves it a day back or on, and the
+  // view follows it there when it is let go.
+  const root = useRef<View>(null);
+  const edges = useRef({ left: 0, right: window.width });
+  const onShift = useCallback((days: number) => onChangeDate(addDaysKey(dateKey, days)), [onChangeDate, dateKey]);
 
   const hours = Array.from({ length: 24 }, (_, i) => i + 1);
   const secondaryLabels = useMemo(() => {
@@ -359,7 +425,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   );
 
   return (
-    <View style={[styles.fill, { backgroundColor: colors.bg }]}>
+    <View ref={root} style={[styles.fill, { backgroundColor: colors.bg }]} onLayout={() => root.current?.measureInWindow((x, _y, w) => (edges.current = { left: x, right: x + w }))}>
       <View style={{ backgroundColor: colors.bar }}>
       {chrome ? (
         <>
@@ -410,7 +476,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                       ))}
                     </View>
                   ) : null}
-                  {allDayRows ? (
+                  {allDayRows && !spanning ? (
                     <View style={[styles.allDayRow, { top: allDayTop }]}>
                       {colPeople.map((pk) => {
                         const col = columns.get(colKey(date, pk));
@@ -419,17 +485,9 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                         const visible = overflow ? list.slice(0, 1) : list;
                         return (
                           <View key={pk} style={styles.allDayCol}>
-                            {visible.map((o) =>
-                              o.kind === "event" ? (
-                                <Pressable key={o.key} onPress={() => actions.openEvent(o)}>
-                                  <EventChip occ={o} />
-                                </Pressable>
-                              ) : (
-                                <Pressable key={o.key} onPress={() => actions.openTask(o)}>
-                                  <TaskChip occ={o} shown={people.length} />
-                                </Pressable>
-                              ),
-                            )}
+                            {visible.map((o) => (
+                              <AllDayChip key={o.key} occ={o} date={date} dateIndex={di} days={days} dateW={pageW / days} draggable={p === 1} edges={edges} onShift={onShift} onOpen={o.kind === "event" ? () => actions.openEvent(o) : () => actions.openTask(o)} />
+                            ))}
                             {overflow ? (
                               <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
                                 +{overflow}
@@ -442,6 +500,37 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                   ) : null}
                 </View>
               ))}
+              {allDayRows && spanLayouts ? (
+                <View style={[styles.spanLayer, { top: allDayTop, width: pageW, height: allDayRows * allDayRowH }]}>
+                  {spanLayouts[p].pieces.map((x) => {
+                    const dateW = pageW / days;
+                    const left = x.from * dateW + (x.openStart ? 0 : 2);
+                    const right = (x.to + 1) * dateW - (x.openEnd ? 0 : 2);
+                    const o = x.item;
+                    return (
+                      <View key={x.key} style={[styles.spanPiece, { top: x.line * allDayRowH, left, width: right - left }]}>
+                        <AllDayChip
+                          occ={o}
+                          date={dates[x.from]}
+                          dateIndex={x.from}
+                          days={days}
+                          dateW={dateW}
+                          draggable={p === 1}
+                          edges={edges}
+                          onShift={onShift}
+                          onOpen={o.kind === "event" ? () => actions.openEvent(o) : () => actions.openTask(o)}
+                          bar={x.kind === "bar" ? { openStart: x.openStart, openEnd: x.openEnd } : undefined}
+                        />
+                      </View>
+                    );
+                  })}
+                  {[...spanLayouts[p].more].map(([c, n]) => (
+                    <Text key={`more${c}`} pointerEvents="none" allowFontScaling={false} numberOfLines={1} style={[styles.more, styles.spanPiece, { top: allDayRowH, left: c * (pageW / days), width: pageW / days, color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
+                      +{n}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
             </View>
           ))}
         </ScrollView>
@@ -508,13 +597,14 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                             subW={subW}
                             subIndex={p === 1 ? di * colPeople.length + pi : -1}
                             subCols={subCols}
-                            shown={people.length}
                             selectedKey={selectedKey}
                             actions={actions}
                             onRoutineMenu={routineMenu}
                             onTaskMenu={taskMenu}
                             onMove={onMoveTask}
                             onMoveEvent={commitEventMove}
+                            edges={edges}
+                            onShift={onShift}
                           />
                         ))}
                         {date === today ? <View pointerEvents="none" style={[styles.nowLine, { backgroundColor: colors.red, top: (nowMin / 60) * hourH - 1 }]} /> : null}
@@ -546,17 +636,18 @@ interface SubColumnProps {
   /** This column's index among the middle page's sub-columns (for drag targets), or -1 on the side pages. */
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
-  /** How many people the view shows (a task's ring is its list's colour when one). */
-  shown: number;
   selectedKey: string | null;
   actions: DayActions;
   onRoutineMenu: (occ: RoutineOccurrence) => void;
   onTaskMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
   onMoveEvent: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
+  /** The view's edges in the window (holding a dragged item there moves it a day), and showing days further on. */
+  edges: { current: { left: number; right: number } };
+  onShift: (days: number) => void;
 }
 
-const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, shown, selectedKey, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent }: SubColumnProps) {
+const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, selectedKey, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent, edges, onShift }: SubColumnProps) {
   const longPress = useMemo(
     () =>
       Gesture.LongPress()
@@ -575,10 +666,10 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
           <RoutineBand key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
         ))}
         {data.events.map((seg) => (
-          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} />
+          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} edges={edges} onShift={onShift} />
         ))}
         {data.timed.map((seg) => (
-          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} shown={shown} selected={seg.occ.key === selectedKey} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} />
+          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} edges={edges} onShift={onShift} />
         ))}
       </View>
     </GestureDetector>
@@ -619,6 +710,8 @@ interface EventBlockProps {
   selected: boolean;
   onTap: (occ: EventOccurrence) => void;
   onMove: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
+  edges: { current: { left: number; right: number } };
+  onShift: (days: number) => void;
 }
 
 /**
@@ -626,8 +719,9 @@ interface EventBlockProps {
  * bar inset at the left, the title in the calendar's colour, the time under it when there is room. An event of a
  * two-way calendar can be lifted with a long press and dragged to another time or day (its own person's columns).
  */
-const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, selected, onTap, onMove }: EventBlockProps) {
+const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, selected, onTap, onMove, edges, onShift }: EventBlockProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
+  const edge = useEdgeShift(edges);
   const [lifted, setLifted] = useState(false);
   const previewRef = useRef<{ startMin: number; dx: number; target: number } | null>(null);
   const moved = useRef(false);
@@ -646,25 +740,30 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, []);
   const onPanUpdate = useCallback(
-    (e: { translationX: number; translationY: number }) => {
+    (e: { translationX: number; translationY: number; absoluteX: number }) => {
       if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
       moved.current = true;
+      edge.track(e.absoluteX);
       const deltaMin = Math.round(((e.translationY / hourH) * 60) / snap) * snap;
       const startMin = Math.min(24 * 60 - snap, Math.max(0, seg.startMin + deltaMin));
       const days = subIndex < 0 ? 0 : Math.round(e.translationX / (subW * perDay));
       const target = subIndex < 0 ? -1 : Math.max(subIndex % perDay, Math.min(subCols.length - perDay + (subIndex % perDay), subIndex + days * perDay));
       showPreview({ startMin, dx: target < 0 ? 0 : (target - subIndex) * subW, target });
     },
-    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, perDay, showPreview],
+    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, perDay, showPreview, edge],
   );
   const onPanEnd = useCallback(() => {
     const p = previewRef.current;
+    const shift = edge.shiftRef.current;
+    edge.reset();
     setLifted(false);
     showPreview(null);
     if (!p || !moved.current) return;
-    const targetDate = p.target >= 0 ? subCols[p.target].date : date;
+    const targetDate = addDaysKey(p.target >= 0 ? subCols[p.target].date : date, shift);
     if (p.startMin !== seg.startMin || targetDate !== date) onMove(seg, p.startMin, targetDate);
-  }, [subCols, date, seg, onMove, showPreview]);
+    // Held at an edge: the view goes to the days it was moved to.
+    if (shift) onShift(shift);
+  }, [subCols, date, seg, onMove, showPreview, edge, onShift]);
   // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
   /* eslint-disable react-hooks/refs */
   const pan = useMemo(
@@ -676,8 +775,11 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
         .onStart(onPanStart)
         .onUpdate(onPanUpdate)
         .onEnd(onPanEnd)
-        .onFinalize(() => setLifted(false)),
-    [movable, onPanStart, onPanUpdate, onPanEnd],
+        .onFinalize(() => {
+          setLifted(false);
+          edge.reset();
+        }),
+    [movable, onPanStart, onPanUpdate, onPanEnd, edge],
   );
   /* eslint-enable react-hooks/refs */
   const tap = useMemo(() => Gesture.Tap().runOnJS(true).onEnd(() => onTap(seg.occ)), [onTap, seg.occ]);
@@ -695,7 +797,10 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   const titleLines = Math.max(1, Math.floor((avail - (showTime ? timeH : 0)) / titleH));
   const shownStart = preview ? seg.start + (preview.startMin - seg.startMin) * 60_000 : seg.start;
   const shownEnd = preview ? seg.end + (preview.startMin - seg.startMin) * 60_000 : seg.end;
+  const clock = seg.end > seg.start ? `${formatTime(shownStart, viewerTz)} – ${formatTime(shownEnd, viewerTz)}` : formatTime(shownStart, viewerTz);
   return (
+    <>
+    {preview ? <DragBadge top={top} left={`${(seg.lane / seg.lanes) * 100}%`} dx={preview.dx} label={`${edge.shift ? `${shortDay(addDaysKey(preview.target >= 0 ? subCols[preview.target].date : date, edge.shift))} · ` : ""}${clock}`} /> : null}
     <GestureDetector gesture={gesture}>
       <View
         accessibilityRole="button"
@@ -713,14 +818,27 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
           </Text>
           {showTime ? (
             <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
-              {seg.end > seg.start ? `${formatTime(shownStart, viewerTz)} – ${formatTime(shownEnd, viewerTz)}` : formatTime(shownStart, viewerTz)}
+              {clock}
             </Text>
           ) : null}
         </View>
       </View>
     </GestureDetector>
+    </>
   );
 });
+
+/** While something is dragged: where it would go, over it ("Fri, Oct 2 · 10:00 AM"). */
+function DragBadge({ top, left, dx, label }: { top: number; left: `${number}%`; dx: number; label: string }) {
+  const colors = useColors();
+  return (
+    <View pointerEvents="none" style={[styles.badge, { top: Math.max(0, top - 26), left, transform: [{ translateX: dx }] }]}>
+      <Text allowFontScaling={false} numberOfLines={1} style={[styles.badgeText, { color: "#ffffff", backgroundColor: colors.blue }]}>
+        {label}
+      </Text>
+    </View>
+  );
+}
 
 interface TaskPillProps {
   seg: Seg<TaskOccurrence>;
@@ -734,11 +852,12 @@ interface TaskPillProps {
   subW: number;
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
-  shown: number;
   selected: boolean;
   onTap: (occ: TaskOccurrence) => void;
   onMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
+  edges: { current: { left: number; right: number } };
+  onShift: (days: number) => void;
 }
 
 /**
@@ -746,8 +865,9 @@ interface TaskPillProps {
  * hour, the owner's ring (tap it to complete) and the title. Long-press lifts it and dragging moves it (across days and
  * people); a tap opens it.
  */
-const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, shown, selected, onTap, onMenu, onMove }: TaskPillProps) {
+const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, selected, onTap, onMenu, onMove, edges, onShift }: TaskPillProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
+  const edge = useEdgeShift(edges);
   const [lifted, setLifted] = useState(false);
   const moved = useRef(false);
   const o = seg.occ;
@@ -764,25 +884,33 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, []);
   const onPanUpdate = useCallback(
-    (e: { translationX: number; translationY: number }) => {
+    (e: { translationX: number; translationY: number; absoluteX: number }) => {
       if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
       moved.current = true;
+      edge.track(e.absoluteX);
       const deltaMin = Math.round(((e.translationY / hourH) * 60) / snap) * snap;
       const startMin = Math.min(24 * 60 - snap, Math.max(0, seg.startMin + deltaMin));
       const shift = subIndex < 0 ? 0 : Math.max(-subIndex, Math.min(subCols.length - 1 - subIndex, Math.round(e.translationX / subW)));
       showPreview({ startMin, dx: shift * subW, target: subIndex < 0 ? -1 : subIndex + shift });
     },
-    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, showPreview],
+    [hourH, snap, seg.startMin, subIndex, subCols.length, subW, showPreview, edge],
   );
   const onPanEnd = useCallback(() => {
     const p = previewRef.current;
+    const days = edge.shiftRef.current;
+    edge.reset();
     setLifted(false);
     showPreview(null);
     if (p && moved.current) {
       const target = p.target >= 0 ? subCols[p.target] : { date, person };
-      if (p.startMin !== seg.startMin || target.date !== date || target.person !== person) onMove(seg, p.startMin, target.date, target.person);
+      const targetDate = addDaysKey(target.date, days);
+      // Held at an edge for another day, it stays whose it is (the edge is only over the other person's column).
+      const owner = days ? person : target.person;
+      if (p.startMin !== seg.startMin || targetDate !== date || owner !== person) onMove(seg, p.startMin, targetDate, owner);
+      // Held at an edge: the view goes to the days it was moved to.
+      if (days) onShift(days);
     } else onMenu(o);
-  }, [subCols, date, person, seg, onMove, onMenu, o, showPreview]);
+  }, [subCols, date, person, seg, onMove, onMenu, o, showPreview, edge, onShift]);
   // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
   /* eslint-disable react-hooks/refs */
   const pan = useMemo(
@@ -793,8 +921,11 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
         .onStart(onPanStart)
         .onUpdate(onPanUpdate)
         .onEnd(onPanEnd)
-        .onFinalize(() => setLifted(false)),
-    [onPanStart, onPanUpdate, onPanEnd],
+        .onFinalize(() => {
+          setLifted(false);
+          edge.reset();
+        }),
+    [onPanStart, onPanUpdate, onPanEnd, edge],
   );
   /* eslint-enable react-hooks/refs */
   // A tap on the ring completes the task (its own button handles that); anywhere else on the block opens it.
@@ -812,11 +943,13 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
   const startMin = preview?.startMin ?? seg.startMin;
   const top = (startMin / 60) * hourH;
   const height = Math.max(metrics.taskRing + 8, (Math.min(TASK_MINUTES, 24 * 60 - seg.startMin) / 60) * hourH - 1);
-  const previewTime = preview ? formatHM(Math.floor(startMin / 60) % 24, startMin % 60) : null;
+  const previewTime = preview ? `${edge.shift ? `${shortDay(addDaysKey(preview.target >= 0 ? subCols[preview.target].date : date, edge.shift))} · ` : ""}${formatHM(Math.floor(startMin / 60) % 24, startMin % 60)}` : null;
   const bangs = ["", "!", "!!", "!!!"][o.task.priority ?? 0];
-  // Both people shown: whose task it is; one person: which list.
-  const ring = useTaskColor(o.task, shown);
+  // Its category's colour.
+  const ring = useTaskColor(o.task);
   return (
+    <>
+    {preview && previewTime ? <DragBadge top={top} left={`${(seg.lane / seg.lanes) * 100}%`} dx={preview.dx} label={previewTime} /> : null}
     <GestureDetector gesture={gesture}>
       <View
         accessibilityRole="button"
@@ -831,14 +964,83 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
           <TaskRing color={ring} done={o.completed} size={metrics.taskRing} />
         </Pressable>
         <Text allowFontScaling={false} numberOfLines={1} style={[styles.pillText, { color: o.completed ? colors.label2 : colors.label, fontSize: metrics.eventTitle, lineHeight: Math.min(height, metrics.taskRing + 8) }]}>
-          {previewTime ? `${previewTime} · ` : ""}
           {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
           {o.title}
         </Text>
       </View>
     </GestureDetector>
+    </>
   );
 });
+
+/**
+ * An all-day task or schedule over the timeline: a tap opens it; touch and hold lifts it to drag to another day (the
+ * days side by side, or held at the view's edge for the days before or after).
+ */
+function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShift, onOpen, bar }: { occ: TaskOccurrence | EventOccurrence; date: DateKey; dateIndex: number; days: number; dateW: number; draggable: boolean; edges: { current: { left: number; right: number } }; onShift: (days: number) => void; onOpen: () => void; bar?: { openStart: boolean; openEnd: boolean } }) {
+  const colors = useColors();
+  const [dx, setDx] = useState(0);
+  const [to, setTo] = useState(0);
+  const [lifted, setLifted] = useState(false);
+  const delta = useRef(0);
+  const edge = useEdgeShift(edges);
+  const movable = draggable && canMove(occ);
+  // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
+  /* eslint-disable react-hooks/refs */
+  const gesture = useMemo(() => {
+    const end = () => {
+      edge.reset();
+      delta.current = 0;
+      setDx(0);
+      setTo(0);
+      setLifted(false);
+    };
+    const pan = Gesture.Pan()
+      .enabled(movable)
+      .activateAfterLongPress(350)
+      .runOnJS(true)
+      .onStart(() => {
+        setLifted(true);
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      })
+      .onUpdate((e) => {
+        edge.track(e.absoluteX);
+        delta.current = Math.max(-dateIndex, Math.min(days - 1 - dateIndex, Math.round(e.translationX / dateW)));
+        // Days side by side: it goes from day to day; one day: it follows the finger, to hold it at an edge.
+        setDx(days > 1 ? delta.current * dateW : Math.max(-dateW * 0.4, Math.min(dateW * 0.4, e.translationX)));
+        setTo(delta.current);
+      })
+      .onEnd(() => {
+        const shift = edge.shiftRef.current;
+        const total = delta.current + shift;
+        end();
+        if (total) {
+          if (occ.kind === "task") moveTaskByDays(occ, total);
+          else moveEventByDays(occ, total);
+        }
+        if (shift) onShift(shift);
+      })
+      .onFinalize(end);
+    const tap = Gesture.Tap().runOnJS(true).onEnd(onOpen);
+    return Gesture.Exclusive(pan, tap);
+  }, [movable, edge, dateIndex, days, dateW, occ, onShift, onOpen]);
+  /* eslint-enable react-hooks/refs */
+  return (
+    <GestureDetector gesture={gesture}>
+      <View accessibilityRole="button" accessibilityLabel={occ.title} style={[lifted && styles.chipLifted, { transform: [{ translateX: dx }, { scale: lifted ? 1.05 : 1 }] }]}>
+        {bar && occ.kind === "event" ? <EventBar occ={occ} openStart={bar.openStart} openEnd={bar.openEnd} /> : occ.kind === "event" ? <EventChip occ={occ} /> : <TaskChip occ={occ} />}
+        {lifted && (to || edge.shift) ? (
+          // Where it would go, on it (the strip over the timeline has no room around it).
+          <View pointerEvents="none" style={styles.shiftBadge}>
+            <Text allowFontScaling={false} numberOfLines={1} style={[styles.badgeText, { color: "#ffffff", backgroundColor: colors.blue }]}>
+              {shortDay(addDaysKey(date, to + edge.shift))}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    </GestureDetector>
+  );
+}
 
 /** A week column's date as Apple's iPad week has it: "Tue 29", today's number in a red circle. */
 function WeekColumnHeader({ date, today, colors, top, height }: { date: DateKey; today: DateKey; colors: Colors; top: number; height: number }) {
@@ -947,6 +1149,8 @@ const styles = StyleSheet.create({
   name: { flex: 1, textAlign: "center", fontWeight: "600" },
   allDayRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", gap: 2, paddingHorizontal: 2 },
   allDayCol: { flex: 1, minWidth: 0, gap: 3 },
+  spanLayer: { position: "absolute", left: 0 },
+  spanPiece: { position: "absolute" },
   more: { textAlign: "center", fontWeight: "500" },
   hourRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
   secondary: { position: "absolute", left: 8, flexDirection: "row", alignItems: "baseline", gap: 2 },
@@ -970,6 +1174,10 @@ const styles = StyleSheet.create({
   eventTime: {},
   pill: { position: "absolute", borderRadius: 5, borderWidth: StyleSheet.hairlineWidth, paddingLeft: 3, paddingRight: 5, flexDirection: "row", alignItems: "flex-start", gap: 5, overflow: "hidden", marginHorizontal: 1.5 },
   pillLifted: { shadowColor: "#000", shadowOpacity: 0.45, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
+  badge: { position: "absolute", zIndex: 60 },
+  badgeText: { fontSize: 13, fontWeight: "600", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 7, overflow: "hidden" },
+  chipLifted: { zIndex: 50, shadowColor: "#000", shadowOpacity: 0.4, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
+  shiftBadge: { position: "absolute", right: 2, top: 0, bottom: 0, justifyContent: "center" },
   check: { alignItems: "center", justifyContent: "center" },
   pillText: { fontWeight: "600", flexShrink: 1 },
   week: { flexGrow: 0, borderBottomWidth: StyleSheet.hairlineWidth },
