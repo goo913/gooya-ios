@@ -491,3 +491,26 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
   }
   return out
 }
+
+/** Who wrote a task last: the app (either person, any device), or the iPhone's Reminders sync (remindersImport). */
+export type LastEdit = 'app' | 'reminders'
+
+const REMINDER_FIELDS = ['owner', 'title', 'notes', 'dueDate', 'dueTime', 'completed', 'priority', 'listId', 'rrule'] as const
+
+/** A task that is, or is to become, one of its owner's reminders (a reminder, or a task put in a Reminders list). */
+function onReminders(d: Record<string, unknown> | null): boolean {
+  return !!d && (d.source === REMINDERS_SOURCE || (typeof d.listId === 'string' && d.listId.startsWith('rl_')))
+}
+
+/**
+ * Whose iPhones to wake with a silent push after a task was written (`before` / `after` are the stored documents,
+ * null when there was none): the owners of a reminder that changed anywhere but in their iPhone's own Reminders sync,
+ * so the change reaches Reminders now instead of the next time GOOYA opens on that iPhone.
+ */
+export function reminderWakeups(before: Record<string, unknown> | null, after: Record<string, unknown> | null): string[] {
+  if (after?.lastEdit === 'reminders') return []
+  if (!onReminders(before) && !onReminders(after)) return []
+  if (before && after && REMINDER_FIELDS.every((k) => JSON.stringify(before[k] ?? null) === JSON.stringify(after[k] ?? null))) return []
+  const owners = [before, after].filter((d) => onReminders(d)).map((d) => d?.owner)
+  return [...new Set(owners.filter((o): o is string => typeof o === 'string' && !!o))]
+}

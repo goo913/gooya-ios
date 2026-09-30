@@ -229,3 +229,25 @@ test('a reminder that got a new id when it moved stays the same task', () => {
   assert.equal(out.tasks[0].fields.externalRefs?.[0].externalId, 'r1-new')
   assert.equal(out.tasks[0].fields.listId, lists[1].id)
 })
+
+// ---------------------------------------------------------------- waking the iPhone that keeps the reminders
+import { reminderWakeups } from './reminders'
+
+test('a reminder changed in GOOYA wakes its owner’s iPhone; the sync’s own writes and other fields do not', () => {
+  const r = { owner: 'gooya', source: 'apple-reminders', listId: 'rl_abc', title: 'Canvas quiz', dueDate: '2026-09-29', dueTime: '17:00', completed: true }
+  assert.deepEqual(reminderWakeups(r, { ...r, dueDate: '2026-09-28', dueTime: '10:00', lastEdit: 'app' }), ['gooya'])
+  assert.deepEqual(reminderWakeups(r, { ...r, dueDate: '2026-09-28', lastEdit: 'reminders' }), [])
+  assert.deepEqual(reminderWakeups(r, { ...r, updatedAt: 5, lastEdit: 'app' }), [])
+  assert.deepEqual(reminderWakeups(r, null), ['gooya'])
+})
+
+test('a GOOYA task put in a Reminders list wakes the iPhone that will make the reminder; other tasks never do', () => {
+  const t = { owner: 'eunbi', source: 'gooya', listId: 'tasks', title: 'Milk' }
+  assert.deepEqual(reminderWakeups(null, { ...t, listId: 'rl_groceries', lastEdit: 'app' }), ['eunbi'])
+  assert.deepEqual(reminderWakeups(t, { ...t, title: 'Oat milk', lastEdit: 'app' }), [])
+})
+
+test('a reminder given to the other person wakes both iPhones', () => {
+  const r = { owner: 'gooya', source: 'apple-reminders', listId: 'rl_abc', title: 'Call mom' }
+  assert.deepEqual(reminderWakeups(r, { ...r, owner: 'eunbi', listId: 'tasks', source: 'apple-reminders' }), ['gooya', 'eunbi'])
+})

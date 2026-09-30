@@ -3,7 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore'
 import { logger } from 'firebase-functions'
 import { normalizeList, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE } from '../../../shared/people'
-import { LEGACY_REMINDERS_LIST_ID, applyReminderImport, type DeviceList, type ReminderFields, type ReminderImport } from '../../../shared/reminders'
+import { LEGACY_REMINDERS_LIST_ID, applyReminderImport, type DeviceList, type LastEdit, type ReminderFields, type ReminderImport } from '../../../shared/reminders'
 import { keyInZone, fieldsInZone } from '../../../shared/time'
 import { personFromWidgetToken, shortHash } from './common'
 
@@ -132,7 +132,12 @@ export const remindersImport = onRequest({ cors: true, invoker: 'public', memory
     await add((b) => b.set(db.collection('lists').doc(id), rest))
   }
   for (const id of outcome.deleteLists) await add((b) => b.delete(db.collection('lists').doc(id)))
-  for (const t of outcome.tasks) await add((b) => (t.create ? b.set(db.collection('tasks').doc(t.id), t.fields) : b.set(db.collection('tasks').doc(t.id), t.fields, { merge: true })))
+  // Marked as the iPhone's own writes, so they do not wake that iPhone again (onTaskWritten).
+  const fromReminders = { lastEdit: 'reminders' satisfies LastEdit }
+  for (const t of outcome.tasks) {
+    const ref = db.collection('tasks').doc(t.id)
+    await add((b) => (t.create ? b.set(ref, { ...t.fields, ...fromReminders }) : b.set(ref, { ...t.fields, ...fromReminders }, { merge: true })))
+  }
   for (const id of outcome.deleteTasks) await add((b) => b.delete(db.collection('tasks').doc(id)))
   if (pending) await batch.commit()
   // The old single "Apple Reminders" list goes once nothing is in it.

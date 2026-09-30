@@ -1,5 +1,5 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
-import { getMessaging } from 'firebase-admin/messaging'
+import { getMessaging, type BatchResponse } from 'firebase-admin/messaging'
 import { logger } from 'firebase-functions'
 import { normalizeUser } from '../../shared/normalize'
 import { PEOPLE, type PersonKey } from '../../shared/people'
@@ -20,13 +20,29 @@ export interface PushContent {
 
 const INVALID = new Set(['messaging/registration-token-not-registered', 'messaging/invalid-registration-token', 'messaging/invalid-argument'])
 
+/** A person's push tokens (their iPhones, and browsers from the website's time). */
+async function tokensOf(person: PersonKey): Promise<string[]> {
+  const snap = await getFirestore().collection('users').doc(person).get()
+  const user = snap.exists ? normalizeUser(snap.id, snap.data() as Record<string, unknown>) : null
+  return Array.from(new Set(user?.fcmTokens ?? [])).filter(Boolean)
+}
+
+/** Takes tokens that no longer reach a device off the person. */
+async function pruneTokens(person: PersonKey, tokens: string[], res: BatchResponse, kind: string): Promise<void> {
+  const dead: string[] = []
+  res.responses.forEach((r, i) => {
+    if (!r.success) {
+      const code = r.error?.code ?? ''
+      logger.warn(`${kind} push failed`, { person, code })
+      if (INVALID.has(code)) dead.push(tokens[i])
+    }
+  })
+  if (dead.length) await getFirestore().collection('users').doc(person).update({ fcmTokens: FieldValue.arrayRemove(...dead) })
+}
+
 /** Data-only web push to every device of a person; prunes dead tokens. Returns true if any delivery succeeded. */
 export async function sendToPerson(person: PersonKey, content: PushContent): Promise<boolean> {
-  const db = getFirestore()
-  const ref = db.collection('users').doc(person)
-  const snap = await ref.get()
-  const user = snap.exists ? normalizeUser(snap.id, snap.data() as Record<string, unknown>) : null
-  const tokens = Array.from(new Set(user?.fcmTokens ?? [])).filter(Boolean)
+  const tokens = await tokensOf(person)
   if (!tokens.length) {
     logger.info('no tokens', { person })
     return false
@@ -45,15 +61,28 @@ export async function sendToPerson(person: PersonKey, content: PushContent): Pro
       payload: { aps: { alert: { title: content.title, body: content.body }, sound: 'default', 'thread-id': content.tag ?? 'gooya', 'mutable-content': 1 } },
     },
   })
-  const dead: string[] = []
-  res.responses.forEach((r, i) => {
-    if (!r.success) {
-      const code = r.error?.code ?? ''
-      logger.warn('push failed', { person, code })
-      if (INVALID.has(code)) dead.push(tokens[i])
-    }
+  await pruneTokens(person, tokens, res, 'alert')
+  return res.successCount > 0
+}
+
+/**
+ * A silent push that wakes a person's iPhone for a moment so it syncs its Reminders (GOOYA can reach Reminders only on
+ * the iPhone). Nothing is shown. iOS decides when the app runs and allows a few such pushes an hour; pushes waiting
+ * for the same phone are folded into one.
+ */
+export async function sendSyncPush(person: PersonKey): Promise<boolean> {
+  const tokens = await tokensOf(person)
+  if (!tokens.length) return false
+  const res = await getMessaging().sendEachForMulticast({
+    tokens,
+    data: { kind: 'sync' },
+    apns: {
+      headers: { 'apns-priority': '5', 'apns-push-type': 'background', 'apns-collapse-id': 'gooya-sync' },
+      payload: { aps: { contentAvailable: true } },
+    },
   })
-  if (dead.length) await ref.update({ fcmTokens: FieldValue.arrayRemove(...dead) })
+  await pruneTokens(person, tokens, res, 'sync')
+  logger.info('sync push', { person, sent: res.successCount })
   return res.successCount > 0
 }
 

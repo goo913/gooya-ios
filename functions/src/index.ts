@@ -7,7 +7,9 @@ import { getFirestore } from 'firebase-admin/firestore'
 import { normalizeTask } from '../../shared/normalize'
 import type { Task } from '../../shared/model'
 import { rebuildQueueForTask, sendDueAlerts, extendQueues } from './alerts'
-import { notifyTaskAdded } from './notify'
+import { notifyTaskAdded, sendSyncPush } from './notify'
+import { reminderWakeups } from '../../shared/reminders'
+import type { PersonKey } from '../../shared/people'
 
 setGlobalOptions({ region: 'us-east1', maxInstances: 5, memory: '256MiB' })
 initializeApp()
@@ -30,6 +32,16 @@ export const onTaskWritten = onDocumentWritten('tasks/{taskId}', async (event) =
       await notifyTaskAdded(task)
     } catch (e) {
       logger.error('notifyTaskAdded failed', { taskId, error: String(e) })
+    }
+  }
+  // One of a person's reminders changed somewhere other than their iPhone's own Reminders sync (the other person's
+  // GOOYA, another device): wake that iPhone so the change is in Reminders now, not the next time GOOYA opens there.
+  const wake = reminderWakeups(before?.exists ? (before.data() as Record<string, unknown>) : null, after?.exists ? (after.data() as Record<string, unknown>) : null)
+  for (const person of wake) {
+    try {
+      await sendSyncPush(person as PersonKey)
+    } catch (e) {
+      logger.error('sendSyncPush failed', { taskId, person, error: String(e) })
     }
   }
 })

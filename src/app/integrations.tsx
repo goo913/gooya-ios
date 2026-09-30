@@ -37,6 +37,10 @@ export default function IntegrationsSheet() {
   const mine = usePerson(me);
   const other = usePerson(otherPerson(me));
   const rem = useReminders();
+  // The one device that syncs this person's reminders, when it is another one than this.
+  const remindersDevice = mine.doc?.remindersDevice ?? null;
+  const elsewhere = remindersDevice && remindersDevice.id !== rem.deviceId ? remindersDevice : null;
+  const syncingHere = rem.enabled && !elsewhere;
   const accounts = useData((s) => s.accounts);
   const params = useLocalSearchParams<{ error?: string; integrations?: string }>();
   const [message, setMessage] = useState<string | null>(params.integrations === "google" ? (params.error ? `Google: ${params.error}` : "Google Calendar connected.") : null);
@@ -172,12 +176,17 @@ export default function IntegrationsSheet() {
 
         <Group
           header="Apple Reminders"
-          footer={`Two-way. Your Reminders lists are lists in GOOYA, in their own colours, for you and ${other.name}. Complete, rename, re-date, move or delete a reminder in GOOYA and it changes in Reminders; add a task to one of your Reminders lists in GOOYA and it is added to Reminders. Changes made in Reminders come in when you open GOOYA, and at once while it is open. ${other.name}’s changes to your reminders reach Reminders the next time GOOYA is open on this iPhone.`}
+          footer={`Two-way. Your Reminders lists are lists in GOOYA, in their own colours, for you and ${other.name}. Complete, rename, re-date, move or delete a reminder in GOOYA and it changes in Reminders; add a task to one of your Reminders lists in GOOYA and it is added to Reminders. Apple keeps Reminders on your devices only, so this iPhone does the syncing: your changes in GOOYA are in Reminders within seconds, and changes made in Reminders come in when you open GOOYA, and at once while it is open. When ${other.name} changes one of your reminders, GOOYA wakes this iPhone to take it to Reminders; if iOS doesn't let it, it goes the next time GOOYA opens here. Only one of your devices syncs Reminders: the one where you turned this on last.`}
         >
           <Row label="Sync My Reminders">
-            <Switch label="Sync my reminders" value={rem.enabled} onChange={(v) => void setRemindersEnabled(v)} />
+            <Switch label="Sync my reminders" value={syncingHere} onChange={(v) => void setRemindersEnabled(v)} />
           </Row>
-          {rem.enabled ? (
+          {elsewhere ? (
+            <Text style={[styles.error, { color: colors.label2, paddingTop: 10 }]}>
+              Your reminders sync on your {elsewhere.name}. Turn Sync My Reminders on to sync them on this device instead.
+            </Text>
+          ) : null}
+          {syncingHere ? (
             <Row label={rem.syncing ? "Syncing…" : "Sync Now"} labelColor={colors.blue} onPress={() => void syncReminders(true)}>
               {rem.lastSync ? (
                 <Text style={[styles.small, { color: colors.label2 }]}>
@@ -187,8 +196,22 @@ export default function IntegrationsSheet() {
             </Row>
           ) : null}
           {rem.access === "denied" ? <Row label="Allow Reminders in Settings" labelColor={colors.blue} onPress={() => void Linking.openSettings()} chevron /> : null}
-          {rem.lastError ? <Text style={[styles.error, { color: colors.red, paddingTop: 10 }]}>{rem.lastError}</Text> : null}
-          {rem.enabled && rem.problems.length ? (
+          {rem.lastError && !elsewhere ? <Text style={[styles.error, { color: colors.red, paddingTop: 10 }]}>{rem.lastError}</Text> : null}
+          {syncingHere && rem.sent ? (
+            // What GOOYA last changed in Reminders, so a change made here can be checked there.
+            <View style={styles.problems}>
+              <Text style={[styles.small, { color: colors.label2 }]}>
+                Changed in Reminders {new Date(rem.sent.at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}:
+              </Text>
+              {rem.sent.lines.slice(0, 6).map((line, i) => (
+                <Text key={i} style={[styles.small, { color: colors.label }]}>
+                  {line}
+                </Text>
+              ))}
+              {rem.sent.lines.length > 6 ? <Text style={[styles.small, { color: colors.label2 }]}>and {rem.sent.lines.length - 6} more</Text> : null}
+            </View>
+          ) : null}
+          {syncingHere && rem.problems.length ? (
             <View style={styles.problems}>
               {rem.problems.map((p, i) => (
                 <Text key={i} style={[styles.small, { color: colors.orange }]}>
@@ -199,7 +222,7 @@ export default function IntegrationsSheet() {
           ) : null}
         </Group>
 
-        {rem.enabled && rem.lists.length ? (
+        {syncingHere && rem.lists.length ? (
           <Group header="Reminders lists" footer="The ticked lists are in GOOYA. Lists marked read-only are subscribed or shared with you for viewing: GOOYA shows them but can’t change them.">
             {rem.lists.map((l) => (
               <CheckRow
