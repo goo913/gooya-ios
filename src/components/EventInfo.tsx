@@ -5,6 +5,7 @@ import { Linking, Pressable, Share, StyleSheet, Text, View } from "react-native"
 import { useColors } from "@/theme";
 import { GlassCapsule } from "./Glass";
 import { Icon } from "./Icon";
+import { RULE } from "@/lib/layout";
 
 // The sections of an event's details as Apple Calendar shows them (iOS 26/27): Location with Join, Invitees with their
 // answers, Options, Video Call Information, Details; links in the Calendar app's red. Used by the details sheet and
@@ -311,7 +312,7 @@ const styles = StyleSheet.create({
   section: { paddingHorizontal: 16, marginTop: 26 },
   sectionTitle: { fontSize: 17, fontWeight: "600", marginLeft: 14, marginBottom: 8 },
   card: { borderRadius: 26, overflow: "hidden" },
-  hairline: { height: StyleSheet.hairlineWidth },
+  hairline: { height: RULE },
   locRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 14 },
   tile: { width: 48, height: 48, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   locText: { flex: 1, minWidth: 0 },

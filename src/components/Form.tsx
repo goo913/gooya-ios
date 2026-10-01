@@ -3,6 +3,7 @@ import { ActionSheetIOS, Pressable, StyleSheet, Switch as RNSwitch, Text, TextIn
 import { WEEKDAY_LETTERS } from "@/lib/format";
 import { useColors } from "@/theme";
 import { Icon } from "./Icon";
+import { RULE } from "@/lib/layout";
 
 /** Inset grouped list (Apple's "New Event" style). */
 export function Group({ children, header, footer, style }: { children: ReactNode; header?: ReactNode; footer?: ReactNode; style?: StyleProp<ViewStyle> }) {
@@ -146,7 +147,7 @@ const styles = StyleSheet.create({
   groupHeader: { marginBottom: 6, paddingHorizontal: 16, fontSize: 13 },
   groupFooter: { marginTop: 6, paddingHorizontal: 16, fontSize: 13, lineHeight: 17 },
   card: { borderRadius: 12, overflow: "hidden" },
-  hairline: { height: StyleSheet.hairlineWidth, marginLeft: 16 },
+  hairline: { height: RULE, marginLeft: 16 },
   row: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 },
   dim: { opacity: 0.4 },
   labelWrap: { flexShrink: 0 },

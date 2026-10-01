@@ -18,6 +18,7 @@ import { router } from "expo-router";
 import { usePrefs } from "@/store/prefs";
 import { ListView } from "./ListView";
 import { useColors, type Colors } from "@/theme";
+import { RULE } from "@/lib/layout";
 
 /** Space kept under the month title for the pills above it: the title's line starts this far below the safe area. */
 export const TITLE_TOP = 59;
@@ -452,7 +453,7 @@ const styles = StyleSheet.create({
   title: { fontWeight: "700", paddingHorizontal: 20 },
   weekdays: { flexDirection: "row", marginTop: 9, paddingBottom: 2.5 },
   weekday: { flex: 1, textAlign: "center", fontWeight: "600" },
-  line: { position: "absolute", height: StyleSheet.hairlineWidth },
+  line: { position: "absolute", height: RULE },
   label: { position: "absolute", justifyContent: "flex-end" },
   labelText: { fontWeight: "600" },
   cell: { position: "absolute", alignItems: "center" },

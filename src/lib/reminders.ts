@@ -303,8 +303,8 @@ function changeWords(c: ReminderPlan["changes"][number], saved: Native.NativeRem
   return words;
 }
 
-/** This device's name for the one-device rule: "iPhone", "iPad" or "Mac". */
-function deviceName(): string {
+/** This device's name ("iPhone", "iPad" or "Mac"): for the one-device rule, and in what GOOYA says about this device. */
+export function deviceName(): string {
   return Native.isMac() ? "Mac" : Platform.OS === "ios" && Platform.isPad ? "iPad" : "iPhone";
 }
 

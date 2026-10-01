@@ -6,10 +6,14 @@ import { GlassCapsule } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
 import { usePad, type PadView } from "@/store/pad";
 import { useColors } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
 
 // The iPad's bar, measured on Apple Calendar for iPad (iPadOS 27, 820 points wide): glass capsules 44 points high,
 // 8 points under the status bar: Calendars · Lists · Settings at the left with + beside them, Day · Week · Month ·
 // Year in the middle, Search at the right. Under it the title ("September 2026", 34 points) and Today in red.
+//
+// On the Mac (Apple Calendar on macOS 27) the bar is the window's own toolbar, 52 points, drawn by macOS
+// (modules/gooya-mac, GooyaMacToolbar); under it the title (30 points) with ‹ Today › at the right.
 
 const VIEWS: { value: PadView; label: string }[] = [
   { value: "day", label: "Day" },
@@ -19,8 +23,11 @@ const VIEWS: { value: PadView; label: string }[] = [
 ];
 
 export const TOOLBAR_HEIGHT = 44;
+/** The Mac window's toolbar (in its title bar, drawn by macOS), which the calendar starts under. */
+export const MAC_TOOLBAR = 52;
+const MAC_TITLE = 54;
 /** From the top of the safe area to the bottom of the title row. */
-export const PAD_HEADER = 8 + TOOLBAR_HEIGHT + 60;
+export const PAD_HEADER = isMac ? MAC_TOOLBAR + MAC_TITLE : 8 + TOOLBAR_HEIGHT + 60;
 
 function BarIcon({ icon, label, onPress }: { icon: SFSymbol; label: string; onPress: () => void }) {
   const colors = useColors();
@@ -32,6 +39,12 @@ function BarIcon({ icon, label, onPress }: { icon: SFSymbol; label: string; onPr
 }
 
 export function PadToolbar({ width, onCalendars, onLists, onSettings, onAdd, onSearch }: { width: number; onCalendars: () => void; onLists: () => void; onSettings: () => void; onAdd: () => void; onSearch: () => void }) {
+  // The Mac's is the window's toolbar (modules/gooya-mac).
+  if (isMac) return null;
+  return <TabletToolbar width={width} onCalendars={onCalendars} onLists={onLists} onSettings={onSettings} onAdd={onAdd} onSearch={onSearch} />;
+}
+
+function TabletToolbar({ width, onCalendars, onLists, onSettings, onAdd, onSearch }: { width: number; onCalendars: () => void; onLists: () => void; onSettings: () => void; onAdd: () => void; onSearch: () => void }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const view = usePad((s) => s.view);
@@ -88,10 +101,40 @@ export function PadToolbar({ width, onCalendars, onLists, onSettings, onAdd, onS
   );
 }
 
-/** "September 2026" (the month bold, the year not), or the year alone in red; Today at the right. */
-export function PadTitle({ month, year, onToday }: { month: string | null; year: number; onToday: () => void }) {
+/**
+ * "September 2026" (the month bold, the year not), or the year alone in red; Today at the right (on the Mac ‹ Today ›,
+ * and the title starts after the sidebar).
+ */
+export function PadTitle({ month, year, onToday, onStep, left = 0 }: { month: string | null; year: number; onToday: () => void; onStep?: (dir: 1 | -1) => void; left?: number }) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  if (isMac) {
+    return (
+      <View style={[styles.macTitleRow, { left: left + 22 }]}>
+        <Text allowFontScaling={false} numberOfLines={1} style={[styles.macTitle, { color: month ? colors.label : colors.red }]}>
+          {month ? (
+            <>
+              {month}
+              <Text style={styles.titleYear}> {year}</Text>
+            </>
+          ) : (
+            year
+          )}
+        </Text>
+        <View style={styles.macNav}>
+          <MacNavButton icon="chevron.left" label="Previous" onPress={() => onStep?.(-1)} />
+          <Pressable accessibilityRole="button" accessibilityLabel="Today" onPress={onToday} style={({ pressed }) => [pressed && styles.pressed]}>
+            <View style={[styles.macToday, { backgroundColor: colors.fill3 }]}>
+              <Text allowFontScaling={false} style={[styles.macTodayText, { color: colors.label }]}>
+                Today
+              </Text>
+            </View>
+          </Pressable>
+          <MacNavButton icon="chevron.right" label="Next" onPress={() => onStep?.(1)} />
+        </View>
+      </View>
+    );
+  }
   return (
     <View style={[styles.titleRow, { top: insets.top + 8 + TOOLBAR_HEIGHT }]}>
       <Text allowFontScaling={false} numberOfLines={1} style={[styles.title, { color: month ? colors.label : colors.red }]}>
@@ -110,6 +153,17 @@ export function PadTitle({ month, year, onToday }: { month: string | null; year:
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+function MacNavButton({ icon, label, onPress }: { icon: SFSymbol; label: string; onPress: () => void }) {
+  const colors = useColors();
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>
+      <View style={[styles.macNavButton, { backgroundColor: colors.fill3 }]}>
+        <Icon name={icon} size={11} weight="semibold" color={colors.label} />
+      </View>
+    </Pressable>
   );
 }
 
@@ -132,4 +186,10 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, fontWeight: "700", flexShrink: 1 },
   titleYear: { fontWeight: "400" },
   today: { fontSize: 17 },
+  macTitleRow: { position: "absolute", top: MAC_TOOLBAR, right: 16, height: MAC_TITLE, flexDirection: "row", alignItems: "center", justifyContent: "space-between", zIndex: 5 },
+  macTitle: { fontSize: 30, fontWeight: "700", flexShrink: 1 },
+  macNav: { flexDirection: "row", alignItems: "center", gap: 6 },
+  macNavButton: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  macToday: { height: 24, paddingHorizontal: 14, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  macTodayText: { fontSize: 13 },
 });

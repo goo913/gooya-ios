@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Appearance } from "react-native";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { isMac } from "../../modules/gooya-mac";
 
 export type PersonFilter = "me" | "other" | "both";
 /** How many days the timeline shows side by side (Apple's Single Day / Multi Day). */
@@ -31,6 +32,12 @@ interface PrefsState {
   routinesInWeek: boolean;
   /** null until chosen: the device's own default (src/lib/openView.ts). */
   openView: OpenView | null;
+  /** The Mac's sidebar (people and calendars) beside the calendar. */
+  sidebar: boolean;
+  /** The Mac's menu bar shows GOOYA's icon with today's and tomorrow's items. */
+  menuBarAgenda: boolean;
+  /** GOOYA has been set to open at login once, as the Mac app first did (Settings turns it off). */
+  loginItemSetUp: boolean;
   hydrated: boolean;
   setFilter: (f: PersonFilter) => void;
   setAppearance: (a: AppearancePref) => void;
@@ -43,6 +50,9 @@ interface PrefsState {
   setRoutinesInDay: (on: boolean) => void;
   setRoutinesInWeek: (on: boolean) => void;
   setOpenView: (v: OpenView) => void;
+  setSidebar: (on: boolean) => void;
+  setMenuBarAgenda: (on: boolean) => void;
+  setLoginItemSetUp: () => void;
 }
 
 /**
@@ -66,11 +76,15 @@ export const usePrefs = create<PrefsState>()(
       dayDisplay: "timeline",
       hourHeight: DEFAULT_HOUR_HEIGHT,
       monthDisplay: "stacked",
-      appearance: "dark",
+      // The phones are dark by default; the Mac follows its own appearance.
+      appearance: isMac ? "system" : "dark",
       hiddenCalendars: [],
       routinesInDay: true,
       routinesInWeek: true,
       openView: null,
+      sidebar: true,
+      menuBarAgenda: true,
+      loginItemSetUp: false,
       hydrated: false,
       setFilter: (filter) => set({ filter }),
       setAppearance: (appearance) => {
@@ -86,13 +100,31 @@ export const usePrefs = create<PrefsState>()(
       setRoutinesInDay: (routinesInDay) => set({ routinesInDay }),
       setRoutinesInWeek: (routinesInWeek) => set({ routinesInWeek }),
       setOpenView: (openView) => set({ openView }),
+      setSidebar: (sidebar) => set({ sidebar }),
+      setMenuBarAgenda: (menuBarAgenda) => set({ menuBarAgenda }),
+      setLoginItemSetUp: () => set({ loginItemSetUp: true }),
     }),
     {
       name: "gooya-prefs",
       version: 3,
       storage: createJSONStorage(() => AsyncStorage),
-      // Stored before the routine switches and Opens In existed: they start as the defaults above.
-      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance, hiddenCalendars: s.hiddenCalendars, routinesInDay: s.routinesInDay, routinesInWeek: s.routinesInWeek, openView: s.openView }),
+      // Stored before the routine switches, Opens In and the Mac's choices existed: they start as the defaults above.
+      partialize: (s) => ({
+        filter: s.filter,
+        timelineDays: s.timelineDays,
+        timelinePeople: s.timelinePeople,
+        dayDisplay: s.dayDisplay,
+        hourHeight: s.hourHeight,
+        monthDisplay: s.monthDisplay,
+        appearance: s.appearance,
+        hiddenCalendars: s.hiddenCalendars,
+        routinesInDay: s.routinesInDay,
+        routinesInWeek: s.routinesInWeek,
+        openView: s.openView,
+        sidebar: s.sidebar,
+        menuBarAgenda: s.menuBarAgenda,
+        loginItemSetUp: s.loginItemSetUp,
+      }),
       // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default). Version 3
       // made Single Day the default: the day opens as one day again, where Multi Day had been the default.
       migrate: (persisted, version) => {
@@ -111,12 +143,12 @@ export const usePrefs = create<PrefsState>()(
         return old;
       },
       onRehydrateStorage: () => (state) => {
-        applyAppearance(state?.appearance ?? "dark");
+        applyAppearance(state?.appearance ?? (isMac ? "system" : "dark"));
         usePrefs.setState({ hydrated: true });
       },
     },
   ),
 );
 
-// Before the stored preference is read, the app is dark (its default), so nothing flashes light.
-applyAppearance("dark");
+// Before the stored preference is read, the app is dark (its default on the phones), so nothing flashes light.
+applyAppearance(isMac ? "system" : "dark");

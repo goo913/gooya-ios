@@ -22,6 +22,8 @@ import { deleteRoutine } from "@/lib/db";
 import { useNav } from "@/store/nav";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
+import { liftPan } from "@/lib/gestures";
+import { RULE } from "@/lib/layout";
 
 /** A task occupies half an hour in the timeline, from its due time, as Apple Calendar draws a scheduled reminder. */
 const TASK_MINUTES = 30;
@@ -779,10 +781,9 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   /* eslint-disable react-hooks/refs */
   const pan = useMemo(
     () =>
-      Gesture.Pan()
+      liftPan(420)
         .enabled(movable)
         .runOnJS(true)
-        .activateAfterLongPress(420)
         .onStart(onPanStart)
         .onUpdate(onPanUpdate)
         .onEnd(onPanEnd)
@@ -926,9 +927,8 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
   /* eslint-disable react-hooks/refs */
   const pan = useMemo(
     () =>
-      Gesture.Pan()
+      liftPan(420)
         .runOnJS(true)
-        .activateAfterLongPress(420)
         .onStart(onPanStart)
         .onUpdate(onPanUpdate)
         .onEnd(onPanEnd)
@@ -1006,9 +1006,8 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
       setTo(0);
       setLifted(false);
     };
-    const pan = Gesture.Pan()
+    const pan = liftPan(350)
       .enabled(movable)
-      .activateAfterLongPress(350)
       .runOnJS(true)
       .onStart(() => {
         setLifted(true);
@@ -1172,7 +1171,7 @@ const styles = StyleSheet.create({
   noon: { fontWeight: "600" },
   nowBadge: { position: "absolute", right: 7.3 - 2, justifyContent: "center" },
   nowBadgeText: { color: "#ffffff", fontWeight: "600", fontVariant: ["tabular-nums"] },
-  hourLine: { position: "absolute", left: 0, right: 0, height: StyleSheet.hairlineWidth },
+  hourLine: { position: "absolute", left: 0, right: 0, height: RULE },
   dateBody: { flex: 1, flexDirection: "row" },
   subCol: { flex: 1, minWidth: 0 },
   nowLine: { position: "absolute", left: 0, right: 0, height: 2, zIndex: 20 },

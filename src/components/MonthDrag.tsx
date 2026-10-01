@@ -5,6 +5,7 @@ import { createContext, useContext, useMemo, useRef, useState, type ReactNode } 
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { create } from "zustand";
+import { liftPan } from "@/lib/gestures";
 import { canMove, moveEventByDays, moveTaskByDays } from "@/lib/moves";
 import { useColors } from "@/theme";
 
@@ -92,16 +93,15 @@ function finish(drop: boolean) {
 
 /**
  * A task, schedule or event on a month: a tap opens it; touch and hold lifts it to drag to another day (when it can be
- * changed). Dimmed where it was while it is dragged.
+ * changed; on the Mac, press and drag). Dimmed where it was while it is dragged.
  */
 export function DragPiece({ item, style, onTap, children }: { item: Item; style: StyleProp<ViewStyle>; onTap: () => void; children: ReactNode }) {
   const h = useContext(MonthDragContext);
   const lifted = useMonthDrag((s) => s.item?.key === item.key);
   const movable = !!h && canMove(item);
   const gesture = useMemo(() => {
-    const pan = Gesture.Pan()
+    const pan = liftPan(350)
       .enabled(movable)
-      .activateAfterLongPress(350)
       .runOnJS(true)
       .onStart((e) => h && start(h, item, e.absoluteX, e.absoluteY, e.x, e.y))
       .onUpdate((e) => follow(e.absoluteX, e.absoluteY))

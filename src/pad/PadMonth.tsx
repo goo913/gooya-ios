@@ -13,6 +13,7 @@ import { useFilteredPeople, useTaskColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { usePad } from "@/store/pad";
 import { useColors, useIsDark, type Colors } from "@/theme";
+import { RULE } from "@/lib/layout";
 
 // Apple Calendar's iPad month (iPadOS 27), measured at 820 points wide: a grid of the months' weeks, each month starting
 // on its own row, days' numbers at the top right (18 points; the 1st says "Oct 1"), up to three lines of what is on
@@ -419,8 +420,8 @@ const styles = StyleSheet.create({
   weekdays: { flexDirection: "row", height: 30, borderBottomWidth: StyleSheet.hairlineWidth },
   weekday: { fontSize: 17, textAlign: "right", paddingRight: 10.6, lineHeight: 26 },
   shade: { position: "absolute", top: 0, bottom: 0 },
-  vline: { position: "absolute", top: 0, bottom: 0, width: StyleSheet.hairlineWidth },
-  hline: { position: "absolute", left: 0, right: 0, height: StyleSheet.hairlineWidth },
+  vline: { position: "absolute", top: 0, bottom: 0, width: RULE },
+  hline: { position: "absolute", left: 0, right: 0, height: RULE },
   cell: { position: "absolute" },
   number: { position: "absolute", top: NUMBER_TOP - 5, right: 5.6, height: 28, minWidth: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   numberText: { fontSize: 18 },

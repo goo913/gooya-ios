@@ -13,6 +13,7 @@ import { env } from "@/lib/env";
 import { tzAbbrev } from "@/lib/format";
 import { useIsPad } from "@/lib/layout";
 import { OPEN_VIEWS, resolveOpenView } from "@/lib/openView";
+import { isMac, openAtLogin, setOpenAtLogin } from "../../modules/gooya-mac";
 import { useMe, usePerson } from "@/lib/people";
 import { forgetPushToken, notificationsAllowed, refreshPushToken, requestNotifications } from "@/lib/push";
 import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref, type OpenView } from "@/store/prefs";
@@ -40,9 +41,12 @@ export default function SettingsSheet() {
   const setRoutinesInWeek = usePrefs((s) => s.setRoutinesInWeek);
   const openView = usePrefs((s) => s.openView);
   const setOpenView = usePrefs((s) => s.setOpenView);
+  const menuBarAgenda = usePrefs((s) => s.menuBarAgenda);
+  const setMenuBarAgenda = usePrefs((s) => s.setMenuBarAgenda);
+  const [atLogin, setAtLogin] = useState(openAtLogin);
   // The week view is the iPad's (a narrow iPad window has the iPhone's screens).
   const pad = useIsPad();
-  const device = pad ? "iPad" : "iPhone";
+  const device = isMac ? "Mac" : pad ? "iPad" : "iPhone";
   useEffect(() => {
     void notificationsAllowed().then(setPush);
   }, []);
@@ -109,6 +113,17 @@ export default function SettingsSheet() {
             />
           </Row>
         </Group>
+
+        {isMac ? (
+          <Group header="Mac" footer="GOOYA starts when you log in to this Mac, and its icon in the menu bar lists what is on today and tomorrow for both of you: choose one to see it.">
+            <Row label="Open at Login">
+              <Switch label="Open at Login" value={atLogin} onChange={(on) => void setOpenAtLogin(on).then(setAtLogin)} />
+            </Row>
+            <Row label="Show in Menu Bar">
+              <Switch label="Show in Menu Bar" value={menuBarAgenda} onChange={setMenuBarAgenda} />
+            </Row>
+          </Group>
+        ) : null}
 
         <Group header={other.name} footer={`${other.name} sets their own name, color and time zone.`}>
           <Row label="Color">
@@ -184,7 +199,7 @@ export default function SettingsSheet() {
           <ValueRow label="Default early reminder" value={alertLabel(mine.settings.defaultAlertTimed)} options={EARLY_REMINDERS.map((o) => o.label)} onPick={(_, i) => saveSetting("defaultAlertTimed", EARLY_REMINDERS[i].value)} title="Default early reminder" />
         </Group>
 
-        <Group header="Notifications" footer={env.demo ? "Demo mode: no notifications." : "Alerts and the other person's additions arrive as notifications on this phone."}>
+        <Group header="Notifications" footer={env.demo ? "Demo mode: no notifications." : `Alerts and the other person's additions arrive as notifications on this ${device}.`}>
           <Row label="Notifications">
             <Text style={[styles.small, { color: colors.label2 }]}>{push === null ? "" : push ? "On" : "Off"}</Text>
             <Switch label="Notifications" value={!!push} onChange={(v) => void togglePush(v)} disabled={env.demo} />

@@ -30,6 +30,7 @@ import { viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets, type DetailRequest } from "@/store/sheets";
 import { useColors, useIsDark } from "@/theme";
+import { RULE } from "@/lib/layout";
 
 /**
  * What a tap on a task, a routine or an imported event opens: Apple Calendar's details sheet (iOS 26/27). A close
@@ -625,7 +626,7 @@ const styles = StyleSheet.create({
   miniNum: { fontSize: 17 },
   miniSuffix: { fontSize: 10.5, marginLeft: 2, marginTop: 3 },
   miniNoon: { fontSize: 14, fontWeight: "600" },
-  miniLine: { position: "absolute", left: 78, right: 16, height: StyleSheet.hairlineWidth },
+  miniLine: { position: "absolute", left: 78, right: 16, height: RULE },
   miniBody: { position: "absolute", left: 78, right: 24, bottom: 0 },
   miniTask: { position: "absolute", left: 0, right: 0, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6 },
   miniEvent: { position: "absolute", left: 0, right: 0, borderRadius: 6, flexDirection: "row", alignItems: "flex-start", paddingTop: 3, overflow: "hidden" },

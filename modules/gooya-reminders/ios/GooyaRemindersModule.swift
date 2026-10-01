@@ -34,9 +34,9 @@ public class GooyaRemindersModule: Module {
       }
     }
 
-    /// GOOYA running on a Mac (the iPhone app on an Apple silicon Mac).
+    /// GOOYA running on a Mac: the Mac app (Mac Catalyst), or the iPhone app on an Apple silicon Mac.
     Function("isMac") { () -> Bool in
-      ProcessInfo.processInfo.isiOSAppOnMac
+      ProcessInfo.processInfo.isMacCatalystApp || ProcessInfo.processInfo.isiOSAppOnMac
     }
 
     Function("authorization") { () -> String in

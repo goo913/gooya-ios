@@ -145,7 +145,8 @@ export default ({ config }: ConfigContext): ExpoConfig =>
         },
       ],
       // React Native Firebase brings Firebase's iOS SDK in through Swift Package Manager, which needs dynamic frameworks.
-      ["expo-build-properties", { ios: { useFrameworks: "dynamic", deploymentTarget: "26.0" } }],
+      // Expo's modules are built from source: their precompiled frameworks have nothing for the Mac (plugins/withMac.js).
+      ["expo-build-properties", { ios: { useFrameworks: "dynamic", deploymentTarget: "26.0", usePrecompiledModules: false } }],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
       "@react-native-firebase/messaging",
@@ -161,6 +162,8 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       ],
       // The Home Screen widget: a WidgetKit extension written in Swift, from targets/widget.
       ...(APP_GROUP ? [["@bacons/apple-targets", { appleTeamId: APPLE_TEAM_ID }] as [string, unknown]] : []),
+      // The Mac app (Mac Catalyst) from the same project, with its widget, menus and shortcuts.
+      ["./plugins/withMac", { appGroup: APP_GROUP, push: process.env.APPLE_PERSONAL_TEAM !== "1" }],
     ],
     experiments: {
       typedRoutes: true,
