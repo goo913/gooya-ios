@@ -45,7 +45,8 @@ const styles = StyleSheet.create({
   logo: { width: 128, height: 128, borderRadius: 30, marginBottom: 20 },
   title: { fontSize: 32, fontWeight: "800", letterSpacing: 0.5 },
   subtitle: { fontSize: 18 },
-  bottom: { gap: 14, alignItems: "center" },
+  // A phone's width at most: on an iPad or a Mac the button doesn't run across the window.
+  bottom: { gap: 14, alignItems: "center", alignSelf: "center", width: "100%", maxWidth: 420 },
   button: { height: 56, borderRadius: 28, alignSelf: "stretch", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10 },
   g: { fontSize: 22, fontWeight: "700" },
   buttonText: { fontSize: 19, fontWeight: "600" },

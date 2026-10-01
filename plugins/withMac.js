@@ -12,7 +12,8 @@ const { IOSConfig, withAppDelegate, withFinalizedMod, withInfoPlist, withPodfile
  * - On the Mac they run sandboxed: entitlements of their own for it (network, the App Group, push, calendars).
  * - Every pod builds for Mac Catalyst at macOS 26 (the app's iOS 26).
  * - React Native's prebuilt React and ReactNativeDependencies frameworks come without the Versions/A layout a framework
- *   in a Mac app must have: the app's last build step (scripts/mac-frameworks.sh) reshapes them and signs them again.
+ *   in a Mac app must have: a build step just before CocoaPods embeds and signs them reshapes them
+ *   (scripts/mac-frameworks.sh).
  * - The app delegate gives the Mac its menus and keyboard shortcuts (modules/gooya-mac).
  *
  * @typedef {{ appGroup: string | null, push: boolean }} MacOptions appGroup: the App Group the app and the widget share
@@ -84,8 +85,8 @@ const withMacProject = (config, options) =>
 
 /**
  * Every pod builds for Mac Catalyst too, at the app's iOS 26 (macOS 26), with React Native's Mac Catalyst fixes; and
- * the app's last build step reshapes React Native's frameworks for the Mac (scripts/mac-frameworks.sh). It has to be
- * last, after CocoaPods' and Firebase's framework steps, so it is added once CocoaPods has added those.
+ * React Native's frameworks are reshaped for the Mac (scripts/mac-frameworks.sh) just before CocoaPods' embed step
+ * signs them, so the step is placed once CocoaPods has added its own.
  * @type {import("expo/config-plugins").ConfigPlugin}
  */
 const withMacPods = (config) =>
@@ -107,7 +108,7 @@ const withMacPods = (config) =>
   end
 
   post_integrate do |installer|
-    ${marker}: React Native's frameworks reshaped for the Mac, as the app's last build step.
+    ${marker}: React Native's frameworks reshaped for the Mac, just before CocoaPods embeds and signs them.
     project = installer.aggregate_targets.map(&:user_project).first
     app = project.targets.find { |t| t.name == '${APP_TARGET}' }
     name = '[GOOYA] Shape frameworks for the Mac'
@@ -115,7 +116,8 @@ const withMacPods = (config) =>
     phase.shell_script = '"\${SRCROOT}/../scripts/mac-frameworks.sh"'
     phase.always_out_of_date = '1'
     app.build_phases.delete(phase)
-    app.build_phases << phase
+    embed = app.build_phases.find { |p| p.respond_to?(:name) && p.name == '[CP] Embed Pods Frameworks' }
+    app.build_phases.insert(embed ? app.build_phases.index(embed) : app.build_phases.length, phase)
     project.save
 `,
       );

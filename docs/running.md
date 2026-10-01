@@ -39,6 +39,26 @@ Sign in with Google (goochoi913@gmail.com or evapark7147@gmail.com; any other ac
 
 **Push notifications (alerts, and the silent push that syncs Reminders)** go through the APNs key uploaded in Firebase console → Project settings → **Cloud Messaging** → Apple app configuration (com.hybertec.gooya): Key ID `U4G9ZZC38S`, Team ID `YSK7CHH56P`, for Development and Production. If pushes ever stop, look there first.
 
+## On your Mac (the Mac app)
+
+GOOYA is a Mac app too, from the same project (Mac Catalyst): a fix or a feature lands on the iPhone, the iPad and the Mac at once. It needs macOS 26 Tahoe or later on an Apple silicon Mac.
+
+In Terminal, in this folder: `npm run mac`. The first time it builds a **Release** build for the Mac (10–20 minutes), registers this Mac with HyberTec LLC's team, puts GOOYA in your Applications folder (`~/Applications/GOOYA.app`, which Launchpad and Spotlight find) and opens it. Sign in with Google. Later runs rebuild only what changed. `npm run publish:mac` puts it on TestFlight (docs/publishing.md), which then keeps it up to date.
+
+If TestFlight put the iPad app on this Mac (`/Applications/GOOYA.app`), drag that one to the Trash (it asks for your password): it is the iPad app, which opens only on a Mac set to Full or Reduced Security, and links and widgets should open the Mac app. The Mac app has no such limit.
+
+**It looks and works like Apple Calendar on the Mac:**
+
+- **The window:** Calendar's toolbar in the title bar: the sidebar and Task Lists buttons and **+** at the left, **Day · Week · Month · Year** in the middle, Search at the right; the title with **‹ Today ›** under it. The window opens at Calendar's size and can be made as small as 720 × 560 points.
+- **The sidebar** (the toolbar's first button, or ⌃⌘S): whose items show (you, 은비 or both), GOOYA's schedules and each Google and iCloud calendar with a tick in its color, then Task Lists, Categories and Calendar Accounts.
+- **Menus and keyboard shortcuts:** GOOYA → Settings… ⌘, · File → New Task ⌘N, New Schedule ⌥⌘N, New Routine ⇧⌘N · Edit → Search ⌘F · View → Day ⌘1, Week ⌘2, Month ⌘3, Year ⌘4, Go to Today ⌘T, Next ⌘→, Previous ⌘←, Show/Hide Sidebar ⌃⌘S.
+- **Moving things:** press and drag a task or schedule to another day or time (no holding first, as on the iPhone).
+- **The menu bar:** GOOYA's calendar icon lists what is on today and tomorrow for both of you; choose one to see it in its day, or New Task… (Settings → Mac → **Show in Menu Bar**).
+- **Open at login:** set the first time GOOYA runs (Settings → Mac → **Open at Login**, or System Settings → General → Login Items).
+- **Widgets:** right-click the desktop → **Edit Widgets** → search GOOYA: the same widget as the iPhone's, in all four sizes (extra large too), on the desktop or in Notification Center.
+- **Notifications:** alerts and 은비's additions arrive on the Mac too, once you allow them.
+- **Appearance:** follows the Mac's light or dark mode (Settings → Appearance chooses one). Default View: Month (Day or Week in Settings).
+
 ## On the iPhone Simulator
 
 - `npm run iphone:sim` — **demo mode**: made-up tasks, schedules and routines, no sign-in, nothing written to Firestore. Edits to the code show up as you save (Fast Refresh).

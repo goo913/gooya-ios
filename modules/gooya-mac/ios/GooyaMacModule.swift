@@ -71,6 +71,10 @@ public class GooyaMacModule: Module {
       #endif
     }
 
+    Function("setToolbar") { (shown: Bool) in
+      DispatchQueue.main.async { GooyaMacWindow.setToolbar(shown) }
+    }
+
     Function("bringForward") {
       DispatchQueue.main.async { GooyaMacWindow.bringForward() }
     }
@@ -86,8 +90,13 @@ public class GooyaMacModule: Module {
     AsyncFunction("setOpenAtLogin") { (on: Bool) -> Bool in
       #if targetEnvironment(macCatalyst)
       let service = SMAppService.mainApp
-      if on, service.status != .enabled { try service.register() }
-      if !on, service.status == .enabled { try service.unregister() }
+      if on {
+        // Registered again from this copy of GOOYA, so login opens this one (not another build that registered).
+        if service.status == .enabled { try? service.unregister() }
+        try service.register()
+      } else if service.status == .enabled {
+        try service.unregister()
+      }
       return service.status == .enabled
       #else
       return false

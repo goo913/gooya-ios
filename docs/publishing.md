@@ -55,6 +55,17 @@ TestFlight alone is not a way to distribute for good: every build stops working 
    3. On her iPhone (Korea is fine): install **TestFlight** from the App Store, open Apple's invitation → **View in TestFlight** → **Install**. On yours the same, or keep the `npm run iphone` copy.
 7. Each build lasts 90 days; with automatic distribution every upload reaches both phones by itself.
 
+## Part 2b: TestFlight on the Mac
+
+The Mac app is the same app, built for the Mac (docs/running.md, "On your Mac"), under the same bundle id: one app record, one TestFlight, the same testers.
+
+1. **Add the Mac to the app record** (once): App Store Connect → GOOYA → in the sidebar, the **+** beside **iOS App** → **macOS App**. (Without it the first upload says App Store Connect has no Mac version of GOOYA.)
+2. **Upload:** `npm run publish:mac`. Like the iPhone's: raises the build number in `release.json`, builds the Mac app (Apple silicon), signs it for the App Store (a `.pkg`) and uploads it. `-- --dry-run` stops before the upload.
+3. **On the Mac:** open **TestFlight** (it's on the Mac App Store) → GOOYA → **Install**. With automatic distribution, every Mac upload reaches both of you, and TestFlight updates the app by itself. It runs whatever the Mac's Security Policy (TestFlight's iPad app on the Mac needed Full or Reduced Security; the Mac app doesn't).
+4. Commit `release.json`.
+
+The Mac and iPhone builds count up the same `release.json`; App Store Connect keeps each platform's builds apart.
+
 ## Part 3: The App Store, as an unlisted app
 
 Do this once a TestFlight build is the one you want to keep.
@@ -80,7 +91,7 @@ Do this once a TestFlight build is the one you want to keep.
 ## Part 4: Updates
 
 1. Ask Claude Code for the change; it lands in `main`.
-2. `npm run publish:iphone` — raises the build number, builds, uploads. Add `-- --version 1.1.0` for a new *version number*, which Apple needs for every App Store release (build numbers alone are enough for TestFlight).
+2. `npm run publish:iphone` (and `npm run publish:mac` for the Mac) — raises the build number, builds, uploads. Add `-- --version 1.1.0` for a new *version number*, which Apple needs for every App Store release (build numbers alone are enough for TestFlight).
 3. App Store Connect → GOOYA → **+** next to iOS App → the new version → pick the build → "What's New" → Submit for Review. TestFlight testers get every build without any of this.
 4. Commit `release.json`.
 

@@ -10,10 +10,12 @@
     "test": "tsx --test shared/*.test.ts functions/src/integrations/*.test.ts",
     "iphone": "node scripts/phone.mjs iphone",
     "ipad": "node scripts/phone.mjs ipad",
+    "mac": "node scripts/phone.mjs mac",
     "iphone:sim": "node scripts/phone.mjs iphone --sim",
     "iphone:sim:live": "node scripts/phone.mjs iphone --sim --live",
     "phone:setup": "node scripts/phone.mjs setup",
     "publish:iphone": "node scripts/publish.mjs iphone",
+    "publish:mac": "node scripts/publish.mjs mac",
     "deploy:backend": "firebase deploy --only functions,firestore:rules,firestore:indexes --project gooya-37d79",
     "widget:preview": "node scripts/widget-preview.mjs"
   },

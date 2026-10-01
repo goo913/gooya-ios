@@ -10,6 +10,7 @@ import { usePad } from "@/store/pad";
 import { usePrefs } from "@/store/prefs";
 import { useSheets } from "@/store/sheets";
 import { useIsDark } from "@/theme";
+import { env } from "./env";
 import { hideAgenda, isMac, onAgendaSelect, setAgenda, setOpenAtLogin, type AgendaRow } from "../../modules/gooya-mac";
 import { MONTH_SHORT, WEEKDAY_SHORT } from "./format";
 import { useEventsByDay, useTasksByDay } from "./occurrences";
@@ -82,13 +83,13 @@ export function useMacAgenda(): void {
 
 /**
  * GOOYA opens at login on the Mac, as asked for when the Mac app was made: set once, the first time it runs; Settings →
- * Mac → Open at Login turns it off (and macOS's Login Items).
+ * Mac → Open at Login turns it off (and macOS's Login Items). Never from a demo build, which is not the app to open.
  */
 export function useOpenAtLoginOnce(): void {
   const hydrated = usePrefs((s) => s.hydrated);
   const done = usePrefs((s) => s.loginItemSetUp);
   useEffect(() => {
-    if (!isMac || !hydrated || done) return;
+    if (!isMac || !hydrated || done || env.demo) return;
     usePrefs.getState().setLoginItemSetUp();
     void setOpenAtLogin(true).catch(() => undefined);
   }, [hydrated, done]);

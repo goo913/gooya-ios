@@ -1,8 +1,9 @@
 #!/bin/sh
 # GOOYA for Mac: a framework in a Mac app keeps its files in Versions/A, with links to them. React Native's prebuilt
 # React and ReactNativeDependencies come flattened or shaped for iOS (and React Native extracts them again whenever
-# Debug and Release alternate), so after the frameworks are copied into the Mac app this reshapes them and signs them
-# again. The app's last build step (the Podfile's post_integrate, from plugins/withMac.js); nothing for iPhone builds.
+# Debug and Release alternate), so this reshapes the copies CocoaPods embeds and signs, just before its embed step (the
+# Podfile's post_integrate, from plugins/withMac.js puts it there). Their headers stay for building; the embed step
+# leaves headers out of the app. Nothing for iPhone builds.
 [ "${EFFECTIVE_PLATFORM_NAME:-}" = "-maccatalyst" ] || exit 0
 
 # merge <from> <to>: moves a file or folder in, keeping what is already there (a flattened copy duplicates it).
@@ -18,7 +19,7 @@ merge() {
   fi
 }
 
-for fw in "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"/*.framework; do
+for fw in "${PODS_XCFRAMEWORKS_BUILD_DIR}"/*/*.framework; do
   name=$(basename "$fw" .framework)
   [ -L "$fw/$name" ] && [ -L "$fw/Versions/Current" ] && continue
   [ -e "$fw/$name" ] || continue
@@ -32,13 +33,11 @@ for fw in "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"/*.framework; do
     [ -L "$p" ] && continue
     case "$e" in
       "$name" | Resources) merge "$p" "$a/$e"; ln -s "Versions/Current/$e" "$p" ;;
-      _CodeSignature | Headers | PrivateHeaders | Modules) rm -rf "$p" ;;
+      Headers | PrivateHeaders | Modules) ;; # for building only
+      _CodeSignature) rm -rf "$p" ;; # stale: the embed step signs the framework again
       *) merge "$p" "$a/Resources/$e" ;; # Info.plist, resource bundles, privacy manifests
     esac
   done
   [ -e "$fw/Resources" ] || ln -s Versions/Current/Resources "$fw/Resources"
   echo "Reshaped $name.framework for the Mac"
-  if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-YES}" != "NO" ]; then
-    /usr/bin/codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "$fw"
-  fi
 done

@@ -1,9 +1,11 @@
 import UIKit
 
-/// GOOYA's window on the Mac: Apple Calendar's toolbar in the title bar, no title (GooyaMacToolbar), at least 720 × 560
-/// points, and about Calendar's size the first time it opens.
+/// GOOYA's window on the Mac: no title in the title bar, Apple Calendar's toolbar in it while the calendar shows
+/// (GooyaMacToolbar; not over signing in), at least 720 × 560 points, and about Calendar's size the first time it opens.
 enum GooyaMacWindow {
   private static var observing = false
+  /// The calendar is showing (from JavaScript): the window has its toolbar.
+  static var toolbar = false
 
   static func start() {
     #if targetEnvironment(macCatalyst)
@@ -19,12 +21,13 @@ enum GooyaMacWindow {
   static func setUp(_ scene: UIWindowScene) {
     #if targetEnvironment(macCatalyst)
     scene.title = "GOOYA"
-    // Replaces any other toolbar (a development build's launcher has its own).
-    if let titlebar = scene.titlebar, titlebar.toolbar?.identifier != "GOOYA" {
-      titlebar.toolbar = GooyaMacToolbar.shared.make()
-      titlebar.toolbarStyle = .unified
+    if let titlebar = scene.titlebar {
       titlebar.titleVisibility = .hidden
       titlebar.separatorStyle = .none
+      titlebar.toolbarStyle = .unified
+      // GOOYA's toolbar replaces any other (a development build's launcher has its own).
+      if toolbar, titlebar.toolbar?.identifier != "GOOYA" { titlebar.toolbar = GooyaMacToolbar.shared.make() }
+      if !toolbar, titlebar.toolbar != nil { titlebar.toolbar = nil }
     }
     scene.sizeRestrictions?.minimumSize = CGSize(width: 720, height: 560)
     // The first time: about Apple Calendar's window, in the middle of the screen. Later the Mac remembers it.
@@ -37,6 +40,12 @@ enum GooyaMacWindow {
       scene.requestGeometryUpdate(.Mac(systemFrame: frame)) { _ in }
     }
     #endif
+  }
+
+  /// Shows or hides the toolbar (the calendar shows or not).
+  static func setToolbar(_ shown: Bool) {
+    toolbar = shown
+    start()
   }
 
   /// Brings GOOYA forward, opening its window again if it was closed.

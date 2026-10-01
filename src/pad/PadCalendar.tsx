@@ -15,7 +15,7 @@ import { usePrefs } from "@/store/prefs";
 import { useSheets, type DetailRequest, type EditorRequest } from "@/store/sheets";
 import { useColors, type Colors } from "@/theme";
 import { DayView, type DayActions } from "@/views/DayView";
-import { isMac, onCommand, setMenuState } from "../../modules/gooya-mac";
+import { isMac, onCommand, setMenuState, setToolbar } from "../../modules/gooya-mac";
 import { PadMonth, PadWeekdays } from "./PadMonth";
 import { PadSidebar, SIDEBAR_WIDTH } from "./PadSidebar";
 import { MAC_TOOLBAR, PAD_HEADER, PadTitle, PadToolbar } from "./PadToolbar";
@@ -94,6 +94,10 @@ export function PadCalendar() {
   useMacAgenda();
   useOpenAtLoginOnce();
   useEffect(() => setMenuState(view, sidebar), [view, sidebar]);
+  useEffect(() => {
+    setToolbar(true);
+    return () => setToolbar(false);
+  }, []);
   useEffect(() => {
     const sub = onCommand((id) => {
       const atHome = pathname === "/";

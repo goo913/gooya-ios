@@ -32,6 +32,7 @@ interface GooyaMacModule {
   setMenuState(view: string, sidebar: boolean): void;
   setAgenda(sections: AgendaSection[], actions: { key: string; title: string }[]): void;
   hideAgenda(): void;
+  setToolbar(shown: boolean): void;
   bringForward(): void;
   openAtLogin(): boolean;
   setOpenAtLogin(on: boolean): Promise<boolean>;
@@ -43,6 +44,11 @@ const native = requireOptionalNativeModule<GooyaMacModule>("GooyaMac");
 
 /** This is GOOYA's Mac app (Mac Catalyst). */
 export const isMac = !!native?.isMac;
+
+/** The window's toolbar (Day · Week · Month · Year and the rest): while the calendar shows, not over signing in. */
+export function setToolbar(shown: boolean): void {
+  if (isMac) native?.setToolbar(shown);
+}
 
 /** The view shown (the toolbar's and the View menu's choice) and the sidebar's Show/Hide. */
 export function setMenuState(view: string, sidebar: boolean): void {

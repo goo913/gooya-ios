@@ -4,6 +4,7 @@
  *
  *   npm run publish:iphone     builds the App Store version of GOOYA, signed by HyberTec LLC's Apple team, and uploads
  *                              it to App Store Connect (TestFlight, then the App Store as an unlisted app)
+ *   npm run publish:mac        the same for the Mac app (the same app, built for the Mac): TestFlight on the Mac
  *
  * Options, after `--` (npm run publish:iphone -- --dry-run):
  *   --dry-run          build and sign, but upload nothing (ends with "Ready to upload" and where the file is)
@@ -32,6 +33,13 @@ const releaseFile = path.join(root, "release.json");
 
 const APP_ID = "com.hybertec.gooya";
 const APP_NAME = "GOOYA";
+
+/** What differs between publishing the iPhone and iPad app and the Mac app (the same app, built for the Mac). */
+const TARGETS = {
+  ios: { label: "iPhone and iPad", destination: "generic/platform=iOS", archive: `${APP_NAME}.xcarchive`, exportDir: "ios", ext: ".ipa", type: "ios", logs: "publish-ios", derived: "iphone-build", command: "publish:iphone" },
+  // Apple silicon only, as npm run mac builds it (scripts/phone.mjs, MAC_ARCHS).
+  mac: { label: "Mac", destination: "generic/platform=macOS,variant=Mac Catalyst", archive: `${APP_NAME}-mac.xcarchive`, exportDir: "mac", ext: ".pkg", type: "macos", logs: "publish-mac", derived: "mac-build", command: "publish:mac", settings: ["ARCHS=arm64"] },
+};
 /** Where altool looks for an App Store Connect key. */
 const ALTOOL_KEYS = path.join(os.homedir(), ".appstoreconnect", "private_keys");
 
@@ -137,7 +145,7 @@ function xcodebuild(args, { cwd, env, log }) {
   });
 }
 
-function explainXcodeProblem(log) {
+function explainXcodeProblem(log, target = TARGETS.ios) {
   const text = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter((l) => /error|fail|denied|unable|invalid|requires/i.test(l)).join("\n") : "";
   const known = [
     [/PLA Update|Program License Agreement|agreement.*(accept|updated)/i, "Apple needs the team's account holder to accept an updated agreement: sign in at https://developer.apple.com/account and accept it. Then run this again."],
@@ -149,7 +157,7 @@ function explainXcodeProblem(log) {
     [/Bundle ID .* not (found|registered)|No App ID|application identifier .* not found/i, `App Store Connect has no app with the bundle id ${APP_ID} yet: create it first (docs/publishing.md, part 2), then run this again.`],
   ];
   const match = known.find(([pattern]) => pattern.test(text));
-  return [...(match ? [match[1]] : ["The lines above say what went wrong."]), `The whole log: ${relative(log)}. Or ask Claude Code: "npm run publish:iphone fails", with that file.`];
+  return [...(match ? [match[1]] : ["The lines above say what went wrong."]), `The whole log: ${relative(log)}. Or ask Claude Code: "npm run ${target.command} fails", with that file.`];
 }
 
 const API_KEY_STEPS = [
@@ -186,7 +194,7 @@ function appStoreCredentials() {
   return { keyId, issuerId, appleId, key };
 }
 
-async function iphone() {
+async function publish(target) {
   step("The version and build number");
   const release = bumpRelease();
   const creds = appStoreCredentials();
@@ -194,8 +202,8 @@ async function iphone() {
   const env = { ...process.env, ...prepared.env };
   const iosDir = path.join(root, "ios");
   fs.mkdirSync(buildDir, { recursive: true });
-  const archive = path.join(buildDir, `${APP_NAME}.xcarchive`);
-  const exportDir = path.join(buildDir, "ios");
+  const archive = path.join(buildDir, target.archive);
+  const exportDir = path.join(buildDir, target.exportDir);
   fs.rmSync(archive, { recursive: true, force: true });
   fs.rmSync(exportDir, { recursive: true, force: true });
   // Signing goes through the Apple ID Xcode is signed in to (HyberTec LLC's Account Holder may use Apple's cloud-managed
@@ -208,16 +216,16 @@ async function iphone() {
     return { ok: await xcodebuild([...args, ...keyAuth], { cwd: iosDir, env, log: log.replace(/\.log$/, "-key.log") }), log };
   };
 
-  step(`Building ${APP_NAME} ${release.version} (build ${release.build}) for the App Store, signed by ${prepared.team.name} (10 to 20 minutes the first time)`);
+  step(`Building ${APP_NAME} ${release.version} (build ${release.build}) for the App Store (${target.label}), signed by ${prepared.team.name} (10 to 20 minutes the first time)`);
   const archived = await signed(
-    ["-workspace", prepared.workspace, "-scheme", prepared.scheme, "-configuration", "Release", "-destination", "generic/platform=iOS", "-archivePath", archive,
-      "-derivedDataPath", path.join(stateDir, "iphone-build"), "-allowProvisioningUpdates", `DEVELOPMENT_TEAM=${prepared.team.id}`, "CODE_SIGN_STYLE=Automatic", "COMPILER_INDEX_STORE_ENABLE=NO", "archive"],
-    logFile("publish-ios-archive.log"),
+    ["-workspace", prepared.workspace, "-scheme", prepared.scheme, "-configuration", "Release", "-destination", target.destination, "-archivePath", archive,
+      "-derivedDataPath", path.join(stateDir, target.derived), "-allowProvisioningUpdates", `DEVELOPMENT_TEAM=${prepared.team.id}`, "CODE_SIGN_STYLE=Automatic", "COMPILER_INDEX_STORE_ENABLE=NO", ...(target.settings ?? []), "archive"],
+    logFile(`${target.logs}-archive.log`),
   );
-  if (!archived.ok) stop(["The App Store build didn't finish.", ...explainXcodeProblem(archived.log)]);
+  if (!archived.ok) stop(["The App Store build didn't finish.", ...explainXcodeProblem(archived.log, target)]);
   ok(`Archived: ${relative(archive)}`);
 
-  step("Signing it for the App Store (the .ipa Apple takes)");
+  step(`Signing it for the App Store (the ${target.ext} Apple takes)`);
   const options = path.join(buildDir, "ExportOptions.plist");
   fs.writeFileSync(
     options,
@@ -233,10 +241,10 @@ async function iphone() {
 </dict></plist>
 `,
   );
-  const exported = await signed(["-exportArchive", "-archivePath", archive, "-exportPath", exportDir, "-exportOptionsPlist", options, "-allowProvisioningUpdates"], logFile("publish-ios-export.log"));
-  const ipa = fs.existsSync(exportDir) ? fs.readdirSync(exportDir).find((f) => f.endsWith(".ipa")) : null;
-  if (!exported.ok || !ipa) stop(["The build didn't get signed for the App Store.", ...explainXcodeProblem(exported.log)]);
-  const file = path.join(exportDir, ipa);
+  const exported = await signed(["-exportArchive", "-archivePath", archive, "-exportPath", exportDir, "-exportOptionsPlist", options, "-allowProvisioningUpdates"], logFile(`${target.logs}-export.log`));
+  const built = fs.existsSync(exportDir) ? fs.readdirSync(exportDir).find((f) => f.endsWith(target.ext)) : null;
+  if (!exported.ok || !built) stop(["The build didn't get signed for the App Store.", ...explainXcodeProblem(exported.log, target)]);
+  const file = path.join(exportDir, built);
   ok(`Signed: ${relative(file)}`);
 
   if (dryRun) {
@@ -248,10 +256,10 @@ async function iphone() {
   step("Uploading it to App Store Connect");
   fs.mkdirSync(ALTOOL_KEYS, { recursive: true });
   fs.copyFileSync(creds.key, path.join(ALTOOL_KEYS, path.basename(creds.key)));
-  const uploadLog = logFile("publish-ios-upload.log");
+  const uploadLog = logFile(`${target.logs}-upload.log`);
   const upload = spawnSync(
     "xcrun",
-    ["altool", "--upload-package", file, "--type", "ios", "--apple-id", creds.appleId, "--bundle-id", APP_ID, "--bundle-version", String(release.build), "--bundle-short-version-string", release.version,
+    ["altool", "--upload-package", file, "--type", target.type, "--apple-id", creds.appleId, "--bundle-id", APP_ID, "--bundle-version", String(release.build), "--bundle-short-version-string", release.version,
       "--api-key", creds.keyId, "--api-issuer", creds.issuerId, "--output-format", "json"],
     { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
@@ -268,11 +276,13 @@ async function iphone() {
     const known = messages.find((m) => /already been used|bundle version must be higher|previously uploaded/i.test(m))
       ? "Apple already has a build with this number: run the command again without --no-bump, so the build number goes up."
       : messages.find((m) => /No suitable application records|could not find|not found/i.test(m))
-        ? `App Store Connect has no app for this Apple ID (${creds.appleId}) and bundle id: check "appleId" in .publish/appstore.json against App Store Connect → the app → App Information.`
+        ? target === TARGETS.mac
+          ? `App Store Connect has no Mac version of ${APP_NAME} yet: in App Store Connect open ${APP_NAME}, add the macOS platform (the + beside "iOS App" in the sidebar, then macOS), and run this again.`
+          : `App Store Connect has no app for this Apple ID (${creds.appleId}) and bundle id: check "appleId" in .publish/appstore.json against App Store Connect → the app → App Information.`
         : messages.find((m) => /authentic|API key|issuer|unauthorized|403|401/i.test(m))
           ? "App Store Connect refused the API key: check keyId and issuerId in .publish/appstore.json, and that the key has App Manager access."
           : null;
-    stop(["The upload to App Store Connect didn't go through:", ...messages.map((m) => `  ${m}`), ...(known ? [known] : []), tail(uploadLog, 6), `The whole answer: ${relative(uploadLog)}. Or ask Claude Code: "npm run publish:iphone fails".`]);
+    stop(["The upload to App Store Connect didn't go through:", ...messages.map((m) => `  ${m}`), ...(known ? [known] : []), tail(uploadLog, 6), `The whole answer: ${relative(uploadLog)}. Or ask Claude Code: "npm run ${target.command} fails".`]);
   }
   console.log(`\n✓ Uploaded ${APP_NAME} ${release.version} (build ${release.build}) to App Store Connect. In 10–30 minutes it appears under TestFlight; Apple emails when it is ready.`);
   console.log(`  ${bumpReminder(release)}\n`);
@@ -285,7 +295,8 @@ function help() {
 
 try {
   if (process.platform !== "darwin") stop("Publishing runs on a Mac (Xcode).");
-  if (command === "iphone" || command === "ios") await iphone();
+  if (command === "iphone" || command === "ios") await publish(TARGETS.ios);
+  else if (command === "mac") await publish(TARGETS.mac);
   else help();
 } catch (e) {
   if (!(e instanceof Stop)) throw e;

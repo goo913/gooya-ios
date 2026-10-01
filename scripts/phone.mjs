@@ -3,6 +3,8 @@
  * GOOYA on an iPhone or the iPhone Simulator with one command (docs/running.md explains every step):
  *
  *   npm run ipad              the same on the iPad plugged into this Mac (GOOYA is one app for both; the iPad has its layout)
+ *   npm run mac               GOOYA's Mac app on this Mac: a Release build for the Mac (Mac Catalyst), signed by HyberTec
+ *                             LLC's Apple team, put in your Applications folder (~/Applications) and opened
  *   npm run iphone            the iPhone plugged into this Mac: a Release build of the real app, signed by HyberTec LLC's
  *                             Apple team, installed over the cable. Runs on its own afterwards, no Mac needed.
  *   npm run iphone:sim        the iPhone Simulator, in demo mode (sample data, no sign-in), with the development server
@@ -188,8 +190,9 @@ function nativeFingerprint(env) {
     if (fs.existsSync(p)) h.update(fs.readFileSync(p));
   }
   if (fs.existsSync(PLIST)) h.update(fs.readFileSync(PLIST));
-  // The widget's Swift code and settings (targets/) and GOOYA's own native modules (modules/) are compiled into the app.
-  for (const dir of ["targets", "modules"]) {
+  // The widget's Swift code and settings (targets/), GOOYA's own native modules (modules/) and config plugins (plugins/,
+  // the Mac's) shape the native project.
+  for (const dir of ["targets", "modules", "plugins"]) {
     const base = path.join(root, dir);
     if (!fs.existsSync(base)) continue;
     for (const f of fs.readdirSync(base, { recursive: true }).map(String).sort()) {
@@ -266,7 +269,7 @@ function explainXcodeProblem(log, kind = "iPhone") {
     [/Cloud signing permission error|cloud-managed distribution certificates/i, "Apple refused the team's cloud-managed App Store certificate: the Apple ID in Xcode must be an Admin on HyberTec LLC's team, or have \"Access to Cloud Managed Distribution Certificate\" in App Store Connect → Users and Access."],
   ];
   const match = known.find(([pattern]) => pattern.test(text));
-  return [...(match ? [match[1]] : ["The lines above say what went wrong."]), `The whole log: ${path.relative(root, log)}. Or ask Claude Code: "npm run iphone fails", with that file.`];
+  return [...(match ? [match[1]] : ["The lines above say what went wrong."]), `The whole log: ${path.relative(root, log)}. Or ask Claude Code: "npm run ${kind.toLowerCase()} fails", with that file.`];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -435,6 +438,54 @@ async function iphone(kind = "iPhone") {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// This Mac (npm run mac): a Release build for the Mac, signed by HyberTec LLC (Xcode registers this Mac with the team
+// the first time), in ~/Applications. /Applications is TestFlight's; the iPad app TestFlight may have put there runs
+// only on a Mac set to Full or Reduced Security.
+
+const MAC_APP = path.join(os.homedir(), "Applications", `${APP_NAME}.app`);
+/**
+ * The Mac app is built for Apple silicon only: React Native Firebase casts an object to BOOL (RNFBAppModule.mm), which
+ * compiles where BOOL is a bool (arm64) but not where it is a signed char (Intel). scripts/publish.mjs builds it the same.
+ */
+const MAC_ARCHS = "ARCHS=arm64";
+
+async function mac() {
+  ensurePackages();
+  const xenv = xcode();
+  ensureCocoaPods();
+  await ensureFirebaseFile();
+  const env = { ...xenv, ...appSettings("live") };
+  ensureNativeProject(env);
+  const { iosDir, workspace: ws, scheme } = workspace();
+  step(`Building ${APP_NAME} for this Mac, signed by the Apple team "${TEAM.name}" (10 to 20 minutes the first time)`);
+  const log = logFile("mac-build.log");
+  const derived = path.join(stateDir, "mac-build");
+  const built = await xcodebuild(
+    // This Mac itself (not any Mac): so Xcode registers it with the team for a development build. Apple silicon only
+    // (MAC_ARCHS).
+    ["-workspace", ws, "-scheme", scheme, "-configuration", "Release", "-destination", "platform=macOS,variant=Mac Catalyst", "-derivedDataPath", derived,
+      "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration", `DEVELOPMENT_TEAM=${TEAM.id}`, "CODE_SIGN_STYLE=Automatic", "COMPILER_INDEX_STORE_ENABLE=NO", MAC_ARCHS, "build"],
+    { cwd: iosDir, env, log },
+  );
+  if (!built) stop([`${APP_NAME} didn't build for the Mac.`, ...explainXcodeProblem(log, "Mac")]);
+  const app = path.join(derived, "Build", "Products", "Release-maccatalyst", `${scheme}.app`);
+  step(`Putting ${APP_NAME} in your Applications folder (${MAC_APP.replace(os.homedir(), "~")}) and opening it`);
+  spawnSync("pkill", ["-f", `${MAC_APP}/Contents/MacOS/`]);
+  fs.mkdirSync(path.dirname(MAC_APP), { recursive: true });
+  fs.rmSync(MAC_APP, { recursive: true, force: true });
+  run("ditto", [app, MAC_APP], { problem: `${APP_NAME} built but couldn't be copied to ${MAC_APP}.` });
+  spawnSync("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-f", MAC_APP]);
+  spawnSync("open", [MAC_APP]);
+  const expires = readProfile(path.join(app, "Contents", "embedded.provisionprofile"))?.expires ?? null;
+  console.log(`\n✓ ${APP_NAME} is on this Mac, in ${MAC_APP.replace(os.homedir(), "~")} (Launchpad and Spotlight find it). Sign in with Google.`);
+  if (expires) console.log(`  This copy keeps opening until ${expires.toLocaleString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}; npm run publish:mac puts it on TestFlight for good.`);
+  if (fs.existsSync(path.join("/Applications", `${APP_NAME}.app`, "WrappedBundle"))) {
+    console.log(`  /Applications/${APP_NAME}.app is the iPad app TestFlight put on this Mac: drag it to the Trash (it asks for your password), so links and widgets open the Mac app.`);
+  }
+  console.log(`  After any change to the app, run npm run mac again: only what changed is rebuilt.\n`);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // For scripts/publish.mjs: the native project as the App Store needs it.
 
 async function prepare() {
@@ -490,6 +541,7 @@ try {
   if (process.platform !== "darwin") stop("GOOYA's iPhone app is built on a Mac (Xcode).");
   if (command === "iphone" || command === "ios") await (onSim ? iphoneSim() : iphone());
   else if (command === "ipad") await iphone("iPad");
+  else if (command === "mac") await mac();
   else if (command === "prepare") await prepare();
   else if (command === "setup") await setup();
   else help();
