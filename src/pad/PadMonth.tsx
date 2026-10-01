@@ -1,5 +1,6 @@
 import type { DateKey, EventOccurrence, TaskOccurrence } from "@shared/model";
 import { layoutRow } from "@shared/monthRows";
+import { dominantMonth } from "@shared/visibleMonth";
 import { DAY_MS, addDaysKey, fieldsInZone, makeKey, parseKey, startOfDayMs, weekdayOfKey } from "@shared/time";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
@@ -86,6 +87,7 @@ export function PadMonth({ width, onMonth, onPickDay, onHoldDay, onOpen }: { wid
     }
     return out;
   }, [rowH]);
+  const heights = useMemo(() => BLOCKS.map((b) => b.rows * rowH), [rowH]);
   const listRef = useRef<FlatList<Block>>(null);
   const date = usePad((s) => s.date);
   const jump = usePad((s) => s.jump);
@@ -98,31 +100,23 @@ export function PadMonth({ width, onMonth, onPickDay, onHoldDay, onOpen }: { wid
   const [titleIdx, setTitleIdx] = useState(initial);
   const scrollY = useRef(0);
 
-  // The title: the month that fills most of the screen (as Apple's does while scrolling).
+  // The title: the month that fills most of the screen (as Apple's does while scrolling; shared/visibleMonth.ts).
   const report = useCallback(
     (y: number) => {
-      let best = 0;
-      let bestShown = -1;
       let first = -1;
       let last = -1;
       for (let i = 0; i < BLOCKS.length; i++) {
-        const top = offsets[i];
-        const bottom = top + BLOCKS[i].rows * rowH;
-        if (bottom < y) continue;
-        if (top > y + viewportH) break;
-        const shown = Math.min(bottom, y + viewportH) - Math.max(top, y);
+        if (offsets[i] + heights[i] < y) continue;
+        if (offsets[i] > y + viewportH) break;
         if (first < 0) first = i;
         last = i;
-        if (shown > bestShown) {
-          bestShown = shown;
-          best = i;
-        }
       }
       if (first >= 0) setRange((r) => (r.first === first && r.last === last ? r : { first, last }));
+      const best = dominantMonth(offsets, heights, y, y + viewportH);
       setTitleIdx(best);
       onMonth(BLOCKS[best].y, BLOCKS[best].m);
     },
-    [offsets, rowH, viewportH, onMonth],
+    [offsets, heights, viewportH, onMonth],
   );
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

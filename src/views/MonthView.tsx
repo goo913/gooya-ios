@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { layoutRow } from "@shared/monthRows";
+import { dominantMonth } from "@shared/visibleMonth";
 import { EventBar, EventChip, TaskChip } from "@/components/Chips";
 import { DragPiece, MonthDragContext, MonthDragLayer, useMonthDrag, type MonthDragHost } from "@/components/MonthDrag";
 import { MONTH_NAMES, MONTH_SHORT, WEEKDAY_LETTERS } from "@/lib/format";
@@ -38,6 +39,8 @@ interface MonthLayout {
   labelH: number;
   blocks: Block[];
   offsets: number[];
+  /** Each block's weeks' height (the block without the next month's name). */
+  weeks: number[];
 }
 
 const daysInMonth = (y: number, m: number): number => new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -55,6 +58,7 @@ function monthLayout(rowH: number, labelH: number): MonthLayout {
   if (cached) return cached;
   const blocks: Block[] = [];
   const offsets: number[] = [];
+  const weeks: number[] = [];
   let offset = 0;
   for (let y = FIRST_YEAR; y <= LAST_YEAR; y++) {
     for (let m = 1; m <= 12; m++) {
@@ -65,10 +69,11 @@ function monthLayout(rowH: number, labelH: number): MonthLayout {
       const height = rows * rowH + labelH;
       blocks.push({ y, m, startCol, days, rows, height, gridStartKey: addDaysKey(firstKey, -startCol) });
       offsets.push(offset);
+      weeks.push(rows * rowH);
       offset += height;
     }
   }
-  const layout = { rowH, labelH, blocks, offsets };
+  const layout = { rowH, labelH, blocks, offsets, weeks };
   layouts.set(cacheKey, layout);
   return layout;
 }
@@ -78,15 +83,9 @@ function blockIndexFor(monthKey: DateKey, layout: MonthLayout): number {
   return Math.min(layout.blocks.length - 1, Math.max(0, (y - FIRST_YEAR) * 12 + (m - 1)));
 }
 
-function titleIndexForScroll(scrollTop: number, layout: MonthLayout): number {
-  let lo = 0;
-  let hi = layout.blocks.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (layout.offsets[mid] - layout.labelH * 0.5 <= scrollTop) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
+/** The month in the title: the one whose weeks fill most of the list's height in view (shared/visibleMonth.ts). */
+function titleIndexForScroll(scrollTop: number, viewH: number, layout: MonthLayout): number {
+  return dominantMonth(layout.offsets, layout.weeks, scrollTop, scrollTop + viewH);
 }
 
 export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKey; onPickDay: (key: DateKey) => void; onHoldDay?: (key: DateKey) => void }) {
@@ -203,16 +202,21 @@ export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKe
   // While something is dragged, more months stay drawn (it can be dragged far).
   const dragging = useMonthDrag((s) => !!s.item);
 
+  // The list's height in view, for the title (until measured, about a screen's).
+  const viewH = useRef(600);
+  const retitle = useCallback(() => {
+    const idx = titleIndexForScroll(scrollY.current, viewH.current, layoutRef.current);
+    setTitleIdx((cur) => (cur === idx ? cur : idx));
+  }, []);
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const y = e.nativeEvent.contentOffset.y;
       scrollY.current = y;
       const aligned = layoutRef.current.offsets[shown.current];
       if (!settled.current && Math.abs(y - aligned) > 1 && Math.abs(y - aligned) < 80) settle();
-      const idx = titleIndexForScroll(y, layoutRef.current);
-      setTitleIdx((cur) => (cur === idx ? cur : idx));
+      retitle();
     },
-    [settle],
+    [settle, retitle],
   );
   // One function for the list's lifetime: FlatList refuses a changing onViewableItemsChanged.
   const [onViewable] = useState(() => ({ viewableItems }: { viewableItems: ViewToken<Block>[] }) => {
@@ -252,7 +256,15 @@ export function MonthView({ monthKey, onPickDay, onHoldDay }: { monthKey: DateKe
         <ListView />
       ) : (
       <MonthDragContext.Provider value={dragHost}>
-      <View ref={listBox} style={styles.fill} onLayout={() => listBox.current?.measureInWindow((_, top, __, height) => (listFrame.current = { top, height }))}>
+      <View
+        ref={listBox}
+        style={styles.fill}
+        onLayout={(e) => {
+          viewH.current = e.nativeEvent.layout.height;
+          retitle();
+          listBox.current?.measureInWindow((_, top, __, height) => (listFrame.current = { top, height }));
+        }}
+      >
       <FlatList
         key={layout.rowH}
         ref={listRef}
