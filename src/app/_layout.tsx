@@ -1,11 +1,13 @@
 import * as Notifications from "expo-notifications";
-import { Stack, router } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { initAuth } from "@/lib/auth";
 import { isMock } from "@/lib/mock";
+import { useIsPad } from "@/lib/layout";
+import { noteExternalOpen, useOpenView } from "@/lib/openView";
 import { refreshPushToken, requestNotifications } from "@/lib/push";
 import { useSheets } from "@/store/sheets";
 import { useData } from "@/store/data";
@@ -27,6 +29,10 @@ export default function RootLayout() {
   const status = useSession((s) => s.status);
   const me = useSession((s) => s.me);
   const hydrated = usePrefs((s) => s.hydrated);
+  const pathname = usePathname();
+  const pad = useIsPad();
+  // Settings → Opens In: today in the chosen view when GOOYA starts and after time away.
+  useOpenView(status === "ready" && hydrated && !setupProblem, pathname, pad);
   // Once signed in: ask for notifications (once) and register this phone for the server's alerts.
   useEffect(() => {
     if (status !== "ready" || !me || isMock) return;
@@ -42,6 +48,7 @@ export default function RootLayout() {
       if (!taskId) return;
       const task = useData.getState().tasks.find((t) => t.id === taskId);
       if (!task) return;
+      noteExternalOpen();
       useSheets.getState().openEditor({ kind: "task", task });
       if (dateKey) router.push({ pathname: "/day/[date]", params: { date: dateKey } });
       router.push("/sheet/edit");
@@ -84,6 +91,7 @@ export default function RootLayout() {
             <Stack.Screen name="sheet/list" options={{ ...small, sheetAllowedDetents: [0.6, 1] }} />
             <Stack.Screen name="sheet/tags" options={{ ...small, sheetAllowedDetents: [0.55, 1] }} />
             <Stack.Screen name="calendars" options={page} />
+            <Stack.Screen name="open" options={{ animation: "none" }} />
           </Stack.Protected>
         </Stack>
       )}

@@ -8,7 +8,8 @@ import WidgetKit
 // weeks or the month with the list beside them, or either across the whole width, where each day is wide enough for
 // longer titles and each thing's time. Tasks, schedules and the events of connected calendars, never routines. An
 // event over several days is on each of its days, never one bar across them. Every day shown opens that day in the app
-// (gooya://day/YYYY-MM-DD).
+// (gooya://day/YYYY-MM-DD); anywhere else, GOOYA as it opens (gooya://open: today in the view chosen in its Settings →
+// Default View).
 
 struct WidgetRoot: View {
   @Environment(\.widgetFamily) private var family
@@ -72,9 +73,16 @@ struct WidgetContent: View {
 struct DayLink<Content: View>: View {
   let key: String
   @ViewBuilder let content: () -> Content
+  var body: some View { AppLink(url: WidgetModel.url(key), content: content) }
+}
+
+/// A tappable area that opens a link into the app.
+struct AppLink<Content: View>: View {
+  let url: URL
+  @ViewBuilder let content: () -> Content
   var body: some View {
     #if os(iOS)
-    Link(destination: WidgetModel.url(key)) { content() }
+    Link(destination: url) { content() }
     #else
     content()
     #endif
@@ -235,7 +243,7 @@ struct SmallView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -277,7 +285,7 @@ struct MediumView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       }
     }
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -323,7 +331,7 @@ struct LargeHeader: View {
   let m: WidgetModel
   var body: some View {
     HStack(alignment: .center) {
-      DayLink(key: m.today) {
+      AppLink(url: WidgetModel.openURL) {
         Text(m.monthTitle).font(.system(size: 16, weight: .bold)).widgetAccentable()
       }
       Spacer()
@@ -538,7 +546,7 @@ struct TwoWeeksView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -553,7 +561,7 @@ struct MonthView: View {
       DaysGrid(m: m, rows: m.monthRows())
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -568,7 +576,7 @@ struct MonthListView: View {
       FittedList(m: m)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -639,7 +647,7 @@ struct WideView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -674,7 +682,7 @@ struct RectangularView: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 
@@ -700,7 +708,7 @@ struct CircularView: View {
       }
       .widgetAccentable()
     }
-    .widgetURL(WidgetModel.url(m.today))
+    .widgetURL(WidgetModel.openURL)
   }
 }
 #endif

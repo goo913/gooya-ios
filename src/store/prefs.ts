@@ -12,6 +12,8 @@ export type TimelinePeople = "both" | "me" | "other";
 export type DayDisplay = "timeline" | "list";
 export type MonthDisplay = "stacked" | "list";
 export type AppearancePref = "dark" | "light" | "system";
+/** The view GOOYA opens in (Settings → Opens In): today in the Day view, the iPad's Week view, or the month. */
+export type OpenView = "day" | "week" | "month";
 
 interface PrefsState {
   filter: PersonFilter;
@@ -27,6 +29,8 @@ interface PrefsState {
   /** Routines (sleep, work) shaded in the day view, and in the iPad's week view (Settings → Timeline). */
   routinesInDay: boolean;
   routinesInWeek: boolean;
+  /** null until chosen: the device's own default (src/lib/openView.ts). */
+  openView: OpenView | null;
   hydrated: boolean;
   setFilter: (f: PersonFilter) => void;
   setAppearance: (a: AppearancePref) => void;
@@ -38,6 +42,7 @@ interface PrefsState {
   toggleCalendar: (id: string) => void;
   setRoutinesInDay: (on: boolean) => void;
   setRoutinesInWeek: (on: boolean) => void;
+  setOpenView: (v: OpenView) => void;
 }
 
 /**
@@ -65,6 +70,7 @@ export const usePrefs = create<PrefsState>()(
       hiddenCalendars: [],
       routinesInDay: true,
       routinesInWeek: true,
+      openView: null,
       hydrated: false,
       setFilter: (filter) => set({ filter }),
       setAppearance: (appearance) => {
@@ -79,13 +85,14 @@ export const usePrefs = create<PrefsState>()(
       toggleCalendar: (id) => set((s) => ({ hiddenCalendars: s.hiddenCalendars.includes(id) ? s.hiddenCalendars.filter((c) => c !== id) : [...s.hiddenCalendars, id] })),
       setRoutinesInDay: (routinesInDay) => set({ routinesInDay }),
       setRoutinesInWeek: (routinesInWeek) => set({ routinesInWeek }),
+      setOpenView: (openView) => set({ openView }),
     }),
     {
       name: "gooya-prefs",
       version: 3,
       storage: createJSONStorage(() => AsyncStorage),
-      // Stored before the routine switches existed: they start on (the defaults above).
-      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance, hiddenCalendars: s.hiddenCalendars, routinesInDay: s.routinesInDay, routinesInWeek: s.routinesInWeek }),
+      // Stored before the routine switches and Opens In existed: they start as the defaults above.
+      partialize: (s) => ({ filter: s.filter, timelineDays: s.timelineDays, timelinePeople: s.timelinePeople, dayDisplay: s.dayDisplay, hourHeight: s.hourHeight, monthDisplay: s.monthDisplay, appearance: s.appearance, hiddenCalendars: s.hiddenCalendars, routinesInDay: s.routinesInDay, routinesInWeek: s.routinesInWeek, openView: s.openView }),
       // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default). Version 3
       // made Single Day the default: the day opens as one day again, where Multi Day had been the default.
       migrate: (persisted, version) => {

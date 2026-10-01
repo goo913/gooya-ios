@@ -12,9 +12,10 @@ import { patchSettings, patchUser } from "@/lib/db";
 import { env } from "@/lib/env";
 import { tzAbbrev } from "@/lib/format";
 import { useIsPad } from "@/lib/layout";
+import { OPEN_VIEWS, resolveOpenView } from "@/lib/openView";
 import { useMe, usePerson } from "@/lib/people";
 import { forgetPushToken, notificationsAllowed, refreshPushToken, requestNotifications } from "@/lib/push";
-import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref } from "@/store/prefs";
+import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref, type OpenView } from "@/store/prefs";
 import { useSession } from "@/store/session";
 import { useColors, useIsDark } from "@/theme";
 
@@ -37,6 +38,8 @@ export default function SettingsSheet() {
   const routinesInWeek = usePrefs((s) => s.routinesInWeek);
   const setRoutinesInDay = usePrefs((s) => s.setRoutinesInDay);
   const setRoutinesInWeek = usePrefs((s) => s.setRoutinesInWeek);
+  const openView = usePrefs((s) => s.openView);
+  const setOpenView = usePrefs((s) => s.setOpenView);
   // The week view is the iPad's (a narrow iPad window has the iPhone's screens).
   const pad = useIsPad();
   const device = pad ? "iPad" : "iPhone";
@@ -89,6 +92,20 @@ export default function SettingsSheet() {
               value={appearance}
               onChange={setAppearance}
               style={{ width: 220 }}
+            />
+          </Row>
+        </Group>
+
+        <Group
+          header="Default View"
+          footer={`GOOYA opens on today in this view: when it starts, when you come back after 15 minutes away, and from the widget (a day tapped in the widget opens that day). Remembered on this ${device}.`}
+        >
+          <Row label="Opens In">
+            <Segmented<OpenView>
+              options={OPEN_VIEWS.filter((o) => pad || !o.pad).map(({ value, label }) => ({ value, label }))}
+              value={resolveOpenView(openView, pad)}
+              onChange={setOpenView}
+              style={{ width: pad ? 220 : 150 }}
             />
           </Row>
         </Group>

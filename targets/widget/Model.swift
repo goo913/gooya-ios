@@ -204,6 +204,8 @@ struct WidgetModel {
   var monthTitle: String { DayKey.monthNames[DayKey.parts(today).m - 1] }
 
   static func url(_ key: String) -> URL { URL(string: "gooya://day/\(key)")! }
+  /// GOOYA as it opens: today in the view chosen in its Settings → Default View (src/app/open.tsx).
+  static let openURL = URL(string: "gooya://open")!
 }
 
 struct DayGroup: Identifiable {
