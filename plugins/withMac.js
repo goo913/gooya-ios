@@ -105,8 +105,9 @@ const withMacProject = (config, options) =>
 /**
  * Every pod builds for Mac Catalyst too, at the app's iOS 26 (macOS 26), with React Native's Mac Catalyst fixes; and
  * React Native's frameworks are reshaped for the Mac (scripts/mac-frameworks.sh) just before CocoaPods' embed step
- * signs them, so the step is placed once CocoaPods has added its own; and the Mac's Info.plist is made from the app's
- * once React Native's install has written to it.
+ * signs them, so the step is placed once CocoaPods has added its own; the Mac's duplicate signature files of Google's
+ * frameworks are removed, as React Native Firebase does the iPhone's (else an archive for the App Store stops); and the
+ * Mac's Info.plist is made from the app's once React Native's install has written to it.
  * @type {import("expo/config-plugins").ConfigPlugin}
  */
 const withMacPods = (config) =>
@@ -138,6 +139,14 @@ const withMacPods = (config) =>
     app.build_phases.delete(phase)
     embed = app.build_phases.find { |p| p.respond_to?(:name) && p.name == '[CP] Embed Pods Frameworks' }
     app.build_phases.insert(embed ? app.build_phases.index(embed) : app.build_phases.length, phase)
+
+    ${marker}: React Native Firebase removes the duplicate signature files of Google's frameworks, which stop an
+    # archive ("….xcframework-ios.signature couldn't be copied to Signatures"), but not the Mac's (-ios-macabi): this does.
+    names = defined?(RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES) ? RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES : ['*']
+    sign_name = '[GOOYA] Remove duplicate signature files for the Mac'
+    sign = app.shell_script_build_phases.find { |p| p.name == sign_name } || app.new_shell_script_build_phase(sign_name)
+    sign.shell_script = names.map { |n| %(rm -f "\${CONFIGURATION_BUILD_DIR}"/#{n}.xcframework-ios-macabi.signature\\n) }.join
+    sign.always_out_of_date = '1'
     project.save
 
     ${marker}: the Mac's Info.plist is the app's as React Native's install left it, with more than one window
