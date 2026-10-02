@@ -5,10 +5,11 @@ import UIKit
   func gooyaCommand(_ command: UICommand)
 }
 
-/// GOOYA's menus in the Mac's menu bar, as Apple Calendar's are: Settings… and Accounts… in the GOOYA menu; New Schedule or Task, New
-/// Routine and New Category in File; Search in Edit; By Day · By Week · By Month · By Year, Next and Previous, Go to
-/// Today, Zoom In and Out (what is on the calendar only) and Show or Hide Calendar List in View, with Calendar's
-/// keyboard shortcuts. A command goes to JavaScript as `onCommand` with its id (modules/gooya-mac/index.ts).
+/// GOOYA's menus in the Mac's menu bar, as Apple Calendar's are: Settings… and Accounts… in the GOOYA menu (the Settings
+/// window, at its Accounts tab for Accounts…); New Schedule or Task, New Routine and New Category in File; Search in
+/// Edit; By Day · By Week · By Month · By Year, Next and Previous, Go to Today, Zoom In and Out (what is on the calendar
+/// only) and Show or Hide Calendar List in View, with Calendar's keyboard shortcuts. A command goes to JavaScript as
+/// `onCommand` with its id (modules/gooya-mac/index.ts), but for the Settings window and the sidebar.
 public enum GooyaMacMenu {
   /// The view shown and whether the sidebar is, for the View menu's check mark and Show/Hide Calendar List.
   public static var view = "month"
@@ -77,9 +78,11 @@ public enum GooyaMacMenu {
   public static func perform(_ command: UICommand) {
     guard let id = command.propertyList as? String else { return }
     #if targetEnvironment(macCatalyst)
-    if id == "sidebar" {
-      GooyaMacSplit.toggle()
-      return
+    switch id {
+    case "sidebar": return GooyaMacSplit.toggle()
+    case "settings": return GooyaMacSettings.open()
+    case "accounts": return GooyaMacSettings.open("accounts")
+    default: break
     }
     #endif
     GooyaMacModule.current?.sendEvent("onCommand", ["id": id])

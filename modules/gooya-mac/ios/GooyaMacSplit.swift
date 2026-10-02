@@ -24,7 +24,7 @@ enum GooyaMacSplit {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
       guard let shown = wanted else { return }
       wanted = nil
-      for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+      for case let scene as UIWindowScene in UIApplication.shared.connectedScenes where !GooyaMacSettings.isSettings(scene) {
         guard let window = scene.keyWindow ?? scene.windows.first else { continue }
         if shown {
           let fresh = !(window.rootViewController is UISplitViewController)

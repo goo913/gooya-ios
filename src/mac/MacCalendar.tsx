@@ -16,7 +16,7 @@ import { usePrefs } from "@/store/prefs";
 import { useSheets } from "@/store/sheets";
 import { useIsDark } from "@/theme";
 import { DayView, type DayActions } from "@/views/DayView";
-import { onCommand, setMenuState, setSplit, setToolbar } from "../../modules/gooya-mac";
+import { onCommand, openSettings, setMenuState, setSplit, setToolbar } from "../../modules/gooya-mac";
 import { INSPECTOR_WIDTH, MacInspector } from "./MacInspector";
 import { MacMonth, MacWeekdays, type MacMonthActions } from "./MacMonth";
 import { MacPopoverLayer } from "./MacPopover";
@@ -121,7 +121,7 @@ export function MacCalendar() {
       const toCalendar = () => {
         if (!home) router.dismissTo("/");
       };
-      const go = (path: "/settings" | "/search" | "/integrations" | "/sheet/edit" | "/sheet/listEdit") => {
+      const go = (path: "/search" | "/sheet/edit" | "/sheet/listEdit") => {
         toCalendar();
         setTimeout(() => router.push(path), home ? 0 : 400);
       };
@@ -148,8 +148,9 @@ export function MacCalendar() {
         usePickers.getState().setList(null);
         go("/sheet/listEdit");
       } else if (id === "search") go("/search");
-      else if (id === "settings") go("/settings");
-      else if (id === "accounts") go("/integrations");
+      // The menus open Settings themselves (a window of its own); this is for the same commands from anywhere else.
+      else if (id === "settings") openSettings();
+      else if (id === "accounts") openSettings("accounts");
     });
     return () => sub?.remove();
   }, [pathname, step, newHere, me]);

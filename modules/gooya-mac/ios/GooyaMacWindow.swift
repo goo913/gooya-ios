@@ -9,11 +9,11 @@ enum GooyaMacWindow {
 
   static func start() {
     #if targetEnvironment(macCatalyst)
-    for case let scene as UIWindowScene in UIApplication.shared.connectedScenes { setUp(scene) }
+    for case let scene as UIWindowScene in UIApplication.shared.connectedScenes where !GooyaMacSettings.isSettings(scene) { setUp(scene) }
     guard !observing else { return }
     observing = true
     NotificationCenter.default.addObserver(forName: UIScene.willConnectNotification, object: nil, queue: .main) { note in
-      if let scene = note.object as? UIWindowScene { setUp(scene) }
+      if let scene = note.object as? UIWindowScene, !GooyaMacSettings.isSettings(scene) { setUp(scene) }
     }
     #endif
   }
@@ -52,7 +52,7 @@ enum GooyaMacWindow {
   static func bringForward() {
     #if targetEnvironment(macCatalyst)
     GooyaStatusItem.activateApp()
-    let hasWindow = UIApplication.shared.connectedScenes.contains { $0.activationState != .unattached && $0 is UIWindowScene }
+    let hasWindow = UIApplication.shared.connectedScenes.contains { $0.activationState != .unattached && $0 is UIWindowScene && !GooyaMacSettings.isSettings($0) }
     if !hasWindow {
       UIApplication.shared.requestSceneSessionActivation(nil, userActivity: nil, options: nil, errorHandler: nil)
     }

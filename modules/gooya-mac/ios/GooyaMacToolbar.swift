@@ -1,13 +1,14 @@
 import UIKit
 
 #if targetEnvironment(macCatalyst)
-/// The Mac window's toolbar, after Apple Calendar's (macOS 27): over the sidebar only the window's buttons; + where the
-/// calendar starts (it follows the sidebar's edge), Day · Week · Month · Year in the middle of the calendar, Search at
-/// the right. Its buttons send the same commands as the menus (`onCommand`); the views' selection follows
-/// `GooyaMacMenu.view`.
+/// The Mac window's toolbar, after Apple Calendar's (macOS 27): over the sidebar the window's buttons and, at its right,
+/// Settings (the gear: the Settings window); + where the calendar starts (it follows the sidebar's edge), Day · Week ·
+/// Month · Year in the middle of the calendar, Search at the right. Its buttons send the same commands as the menus
+/// (`onCommand`); the views' selection follows `GooyaMacMenu.view`.
 final class GooyaMacToolbar: NSObject, NSToolbarDelegate {
   static let shared = GooyaMacToolbar()
 
+  private let settings = NSToolbarItem.Identifier("gooya.settings")
   private let add = NSToolbarItem.Identifier("gooya.add")
   private let views = NSToolbarItem.Identifier("gooya.views")
   private let search = NSToolbarItem.Identifier("gooya.search")
@@ -31,7 +32,7 @@ final class GooyaMacToolbar: NSObject, NSToolbarDelegate {
 
   func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
     // The views centred between + and Search, as Apple's are (over the calendar, not the window).
-    [.primarySidebarTrackingSeparatorItemIdentifier, add, .flexibleSpace, views, .flexibleSpace, search]
+    [.flexibleSpace, settings, .primarySidebarTrackingSeparatorItemIdentifier, add, .flexibleSpace, views, .flexibleSpace, search]
   }
 
   func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -40,6 +41,7 @@ final class GooyaMacToolbar: NSObject, NSToolbarDelegate {
 
   func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
     switch id {
+    case settings: return button(id, symbol: "gearshape", label: "Settings")
     case add: return button(id, symbol: "plus", label: "New Schedule or Task")
     case search: return button(id, symbol: "magnifyingglass", label: "Search")
     case views:
@@ -63,6 +65,7 @@ final class GooyaMacToolbar: NSObject, NSToolbarDelegate {
   }
 
   @objc private func press(_ item: NSToolbarItem) {
+    if item.itemIdentifier == settings { return GooyaMacSettings.open() }
     GooyaMacModule.current?.sendEvent("onCommand", ["id": item.itemIdentifier == add ? "new" : "search"])
   }
 

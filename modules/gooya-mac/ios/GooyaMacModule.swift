@@ -32,8 +32,11 @@ public class GooyaMacModule: Module {
       GooyaMacModule.current = self
       #if targetEnvironment(macCatalyst)
       // The window in front or not (Apple greys today's circle and what is chosen while it is not).
+      // GOOYA's window only (the Settings window's title is its tab's; GOOYA's is "GOOYA"): Settings in front makes the
+      // calendar inactive, as Calendar's Settings does.
       for (name, active) in [("NSWindowDidBecomeKeyNotification", true), ("NSWindowDidResignKeyNotification", false)] {
-        NotificationCenter.default.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
+          guard (note.object as? NSObject)?.value(forKey: "title") as? String == "GOOYA" else { return }
           GooyaMacModule.windowActive = active
           self?.sendEvent("onWindowActive", ["active": active])
         }
@@ -107,6 +110,42 @@ public class GooyaMacModule: Module {
 
     Function("setEscape") { (on: Bool) in
       DispatchQueue.main.async { GooyaMacMenu.escape = on }
+    }
+
+    Function("openSettings") { (tab: String?) in
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async { GooyaMacSettings.open(tab) }
+      #endif
+    }
+
+    Function("closeSettings") {
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async { GooyaMacSettings.close() }
+      #endif
+    }
+
+    Function("setSettingsSize") { (tab: String, width: Double, height: Double) in
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async { GooyaMacSettings.setSize(CGSize(width: ceil(width), height: ceil(height)), for: tab) }
+      #endif
+    }
+
+    Function("showMainWindow") {
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async { GooyaMacSettings.showMain() }
+      #endif
+    }
+
+    View(GooyaControlView.self) {
+      Events("onAction", "onMeasure")
+      Prop("kind") { (view: GooyaControlView, kind: String) in view.kind = kind }
+      Prop("title") { (view: GooyaControlView, title: String) in view.title = title }
+      Prop("options") { (view: GooyaControlView, options: [String]) in view.options = options }
+      Prop("selected") { (view: GooyaControlView, selected: Int) in view.selected = selected }
+      Prop("checked") { (view: GooyaControlView, checked: Bool) in view.checked = checked }
+      Prop("enabled") { (view: GooyaControlView, enabled: Bool) in view.enabled = enabled }
+      Prop("stretch") { (view: GooyaControlView, stretch: Bool) in view.stretch = stretch }
+      OnViewDidUpdateProps { (view: GooyaControlView) in view.update() }
     }
 
     Function("windowActive") { () -> Bool in

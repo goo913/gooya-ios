@@ -14,7 +14,10 @@ const { IOSConfig, withAppDelegate, withFinalizedMod, withInfoPlist, withPodfile
  * - React Native's prebuilt React and ReactNativeDependencies frameworks come without the Versions/A layout a framework
  *   in a Mac app must have: a build step just before CocoaPods embeds and signs them reshapes them
  *   (scripts/mac-frameworks.sh).
- * - The app delegate gives the Mac its menus and keyboard shortcuts (modules/gooya-mac).
+ * - The app delegate gives the Mac its menus and keyboard shortcuts, and the Settings window its own window (scene)
+ *   with React Native in it (modules/gooya-mac). Only the Mac's Info.plist (GOOYA/Info-mac.plist, made from the app's)
+ *   allows more than one window (an iPad's GOOYA stays one window), and it gives the Mac Calendar's red as its accent
+ *   colour.
  *
  * @typedef {{ appGroup: string | null, push: boolean }} MacOptions appGroup: the App Group the app and the widget share
  *   (null for a free Apple team's build, which has neither); push: push notifications (not on a free team's build).
@@ -23,6 +26,7 @@ const { IOSConfig, withAppDelegate, withFinalizedMod, withInfoPlist, withPodfile
 const APP_TARGET = "GOOYA";
 const WIDGET_TARGET = "GOOYAWidget";
 const APP_ENTITLEMENTS = "GOOYA/GOOYA-mac.entitlements";
+const MAC_INFO = "GOOYA/Info-mac.plist";
 const WIDGET_ENTITLEMENTS = "GOOYA/GOOYAWidget-mac.entitlements";
 
 /** @param {Record<string, boolean | string | string[]>} entries */
@@ -60,6 +64,18 @@ const withMacProject = (config, options) =>
       );
       if (options.appGroup) fs.writeFileSync(path.join(iosRoot, WIDGET_ENTITLEMENTS), plist({ ...sandbox, ...group }));
 
+      // The Mac's accent colour (its Info.plist names it): Apple Calendar's red, for checkboxes, the Settings window's
+      // tab and the like, as Calendar has them.
+      const accent = path.join(iosRoot, APP_TARGET, "Images.xcassets", "AccentColor.colorset");
+      fs.mkdirSync(accent, { recursive: true });
+      const srgb = (/** @type {string} */ hex) => ({ "color-space": "srgb", components: { red: `0x${hex.slice(1, 3)}`, green: `0x${hex.slice(3, 5)}`, blue: `0x${hex.slice(5, 7)}`, alpha: "1.000" } });
+      const colors = [
+        { color: srgb("#FF383C"), idiom: "universal" },
+        { appearances: [{ appearance: "luminosity", value: "dark" }], color: srgb("#FF4245"), idiom: "universal" },
+      ];
+      fs.writeFileSync(path.join(accent, "Contents.json"), JSON.stringify({ colors, info: { author: "xcode", version: 1 } }, null, 2));
+
+
       const project = IOSConfig.XcodeUtils.getPbxproj(c.modRequest.projectRoot);
       const targets = project.pbxNativeTargetSection();
       const configurations = project.pbxXCBuildConfigurationSection();
@@ -75,7 +91,10 @@ const withMacProject = (config, options) =>
           settings.DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = "NO";
           settings.TARGETED_DEVICE_FAMILY = '"1,2,6"';
           settings['"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]"'] = `"${name === APP_TARGET ? APP_ENTITLEMENTS : WIDGET_ENTITLEMENTS}"`;
-          if (name === APP_TARGET) settings.SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = "NO";
+          if (name === APP_TARGET) {
+            settings.SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = "NO";
+            settings['"INFOPLIST_FILE[sdk=macosx*]"'] = `"${MAC_INFO}"`;
+          }
         }
       }
       fs.writeFileSync(project.filepath, project.writeSync());
@@ -86,7 +105,8 @@ const withMacProject = (config, options) =>
 /**
  * Every pod builds for Mac Catalyst too, at the app's iOS 26 (macOS 26), with React Native's Mac Catalyst fixes; and
  * React Native's frameworks are reshaped for the Mac (scripts/mac-frameworks.sh) just before CocoaPods' embed step
- * signs them, so the step is placed once CocoaPods has added its own.
+ * signs them, so the step is placed once CocoaPods has added its own; and the Mac's Info.plist is made from the app's
+ * once React Native's install has written to it.
  * @type {import("expo/config-plugins").ConfigPlugin}
  */
 const withMacPods = (config) =>
@@ -119,6 +139,13 @@ const withMacPods = (config) =>
     embed = app.build_phases.find { |p| p.respond_to?(:name) && p.name == '[CP] Embed Pods Frameworks' }
     app.build_phases.insert(embed ? app.build_phases.index(embed) : app.build_phases.length, phase)
     project.save
+
+    ${marker}: the Mac's Info.plist is the app's as React Native's install left it, with more than one window
+    # (GOOYA's and Settings; an iPad's GOOYA stays one window) and Calendar's red for checkboxes and the like.
+    info = Xcodeproj::Plist.read_from_path(File.join(project.path.dirname, '${APP_TARGET}', 'Info.plist'))
+    info['UIApplicationSceneManifest']['UIApplicationSupportsMultipleScenes'] = true
+    info['NSAccentColorName'] = 'AccentColor'
+    Xcodeproj::Plist.write_to_path(info, File.join(project.path.dirname, '${MAC_INFO}'))
 `,
       );
     }
@@ -127,7 +154,8 @@ const withMacPods = (config) =>
   });
 
 /**
- * The menus and keyboard shortcuts: the app delegate builds them and passes their commands on (modules/gooya-mac).
+ * The menus and keyboard shortcuts: the app delegate builds them and passes their commands on; and it gives the
+ * Settings window its own window (modules/gooya-mac).
  * @type {import("expo/config-plugins").ConfigPlugin}
  */
 const withMacMenus = (config) =>
@@ -160,6 +188,13 @@ const withMacMenus = (config) =>
   // ⌘= for Zoom In, and Escape while there is something to cancel.
   override var keyCommands: [UIKeyCommand]? {
     (super.keyCommands ?? []) + GooyaMacMenu.keyCommands()
+  }
+
+  // The Settings window is a window of its own, with React Native in it (GooyaMacSettings); any other is GOOYA's.
+  @objc(application:configurationForConnectingSceneSession:options:)
+  func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+    GooyaMacSettings.factory = reactNativeFactory
+    return GooyaMacSettings.configuration(for: connectingSceneSession, options: options)
   }
 #endif
 `,

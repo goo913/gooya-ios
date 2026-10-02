@@ -13,8 +13,9 @@ import { env } from "@/lib/env";
 import { tzAbbrev } from "@/lib/format";
 import { useIsPad } from "@/lib/layout";
 import { OPEN_VIEWS, resolveOpenView } from "@/lib/openView";
-import { isMac, openAtLogin, setOpenAtLogin } from "../../modules/gooya-mac";
+import { isMac } from "../../modules/gooya-mac";
 import { useMe, usePerson } from "@/lib/people";
+import { OpenSettingsWindow } from "@/mac/settings/OpenSettingsWindow";
 import { forgetPushToken, notificationsAllowed, refreshPushToken, requestNotifications } from "@/lib/push";
 import { DEFAULT_HOUR_HEIGHT, usePrefs, type AppearancePref, type OpenView } from "@/store/prefs";
 import { useSession } from "@/store/session";
@@ -22,7 +23,12 @@ import { useColors, useIsDark } from "@/theme";
 
 const COMMON_ZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Asia/Seoul", "Asia/Tokyo", "Europe/London", "Europe/Paris", "UTC"];
 
-export default function SettingsSheet() {
+/** Settings: a sheet on the iPhone and iPad, a window of its own on the Mac (src/mac/settings). */
+export default function Settings() {
+  return isMac ? <OpenSettingsWindow tab="general" /> : <SettingsSheet />;
+}
+
+function SettingsSheet() {
   const colors = useColors();
   const dark = useIsDark();
   const me = useMe();
@@ -41,12 +47,9 @@ export default function SettingsSheet() {
   const setRoutinesInWeek = usePrefs((s) => s.setRoutinesInWeek);
   const openView = usePrefs((s) => s.openView);
   const setOpenView = usePrefs((s) => s.setOpenView);
-  const menuBarAgenda = usePrefs((s) => s.menuBarAgenda);
-  const setMenuBarAgenda = usePrefs((s) => s.setMenuBarAgenda);
-  const [atLogin, setAtLogin] = useState(openAtLogin);
   // The week view is the iPad's (a narrow iPad window has the iPhone's screens).
   const pad = useIsPad();
-  const device = isMac ? "Mac" : pad ? "iPad" : "iPhone";
+  const device = pad ? "iPad" : "iPhone";
   useEffect(() => {
     void notificationsAllowed().then(setPush);
   }, []);
@@ -85,7 +88,7 @@ export default function SettingsSheet() {
           </Row>
         </Group>
 
-        <Group header="Appearance" footer={`Remembered on this ${device}. ${isMac ? "System (as the Mac is) is the default." : "Dark is the default."}`}>
+        <Group header="Appearance" footer={`Remembered on this ${device}. Dark is the default.`}>
           <Row label="Theme">
             <Segmented<AppearancePref>
               options={[
@@ -113,17 +116,6 @@ export default function SettingsSheet() {
             />
           </Row>
         </Group>
-
-        {isMac ? (
-          <Group header="Mac" footer="GOOYA starts when you log in to this Mac, and its icon in the menu bar lists what is on today and tomorrow for both of you: choose one to see it.">
-            <Row label="Open at Login">
-              <Switch label="Open at Login" value={atLogin} onChange={(on) => void setOpenAtLogin(on).then(setAtLogin)} />
-            </Row>
-            <Row label="Show in Menu Bar">
-              <Switch label="Show in Menu Bar" value={menuBarAgenda} onChange={setMenuBarAgenda} />
-            </Row>
-          </Group>
-        ) : null}
 
         <Group header={other.name} footer={`${other.name} sets their own name, color and time zone.`}>
           <Row label="Color">

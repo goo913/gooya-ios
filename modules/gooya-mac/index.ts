@@ -1,8 +1,11 @@
-import { requireOptionalNativeModule, type EventSubscription } from "expo-modules-core";
+import { requireNativeViewManager, requireOptionalNativeModule, type EventSubscription } from "expo-modules-core";
+import type { ComponentType } from "react";
+import type { ViewProps } from "react-native";
 
 /**
- * GOOYA on the Mac (ios/GooyaMacModule.swift): the menus' commands and state, the agenda in the Mac's menu bar, and
- * opening at login. On an iPhone or iPad `isMac` is false and the rest does nothing.
+ * GOOYA on the Mac (ios/GooyaMacModule.swift): the menus' commands and state, the window's sidebar, the Settings
+ * window, the agenda in the Mac's menu bar, and opening at login. On an iPhone or iPad `isMac` is false and the rest
+ * does nothing.
  */
 
 /**
@@ -51,6 +54,28 @@ export interface AgendaSection {
   rows: AgendaRow[];
 }
 
+/** The Settings window's tabs (its toolbar), as Apple Calendar's. */
+export type SettingsTab = "general" | "accounts" | "alerts" | "advanced";
+
+/**
+ * A control the Mac draws itself (ios/GooyaControlView.swift): a checkbox with its title, a pop-up button (⌃⌄) of
+ * `options` showing `selected`, a pull-down button (`title`, then a menu of `options`) or a push button.
+ */
+export interface MacControlProps extends ViewProps {
+  kind: "checkbox" | "popup" | "pulldown" | "button";
+  title?: string;
+  options?: string[];
+  selected?: number;
+  checked?: boolean;
+  enabled?: boolean;
+  /** As wide as the view (a pop-up button as wide as the others in its column), not its own width. */
+  stretch?: boolean;
+  /** { checked } for a checkbox, { index } for a pop-up or pull-down button, {} for a push button. */
+  onAction?: (e: { nativeEvent: { checked?: boolean; index?: number } }) => void;
+  /** The control's own size, for its place in the layout. */
+  onMeasure?: (e: { nativeEvent: { width: number; height: number } }) => void;
+}
+
 interface GooyaMacModule {
   isMac: boolean;
   setMenuState(view: string): void;
@@ -62,6 +87,10 @@ interface GooyaMacModule {
   setEscape(on: boolean): void;
   windowActive(): boolean;
   bringForward(): void;
+  openSettings(tab: SettingsTab | null): void;
+  closeSettings(): void;
+  setSettingsSize(tab: SettingsTab, width: number, height: number): void;
+  showMainWindow(): void;
   openAtLogin(): boolean;
   setOpenAtLogin(on: boolean): Promise<boolean>;
   addListener(event: "onCommand", listener: (e: { id: MacCommand }) => void): EventSubscription;
@@ -133,6 +162,33 @@ export function onAgendaSelect(listener: (key: string) => void): EventSubscripti
 /** GOOYA in front, its window opened again if it was closed. */
 export function bringForward(): void {
   if (isMac) native?.bringForward();
+}
+
+/** The Settings window (GOOYA → Settings…), at `tab` if given; brought forward if it is open. */
+export function openSettings(tab?: SettingsTab): void {
+  if (isMac) native?.openSettings(tab ?? null);
+}
+
+export function closeSettings(): void {
+  if (isMac) native?.closeSettings();
+}
+
+/** The size of a tab's content: the Settings window takes it (below its toolbar). */
+export function setSettingsSize(tab: SettingsTab, width: number, height: number): void {
+  if (isMac) native?.setSettingsSize(tab, width, height);
+}
+
+/** GOOYA's window in front of Settings (a button in Settings opened something there). */
+export function showMainWindow(): void {
+  if (isMac) native?.showMainWindow();
+}
+
+let controlView: ComponentType<MacControlProps> | null = null;
+
+/** The Mac's own controls' view (only on the Mac). */
+export function macControlView(): ComponentType<MacControlProps> {
+  controlView ??= requireNativeViewManager<MacControlProps>("GooyaMac");
+  return controlView;
 }
 
 /** Whether GOOYA opens when you log in to the Mac (System Settings → General → Login Items). */

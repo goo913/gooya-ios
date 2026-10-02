@@ -15,7 +15,7 @@ The app is published through **HyberTec LLC**'s Apple Developer team (`YSK7CHH56
 | `src/lib/` | Firebase (auth, Firestore, push), the occurrence hooks, task/schedule operations, demo data |
 | `src/store/` | zustand stores: data, session, preferences (per phone), sheets |
 | `src/pad/` | The iPad's calendar (Apple Calendar for iPad) |
-| `src/mac/` | The Mac's calendar (Apple Calendar on macOS): its month, year, popover, Day view pane and sidebar's contents |
+| `src/mac/` | The Mac's calendar (Apple Calendar on macOS): its month, year, popover, Day view pane and sidebar's contents; `settings/`, the Settings window's tabs |
 | `modules/` | GOOYA's native modules: `gooya-reminders` (Apple Reminders, EventKit) and `gooya-mac` (the Mac's sidebar and window, toolbar, menus, shortcuts, menu bar agenda, open at login) |
 | `plugins/` | `withMac.js`: the config plugin that builds the app for the Mac too |
 | `targets/widget/` | The Home Screen widget (WidgetKit, Swift), built into the app by `@bacons/apple-targets`; it reads the feed the app writes into the App Group (`src/lib/widget.ts`). On the Mac it is a desktop widget |

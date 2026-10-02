@@ -1,11 +1,6 @@
-import { getIdToken } from "@react-native-firebase/auth";
-import { httpsCallable } from "@react-native-firebase/functions";
 import type { SyncDirection } from "@shared/model";
 import { otherPerson, type PersonKey } from "@shared/people";
-import * as Clipboard from "expo-clipboard";
 import { router, useLocalSearchParams } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
-import { useMemo, useState } from "react";
 import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { CheckRow } from "@/components/CheckRow";
 import { DestructiveButton, Group, Row, Switch, TextRow } from "@/components/Form";
@@ -13,14 +8,15 @@ import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Segmented";
 import { CloseButton, SheetBar } from "@/components/SheetHeader";
 import { SourceBadge } from "@/components/SourceBadge";
-import { deleteAccount, newId, patchAccount, patchSettings, patchUser } from "@/lib/db";
-import { env } from "@/lib/env";
-import { auth, functions } from "@/lib/firebase";
+import { deleteAccount, patchAccount, patchSettings } from "@/lib/db";
+import { useIntegrations } from "@/lib/integrations";
 import { isMock } from "@/lib/mock";
-import { useMe, usePerson } from "@/lib/people";
+import { usePerson } from "@/lib/people";
 import { deviceName, setReminderListIncluded, setRemindersEnabled, syncReminders, useReminders } from "@/lib/reminders";
-import { useData, type IntegrationAccount } from "@/store/data";
+import { OpenSettingsWindow } from "@/mac/settings/OpenSettingsWindow";
+import type { IntegrationAccount } from "@/store/data";
 import { useColors } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
 
 const DIRECTIONS: { value: SyncDirection; label: string }[] = [
   { value: "off", label: "Off" },
@@ -30,10 +26,16 @@ const DIRECTIONS: { value: SyncDirection; label: string }[] = [
 /** Calendars GOOYA may not change (holidays, subscriptions, calendars shared for viewing) are only imported. */
 const READ_ONLY_DIRECTIONS = DIRECTIONS.slice(0, 2);
 
-/** Settings → Calendar integrations: Google, iCloud, the Reminders bridge, the subscription feed. */
-export default function IntegrationsSheet() {
+/** Settings → Calendar integrations: Google, iCloud, the Reminders bridge, the subscription feed (on the Mac: Settings → Accounts). */
+export default function Integrations() {
+  return isMac ? <OpenSettingsWindow tab="accounts" /> : <IntegrationsSheet />;
+}
+
+function IntegrationsSheet() {
   const colors = useColors();
-  const me = useMe();
+  const params = useLocalSearchParams<{ error?: string; integrations?: string }>();
+  const it = useIntegrations(params.integrations === "google" ? (params.error ? `Google: ${params.error}` : "Google Calendar connected.") : null);
+  const { me, message, copied, busy, appleSignIn } = it;
   const mine = usePerson(me);
   const other = usePerson(otherPerson(me));
   const rem = useReminders();
@@ -41,82 +43,9 @@ export default function IntegrationsSheet() {
   const remindersDevice = mine.doc?.remindersDevice ?? null;
   const elsewhere = remindersDevice && remindersDevice.id !== rem.deviceId ? remindersDevice : null;
   const syncingHere = rem.enabled && !elsewhere;
-  const accounts = useData((s) => s.accounts);
-  const params = useLocalSearchParams<{ error?: string; integrations?: string }>();
-  const [message, setMessage] = useState<string | null>(params.integrations === "google" ? (params.error ? `Google: ${params.error}` : "Google Calendar connected.") : null);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [appleEmail, setAppleEmail] = useState("");
-  const [applePassword, setApplePassword] = useState("");
-  const [appleError, setAppleError] = useState<string | null>(null);
-  /** Bumped after a successful connection, so the password field starts empty again. */
-  const [appleForm, setAppleForm] = useState(0);
-  const token = mine.doc?.widgetToken ?? null;
-  const google = accounts.filter((a) => a.source === "google");
-  const apple = accounts.filter((a) => a.source === "apple");
-  const flash = (what: string) => {
-    setCopied(what);
-    setTimeout(() => setCopied(null), 1600);
-  };
-  const copy = async (what: string, text: string) => {
-    await Clipboard.setStringAsync(text);
-    flash(what);
-  };
-  const ensureToken = async (): Promise<string> => {
-    if (token) return token;
-    const t = `${newId()}${newId()}`;
-    await patchUser(me, { widgetToken: t });
-    return t;
-  };
-  const connectGoogle = async () => {
-    if (isMock) return setMessage("Demo mode: connections are simulated.");
-    setBusy("google");
-    setMessage(null);
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error("not signed in");
-      const idToken = await getIdToken(user);
-      const result = await WebBrowser.openAuthSessionAsync(`${env.functionsUrl}/googleAuthStart?token=${encodeURIComponent(idToken)}&app=1`, "gooya://integrations");
-      if (result.type === "success") {
-        const err = new URL(result.url).searchParams.get("error");
-        setMessage(err ? `Google: ${err}` : "Google Calendar connected. Choose a direction for each calendar below.");
-      }
-    } catch (e) {
-      setMessage(String((e as Error).message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const connectApple = async () => {
-    if (isMock) return setAppleError("Demo mode: connections are simulated.");
-    if (!appleEmail.trim() || !applePassword.trim()) return setAppleError("Enter your Apple Account email and an app-specific password (steps above).");
-    setBusy("apple");
-    setAppleError(null);
-    try {
-      await httpsCallable(functions, "appleConnect")({ email: appleEmail.trim(), password: applePassword });
-      setApplePassword("");
-      setAppleForm((n) => n + 1);
-      setMessage("iCloud connected. Choose Import, Export or Two-way for each calendar below.");
-    } catch (e) {
-      // The server explains what went wrong in plain words (functions/src/integrations/apple.ts).
-      setAppleError(String((e as Error).message ?? e).replace(/^\[?[\w/-]+\]?\s*/, ""));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const syncNow = async (accountId: string) => {
-    if (isMock) return;
-    setBusy(accountId);
-    try {
-      await httpsCallable(functions, "syncNow")({ accountId });
-    } catch (e) {
-      setMessage(`Sync failed: ${String((e as Error).message ?? e).replace(/^\[?[\w/-]+\]?\s*/, "")}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-  const feedUrl = useMemo(() => (token ? `${env.functionsUrl}/icsFeed?token=${token}` : ""), [token]);
-  const webcal = feedUrl.replace(/^https:/, "webcal:");
+  const google = it.googleAccounts;
+  const apple = it.appleAccounts;
+  const webcal = it.feedUrl.replace(/^https:/, "webcal:");
   const copyIcon = (what: string) => (copied === what ? <Icon name="checkmark" size={16} color={colors.green} weight="bold" /> : <Icon name="doc.on.doc" size={16} color={colors.label2} />);
 
   return (
@@ -134,9 +63,9 @@ export default function IntegrationsSheet() {
           footer="Import shows a calendar’s events in GOOYA. Two-way also lets you change, add and delete its events in GOOYA; the change is in Google within seconds, and changes made in Google come to GOOYA just as fast. Holiday and other read-only calendars can only be imported. The GOOYA calendar is a calendar GOOYA keeps in your Google account with your tasks and schedules: move, rename or delete one there and it changes in GOOYA too."
         >
           {google.map((a) => (
-            <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void syncNow(a.id)} />
+            <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void it.syncNow(a.id)} />
           ))}
-          <Row label={google.length ? "Connect another Google account" : "Connect Google Calendar"} labelColor={colors.blue} onPress={() => void connectGoogle()}>
+          <Row label={google.length ? "Connect another Google account" : "Connect Google Calendar"} labelColor={colors.blue} onPress={() => void it.connectGoogle()}>
             {busy === "google" ? <Text style={[styles.small, { color: colors.label2 }]}>…</Text> : <Icon name="arrow.up.right" size={16} color={colors.label2} />}
           </Row>
         </Group>
@@ -146,7 +75,7 @@ export default function IntegrationsSheet() {
           footer="Import and Two-way work as for Google: changes made in GOOYA are in iCloud within seconds; changes made in Apple Calendar come to GOOYA within 5 minutes (iCloud does not tell other apps sooner). Your Apple Reminders are in Apple Calendar already, so the GOOYA calendar here holds only GOOYA’s own tasks and your schedules. Apple lets other apps into iCloud Calendar only with an app-specific password, never your Apple Account password; it is stored encrypted on GOOYA’s server and you can revoke it at account.apple.com at any time."
         >
           {apple.map((a) => (
-            <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void syncNow(a.id)} />
+            <AccountRows key={a.id} account={a} me={me} busy={busy === a.id} onSync={() => void it.syncNow(a.id)} />
           ))}
           <View style={styles.steps}>
             {[
@@ -162,10 +91,10 @@ export default function IntegrationsSheet() {
           <Row label="Make an app-specific password" labelColor={colors.blue} onPress={() => void Linking.openURL("https://account.apple.com/account/manage/section/security")}>
             <Icon name="arrow.up.right" size={16} color={colors.label2} />
           </Row>
-          <TextRow value={appleEmail} onChange={setAppleEmail} placeholder="Apple Account email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="username" />
-          <TextRow key={`password-${appleForm}`} value={applePassword} onChange={setApplePassword} placeholder="App-specific password (abcd-efgh-ijkl-mnop)" secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="oneTimeCode" />
-          <Row label={busy === "apple" ? "Connecting…" : "Connect iCloud"} labelColor={colors.blue} onPress={() => void connectApple()} />
-          {appleError ? <Text style={[styles.error, { color: colors.red }]}>{appleError}</Text> : null}
+          <TextRow value={appleSignIn.email} onChange={appleSignIn.setEmail} placeholder="Apple Account email" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="username" />
+          <TextRow key={`password-${appleSignIn.form}`} value={appleSignIn.password} onChange={appleSignIn.setPassword} placeholder="App-specific password (abcd-efgh-ijkl-mnop)" secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="oneTimeCode" />
+          <Row label={busy === "apple" ? "Connecting…" : "Connect iCloud"} labelColor={colors.blue} onPress={() => void it.connectApple()} />
+          {appleSignIn.error ? <Text style={[styles.error, { color: colors.red }]}>{appleSignIn.error}</Text> : null}
         </Group>
 
         <Group header="Imported events" footer="When the same event arrives from both Apple and Google (same iCalUID, or same title + start + end), show it only once.">
@@ -238,13 +167,13 @@ export default function IntegrationsSheet() {
         ) : null}
 
         <Group header="Subscription feed" footer="A private read-only calendar of your tasks and schedules. Subscribe from Apple Calendar or Google Calendar (From URL). Zero setup; works even if the two-way sync ever breaks.">
-          <Row label="webcal:// URL" onPress={() => void ensureToken().then((t) => copy("feed", `webcal://${env.functionsUrl.replace("https://", "")}/icsFeed?token=${t}`))}>
+          <Row label="webcal:// URL" onPress={() => void it.webcal().then((url) => it.copy("feed", url))}>
             <Text numberOfLines={1} style={[styles.small, { color: colors.label2, flexShrink: 1 }]}>
-              {token ? webcal.replace("webcal://", "") : "Tap to create"}
+              {it.token ? webcal.replace("webcal://", "") : "Tap to create"}
             </Text>
             {copyIcon("feed")}
           </Row>
-          <Row label="Subscribe in Apple Calendar" onPress={() => void ensureToken().then((t) => Linking.openURL(`webcal://${env.functionsUrl.replace("https://", "")}/icsFeed?token=${t}`))} chevron />
+          <Row label="Subscribe in Apple Calendar" onPress={() => void it.webcal().then((url) => Linking.openURL(url))} chevron />
         </Group>
         {isMock ? <Text style={[styles.demo, { color: colors.label3 }]}>Demo mode: connections are simulated.</Text> : null}
       </ScrollView>
