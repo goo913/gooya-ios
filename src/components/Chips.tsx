@@ -3,15 +3,25 @@ import { useId } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { mix, readableTint } from "@/lib/color";
-import { useMetrics } from "@/lib/metrics";
+import { useMetrics, type Metrics } from "@/lib/metrics";
 import { useTaskColor } from "@/lib/people";
+import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
 
 /**
  * Month-view chips, as Apple Calendar draws them: a short rounded bar the width of the day, the title clipped at the
  * right edge with a fade (never "…"), a Reminders-style ring for tasks (a ring with a dot once done, the title dimmed),
  * and the calendar's colour for imported events.
  */
+
+/** The chips' sizes; on the Mac scaled by View → Zoom In and Out (what is on the calendar only). */
+function useChipMetrics(): Metrics {
+  const m = useMetrics();
+  const z = usePrefs((s) => s.itemZoom);
+  if (!isMac || z === 1) return m;
+  return { ...m, chipHeight: Math.round(m.chipHeight * z), chipText: m.chipText * z, chipRing: m.chipRing * z, chipRadius: m.chipRadius * z };
+}
 
 /** Fades the end of a clipped title into the chip's own colour. */
 function EdgeFade({ color, height }: { color: string; height: number }) {
@@ -44,7 +54,7 @@ export function TaskRing({ color, done, size }: { color: string; done: boolean; 
 export function TaskChip({ occ }: { occ: TaskOccurrence }) {
   const colors = useColors();
   const dark = useIsDark();
-  const m = useMetrics();
+  const m = useChipMetrics();
   const color = useTaskColor(occ.task);
   const bg = dark ? "#2c2c2e" : "#e9e9ee";
   return (
@@ -65,7 +75,7 @@ export function TaskChip({ occ }: { occ: TaskOccurrence }) {
 export function EventBar({ occ, openStart, openEnd }: { occ: EventOccurrence; openStart: boolean; openEnd: boolean }) {
   const dark = useIsDark();
   const colors = useColors();
-  const m = useMetrics();
+  const m = useChipMetrics();
   const c = occ.event.color || colors.blue;
   const bg = dark ? mix(c, "#000000", 0.27) : mix(c, "#ffffff", 0.2);
   const r = m.chipRadius;
@@ -88,7 +98,7 @@ export function EventBar({ occ, openStart, openEnd }: { occ: EventOccurrence; op
 export function EventChip({ occ }: { occ: EventOccurrence }) {
   const colors = useColors();
   const dark = useIsDark();
-  const m = useMetrics();
+  const m = useChipMetrics();
   const c = occ.event.color || colors.blue;
   const bg = dark ? mix(c, "#000000", 0.27) : mix(c, "#ffffff", 0.2);
   const text = readableTint(c, dark);

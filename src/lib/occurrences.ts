@@ -10,6 +10,7 @@ import { useIsDark } from '@/theme'
 import { scheduleHex, useMe, usePerson } from './people'
 import { useNow, viewerTz } from './useNow'
 import { keyInZone } from '@shared/time'
+import { categoryOfList, indexLists } from '@shared/categories'
 
 export function sortOccurrences(a: TaskOccurrence, b: TaskOccurrence): number {
   if (a.allDay !== b.allDay) return a.allDay ? -1 : 1
@@ -20,14 +21,26 @@ export function sortOccurrences(a: TaskOccurrence, b: TaskOccurrence): number {
 /** All task occurrences for people within [start, end) ms. */
 export function useTaskOccurrences(start: number, end: number, people: PersonKey[]): TaskOccurrence[] {
   const tasks = useData(useShallow((s) => s.tasks.filter((t) => people.includes(t.owner))))
+  const lists = useData((s) => s.lists)
+  const hidden = usePrefs((s) => s.hiddenCalendars)
   const showCompleted = useShowCompleted()
   return useMemo(() => {
+    // A category unticked in the Mac's sidebar: its tasks are not drawn (as an unticked calendar's events are not).
+    const hiddenCategory = hidden.some((h) => h.startsWith('category:')) ? categoryHidden(hidden, indexLists(lists)) : null
     const out: TaskOccurrence[] = []
-    for (const t of tasks) out.push(...expandTask(t, start, end))
+    for (const t of tasks) if (!hiddenCategory?.(t.listId)) out.push(...expandTask(t, start, end))
     const filtered = showCompleted ? out : out.filter((o) => !o.completed)
     filtered.sort(sortOccurrences)
     return filtered
-  }, [tasks, start, end, showCompleted])
+  }, [tasks, lists, hidden, start, end, showCompleted])
+}
+
+/** Whether a list's category is unticked in the Mac's sidebar ("category:<id>" among the hidden calendars). */
+function categoryHidden(hidden: string[], byId: ReturnType<typeof indexLists>): (listId: string | null | undefined) => boolean {
+  return (listId) => {
+    const id = categoryOfList(listId, byId)?.id ?? listId
+    return !!id && hidden.includes(`category:${id}`)
+  }
 }
 
 /** Settings → Show Completed Tasks (default on). */
@@ -75,7 +88,7 @@ export function isPast(o: Pick<EventOccurrence, 'allDay' | 'start' | 'end' | 'en
 export function useEventOccurrences(start: number, end: number, people: PersonKey[]): EventOccurrence[] {
   const hidden = usePrefs((s) => s.hiddenCalendars)
   const events = useData(useShallow((s) => s.events.filter((e) => people.includes(e.owner) && !e.deleted && !hidden.includes(`${e.accountId}:${e.calendarId}`))))
-  const schedules = useData(useShallow((s) => s.schedules.filter((x) => people.includes(x.owner) && !hidden.includes('gooya:schedules'))))
+  const schedules = useData(useShallow((s) => s.schedules.filter((x) => people.includes(x.owner) && !hidden.includes('gooya:schedules') && !(x.categoryId && hidden.includes(`category:${x.categoryId}`)))))
   const users = useData((s) => s.users)
   const lists = useData((s) => s.lists)
   const dark = useIsDark()

@@ -85,7 +85,7 @@ export default function SettingsSheet() {
           </Row>
         </Group>
 
-        <Group header="Appearance" footer={`Remembered on this ${device}. Dark is the default.`}>
+        <Group header="Appearance" footer={`Remembered on this ${device}. ${isMac ? "System (as the Mac is) is the default." : "Dark is the default."}`}>
           <Row label="Theme">
             <Segmented<AppearancePref>
               options={[

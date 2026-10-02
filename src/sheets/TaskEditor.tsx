@@ -6,7 +6,7 @@ import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPre
 import { isReminderList } from "@shared/reminders";
 import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey, zonedMs } from "@shared/time";
 import { router } from "expo-router";
-import { useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActionSheetIOS, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, SectionTitle, Switch, ValueRow, pickOption } from "@/components/Form";
 import { CategoryValue } from "@/components/ColorSwatches";
@@ -14,7 +14,7 @@ import { ListBadge } from "@/components/ListIcons";
 import { Segmented } from "@/components/Segmented";
 import { DetailsBar } from "@/components/SheetHeader";
 import { EARLY_REMINDERS, earlyReminderLabel } from "@/lib/alerts";
-import { WEEKDAY_SHORT, formatHM, formatMediumDate } from "@/lib/format";
+import { WEEKDAY_SHORT, formatHM, formatLongDate, formatMediumDate } from "@/lib/format";
 import { dateFromHHmm, dateFromKey, hhmmFromDate, keyFromDate } from "@/lib/dates";
 import { listIndexOf, personInfo, useMe, usePerson } from "@/lib/people";
 import { applyTaskEdit, createTask, deleteTaskScope, type EditScope, type TaskFields } from "@/lib/taskOps";
@@ -24,6 +24,20 @@ import { WhenRow, useWhenLayout } from "@/components/WhenRows";
 import { useData } from "@/store/data";
 import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
+import { CategoryMenu } from "@/mac/CategoryMenu";
+
+/**
+ * Where an editor is: a sheet (Cancel and Add at the top), or on the Mac Apple Calendar's popover or the Day view's
+ * pane (no buttons: Return or a click away saves it, Escape leaves it; the host calls `saveRef`).
+ */
+export interface EditorHost {
+  variant: "sheet" | "mac";
+  /** Given the form's save (true when it saved; false when there was nothing to save, as with an empty title). */
+  register?: (save: () => Promise<boolean>) => void;
+  /** The title as it is typed (a new item's placeholder on the calendar shows it). */
+  onTitle?: (title: string) => void;
+}
 
 interface Props {
   task?: Task;
@@ -32,9 +46,11 @@ interface Props {
   initialDate?: DateKey;
   initialMinutes?: number;
   initialListId?: string;
+  initialTitle?: string;
   /** Rendered above the form (the Task | Routine switch). */
   topBar?: ReactNode;
   onClose: () => void;
+  host?: EditorHost;
 }
 
 const PRIORITIES: { value: Priority; label: string }[] = [
@@ -51,6 +67,8 @@ const roundTo5 = (min: number): number => Math.min(23 * 60 + 55, Math.max(0, Mat
 
 /** "Today", "Tomorrow" or "Wed, Sep 30" */
 function describeDate(key: DateKey, today: DateKey): string {
+  // The Mac's popover writes the day out, as Calendar's does ("Wednesday, October 7, 2026").
+  if (isMac) return formatLongDate(key);
   if (key === today) return "Today";
   if (key === addDaysKey(today, 1)) return "Tomorrow";
   if (key === addDaysKey(today, -1)) return "Yesterday";
@@ -79,7 +97,8 @@ export function LinkifiedNotes({ text, color, linkColor }: { text: string; color
 }
 
 /** Reminders-style "Details" sheet for creating or editing a task. */
-export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinutes, initialListId, topBar, onClose }: Props) {
+export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinutes, initialListId, initialTitle, topBar, onClose, host }: Props) {
+  const popover = host?.variant === "mac";
   const colors = useColors();
   const dark = useIsDark();
   const me = useMe();
@@ -102,7 +121,11 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const shown0 = initialTime ? onClock(date0, initialTime, task ? task.timezone || zone0 : viewerTz, zone0) : { date: date0, time: null };
   const [owner, setOwner] = useState<PersonKey>(owner0);
   const [editZone, setEditZone] = useState(zone0);
-  const [title, setTitle] = useState(src?.title ?? task?.title ?? "");
+  const [title, setTitleState] = useState(src?.title ?? task?.title ?? initialTitle ?? "");
+  const setTitle = (t: string) => {
+    setTitleState(t);
+    host?.onTitle?.(t);
+  };
   const [notes, setNotes] = useState(src?.notes ?? task?.notes ?? "");
   const [dateOn, setDateOn] = useState(!!(src?.dueDate ?? task?.dueDate ?? initialDate) || (!task && !!initialDate));
   const [dueDate, setDueDate] = useState<DateKey>(shown0.date);
@@ -203,6 +226,23 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
       setBusy(false);
     }
   };
+  // The popover's host saves on Return and when clicked away (nothing to save with no title, nor when nothing changed).
+  const opened = useRef<string | null>(null);
+  if (opened.current === null) opened.current = JSON.stringify(fields());
+  const register = host?.register;
+  useLayoutEffect(() => {
+    if (!register) return;
+    register(async () => {
+      if (!valid) return false;
+      if (task && JSON.stringify(fields()) === opened.current) {
+        onClose();
+        return true;
+      }
+      await save();
+      return true;
+    });
+  });
+
   const remove = async (scope: EditScope | "all") => {
     if (!task) return;
     if (await deleteTaskScope(task, occ ?? null, scope)) onClose();
@@ -254,22 +294,58 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const people = PERSON_KEYS.map((k) => ({ value: k, label: k === "gooya" ? "구야" : "은비" }));
 
   return (
-    <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <DetailsBar title={editing ? "Details" : "New Task"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />
-      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <View style={popover ? styles.popover : [styles.fill, { backgroundColor: colors.bg2 }]}>
+      {popover ? null : <DetailsBar title={editing ? "Details" : "New Task"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />}
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={popover ? styles.popoverContent : styles.content} showsVerticalScrollIndicator={false} style={popover ? styles.popoverScroll : undefined}>
         {topBar}
-        <View style={styles.group}>
-          <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
-            {/* defaultValue, not value: a busy moment in JavaScript must never overwrite what is being typed. */}
-            <TextInput autoFocus={!editing} defaultValue={title} onChangeText={setTitle} placeholder={editing ? "Title" : "New Task"} placeholderTextColor={colors.label3} autoCapitalize="sentences" style={[styles.title, { color: colors.label }]} />
-            <TextInput defaultValue={notes} onChangeText={setNotes} placeholder="Notes & URL" placeholderTextColor={colors.label3} multiline style={[styles.notes, { color: colors.label }]} />
-            {notes && URL_RE.test(notes) ? (
+        {(() => {
+          // defaultValue, not value: a busy moment in JavaScript must never overwrite what is being typed.
+          const titleField = (
+            <TextInput
+              autoFocus={!editing}
+              defaultValue={title}
+              onChangeText={setTitle}
+              onSubmitEditing={popover ? () => void save() : undefined}
+              placeholder={editing ? "Title" : "New Task"}
+              placeholderTextColor={colors.label3}
+              autoCapitalize="sentences"
+              style={[popover ? styles.macTitle : styles.title, { color: colors.label }]}
+            />
+          );
+          const notesField = <TextInput defaultValue={notes} onChangeText={setNotes} placeholder="Notes & URL" placeholderTextColor={colors.label3} multiline style={[popover ? styles.macNotes : styles.notes, { color: colors.label }]} />;
+          const links =
+            notes && URL_RE.test(notes) ? (
               <View style={styles.links}>
                 <LinkifiedNotes text={notes} color={colors.label2} linkColor={colors.blue} />
               </View>
-            ) : null}
-          </View>
-        </View>
+            ) : null;
+          if (popover) {
+            // Apple's popover: the title and the notes in fields of their own.
+            const fill = { backgroundColor: dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)" };
+            return (
+              <>
+                <View style={styles.macGroup}>
+                  <View style={[styles.macCard, fill]}>{titleField}</View>
+                </View>
+                <View style={styles.macGroup}>
+                  <View style={[styles.macCard, fill]}>
+                    {notesField}
+                    {links}
+                  </View>
+                </View>
+              </>
+            );
+          }
+          return (
+            <View style={styles.group}>
+              <View style={[styles.card, { backgroundColor: colors.bg3 }]}>
+                {titleField}
+                {notesField}
+                {links}
+              </View>
+            </View>
+          );
+        })()}
 
         <Group>
           <Row label="For">
@@ -321,7 +397,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
           </Row>
           {dateOn && timeOn && showWheel ? (
             <View style={styles.pickerWrap}>
-              <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display="spinner" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
+              <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display={popover ? "compact" : "spinner"} minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
             </View>
           ) : null}
         </Group>
@@ -376,26 +452,32 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
 
         <SectionTitle>Organization</SectionTitle>
         <Group>
-          <Row
-            accessibilityLabel="Category"
-            label={
-              <View style={styles.inline}>
-                <ListBadge icon={category?.icon ?? list?.icon ?? "list"} color={category?.color ?? list?.color ?? "#0091ff"} />
-                <Text style={[styles.rowLabel, { color: colors.label }]}>Category</Text>
-              </View>
-            }
-            chevron={!readOnly}
-            onPress={
-              readOnly
-                ? undefined
-                : () => {
-                    setListPicker({ value: category?.id ?? null, onPick: pickCategory });
-                    router.push("/sheet/list");
-                  }
-            }
-          >
-            <CategoryValue name={category?.name ?? list?.name ?? "Tasks"} color={null} />
-          </Row>
+          {popover ? (
+            <Row icon="list.bullet" label="Category" dim={readOnly}>
+              <CategoryMenu value={category?.id ?? null} name={category?.name ?? list?.name ?? "Tasks"} color={category?.color ?? list?.color ?? null} onPick={(id) => pickCategory(id)} />
+            </Row>
+          ) : (
+            <Row
+              accessibilityLabel="Category"
+              label={
+                <View style={styles.inline}>
+                  <ListBadge icon={category?.icon ?? list?.icon ?? "list"} color={category?.color ?? list?.color ?? "#0091ff"} />
+                  <Text style={[styles.rowLabel, { color: colors.label }]}>Category</Text>
+                </View>
+              }
+              chevron={!readOnly}
+              onPress={
+                readOnly
+                  ? undefined
+                  : () => {
+                      setListPicker({ value: category?.id ?? null, onPick: pickCategory });
+                      router.push("/sheet/list");
+                    }
+              }
+            >
+              <CategoryValue name={category?.name ?? list?.name ?? "Tasks"} color={null} />
+            </Row>
+          )}
           <Row
             icon="number"
             label="Tags"
@@ -405,7 +487,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               router.push("/sheet/tags");
             }}
           >
-            <Text numberOfLines={1} style={[styles.value, { color: colors.label2 }]}>
+            <Text numberOfLines={1} style={[popover ? styles.macValue : styles.value, { color: colors.label2 }]}>
               {tags.map((t) => `#${t}`).join(" ")}
             </Text>
           </Row>
@@ -436,6 +518,14 @@ const styles = StyleSheet.create({
   group: { paddingHorizontal: 16 },
   card: { borderRadius: 14, overflow: "hidden" },
   title: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6, fontSize: 26, fontWeight: "500", lineHeight: 32 },
+  popover: { flexShrink: 1 },
+  popoverScroll: { flexGrow: 0 },
+  popoverContent: { gap: 12, paddingTop: 10, paddingBottom: 12 },
+  macGroup: { paddingHorizontal: 10 },
+  macCard: { borderRadius: 10, overflow: "hidden" },
+  macTitle: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 13 },
+  macNotes: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, minHeight: 32 },
+  macValue: { fontSize: 13, flexShrink: 1 },
   notes: { paddingHorizontal: 16, paddingBottom: 14, fontSize: 17, lineHeight: 22, minHeight: 60 },
   links: { paddingHorizontal: 16, paddingBottom: 12 },
   pickerWrap: { paddingHorizontal: 8, paddingBottom: 6 },
@@ -443,6 +533,6 @@ const styles = StyleSheet.create({
   amount: { width: 70, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, fontSize: 15 },
   unit: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15, overflow: "hidden" },
   inline: { flexDirection: "row", alignItems: "center", gap: 12 },
-  rowLabel: { fontSize: 17 },
-  value: { fontSize: 17, flexShrink: 1 },
+  rowLabel: { fontSize: isMac ? 13 : 17 },
+  value: { fontSize: isMac ? 13 : 17, flexShrink: 1 },
 });

@@ -7,6 +7,7 @@ import { MenuButton, type MenuAction, type MenuGroup } from "./NativeMenu";
 import { useNav } from "@/store/nav";
 import { GlassGroup, GlassIconButton, GlassPill, PillText } from "./Glass";
 import { Icon } from "./Icon";
+import { isMac } from "../../modules/gooya-mac";
 
 interface TopChromeProps {
   /** The back pill's label ("2026", "September", "Calendar"); none hides it. */
@@ -87,14 +88,17 @@ export function BottomChrome({ showToday = true, onToday, onCalendars, onSetting
             </GlassPill>
           ) : null)}
       </View>
-      <GlassGroup height={m.bottomBarHeight}>
-        <GlassIconButton label="Calendars" width={54.85} onPress={onCalendars}>
-          <Icon name="calendar" size={27} />
-        </GlassIconButton>
-        <GlassIconButton label="Settings" width={54.85} onPress={onSettings}>
-          <Icon name="gearshape" size={25} />
-        </GlassIconButton>
-      </GlassGroup>
+      {/* The Mac has its sidebar for the calendars and GOOYA → Settings… (⌘,): no buttons tucked in a corner. */}
+      {isMac ? null : (
+        <GlassGroup height={m.bottomBarHeight}>
+          <GlassIconButton label="Calendars" width={54.85} onPress={onCalendars}>
+            <Icon name="calendar" size={27} />
+          </GlassIconButton>
+          <GlassIconButton label="Settings" width={54.85} onPress={onSettings}>
+            <Icon name="gearshape" size={25} />
+          </GlassIconButton>
+        </GlassGroup>
+      )}
     </View>
   );
 }

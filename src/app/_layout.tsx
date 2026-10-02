@@ -4,6 +4,8 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { isMac } from "../../modules/gooya-mac";
 import { initAuth } from "@/lib/auth";
 import { isMock } from "@/lib/mock";
 import { useIsPad } from "@/lib/layout";
@@ -31,6 +33,9 @@ export default function RootLayout() {
   const hydrated = usePrefs((s) => s.hydrated);
   const pathname = usePathname();
   const pad = useIsPad();
+  // The Mac: pages over the calendar (a task list) start after its sidebar, which the window's content runs under.
+  const insets = useSafeAreaInsets();
+  const besideSidebar = { contentStyle: { backgroundColor: colors.bg, paddingLeft: isMac ? insets.left : 0 } };
   // Settings → Opens In: today in the chosen view when GOOYA starts and after time away.
   useOpenView(status === "ready" && hydrated && !setupProblem, pathname, pad);
   // Once signed in: ask for notifications (once) and register this phone for the server's alerts.
@@ -79,8 +84,8 @@ export default function RootLayout() {
             <Stack.Screen name="index" />
             <Stack.Screen name="year" />
             <Stack.Screen name="day/[date]" />
-            <Stack.Screen name="lists/index" />
-            <Stack.Screen name="lists/[id]" />
+            <Stack.Screen name="lists/index" options={besideSidebar} />
+            <Stack.Screen name="lists/[id]" options={besideSidebar} />
             <Stack.Screen name="search" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="sheet/edit" options={{ ...page, gestureEnabled: true }} />
             <Stack.Screen name="sheet/listEdit" options={page} />

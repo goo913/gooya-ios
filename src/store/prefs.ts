@@ -3,6 +3,7 @@ import { Appearance } from "react-native";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { isMac } from "../../modules/gooya-mac";
+import { env } from "@/lib/env";
 
 export type PersonFilter = "me" | "other" | "both";
 /** How many days the timeline shows side by side (Apple's Single Day / Multi Day). */
@@ -25,7 +26,10 @@ interface PrefsState {
   hourHeight: number;
   monthDisplay: MonthDisplay;
   appearance: AppearancePref;
-  /** Imported calendars hidden on this phone ("accountId:calendarId"), as Apple's Calendars sheet unticks them. */
+  /**
+   * Calendars hidden on this device ("accountId:calendarId"), as Apple's Calendars sheet unticks them; also GOOYA's
+   * schedules ("gooya:schedules") and, from the Mac's sidebar, a category's tasks ("category:<id>").
+   */
   hiddenCalendars: string[];
   /** Routines (sleep, work) shaded in the day view, and in the iPad's week view (Settings → Timeline). */
   routinesInDay: boolean;
@@ -38,6 +42,10 @@ interface PrefsState {
   menuBarAgenda: boolean;
   /** GOOYA has been set to open at login once, as the Mac app first did (Settings turns it off). */
   loginItemSetUp: boolean;
+  /** The Mac's View → Zoom In and Out: how big what is on the calendar is drawn (1 is Apple's size). */
+  itemZoom: number;
+  /** What the Mac's new-item popover makes first (it remembers the last choice, as Calendar does). */
+  newKind: "task" | "schedule";
   hydrated: boolean;
   setFilter: (f: PersonFilter) => void;
   setAppearance: (a: AppearancePref) => void;
@@ -53,6 +61,8 @@ interface PrefsState {
   setSidebar: (on: boolean) => void;
   setMenuBarAgenda: (on: boolean) => void;
   setLoginItemSetUp: () => void;
+  setItemZoom: (z: number) => void;
+  setNewKind: (k: "task" | "schedule") => void;
 }
 
 /**
@@ -60,7 +70,8 @@ interface PrefsState {
  * keyboards, the status bar), through React Native's Appearance override.
  */
 export function applyAppearance(pref: AppearancePref): void {
-  Appearance.setColorScheme(pref === "system" ? "unspecified" : pref);
+  const shown = env.demoAppearance ?? pref;
+  Appearance.setColorScheme(shown === "system" ? "unspecified" : shown);
 }
 
 /** Apple's hour at the default Text Size (50 points; 61.7 two steps up). */
@@ -85,6 +96,8 @@ export const usePrefs = create<PrefsState>()(
       sidebar: true,
       menuBarAgenda: true,
       loginItemSetUp: false,
+      itemZoom: 1,
+      newKind: "task",
       hydrated: false,
       setFilter: (filter) => set({ filter }),
       setAppearance: (appearance) => {
@@ -103,6 +116,8 @@ export const usePrefs = create<PrefsState>()(
       setSidebar: (sidebar) => set({ sidebar }),
       setMenuBarAgenda: (menuBarAgenda) => set({ menuBarAgenda }),
       setLoginItemSetUp: () => set({ loginItemSetUp: true }),
+      setItemZoom: (itemZoom) => set({ itemZoom: Math.min(2, Math.max(0.85, itemZoom)) }),
+      setNewKind: (newKind) => set({ newKind }),
     }),
     {
       name: "gooya-prefs",
@@ -124,6 +139,8 @@ export const usePrefs = create<PrefsState>()(
         sidebar: s.sidebar,
         menuBarAgenda: s.menuBarAgenda,
         loginItemSetUp: s.loginItemSetUp,
+        itemZoom: s.itemZoom,
+        newKind: s.newKind,
       }),
       // Version 1 kept one "timeline mode" and an hour height in points at any Text Size (62 by default). Version 3
       // made Single Day the default: the day opens as one day again, where Multi Day had been the default.

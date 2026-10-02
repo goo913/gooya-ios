@@ -47,15 +47,19 @@ In Terminal, in this folder: `npm run mac`. The first time it builds a **Release
 
 If TestFlight put the iPad app on this Mac (`/Applications/GOOYA.app`), drag that one to the Trash (it asks for your password): it is the iPad app, which opens only on a Mac set to Full or Reduced Security, and links and widgets should open the Mac app. The Mac app has no such limit.
 
-**It looks and works like Apple Calendar on the Mac:**
+**It looks and works like Apple Calendar on the Mac (macOS 27):**
 
-- **The window:** Calendar's toolbar in the title bar: the sidebar and Task Lists buttons and **+** at the left, **Day · Week · Month · Year** in the middle, Search at the right; the title with **‹ Today ›** under it. The window opens at Calendar's size and can be made as small as 720 × 560 points.
-- **The sidebar** (the toolbar's first button, or ⌃⌘S): whose items show (you, 은비 or both), GOOYA's schedules and each Google and iCloud calendar with a tick in its color, then Task Lists, Categories and Calendar Accounts.
-- **Menus and keyboard shortcuts:** GOOYA → Settings… ⌘, · File → New Task ⌘N, New Schedule ⌥⌘N, New Routine ⇧⌘N · Edit → Search ⌘F · View → Day ⌘1, Week ⌘2, Month ⌘3, Year ⌘4, Go to Today ⌘T, Next ⌘→, Previous ⌘←, Show/Hide Sidebar ⌃⌘S.
-- **Moving things:** press and drag a task or schedule to another day or time (no holding first, as on the iPhone).
+- **The window:** macOS's own sidebar at the left (drag its edge to make it wider or narrower, or all the way closed; drag it back open from the window's edge; View → Show/Hide Calendar List does the same), the toolbar over the calendar: **+** where the calendar starts, **Day · Week · Month · Year** in the middle, Search at the right. Under it the title (the Day view's "October 7, 2026" over its weekday) with **‹ Today ›**. Colors, lines, fonts and sizes are Calendar's, light and dark; today's circle turns grey while another app is in front, as Calendar's does.
+- **The sidebar:** whose items show (you, 은비 or both), GOOYA's schedules, each Google and iCloud calendar, and the categories, each with a tick in its color (a category's tick shows or hides its tasks and schedules; click its name for its list, with how many tasks are open); then Reminders' task lists (Today, Scheduled, All, Flagged, Completed) with their counts; the month at the bottom shows a day it is clicked on.
+- **Month:** the weeks run on without a break between months, six filling the window (scrolling goes a week at a time); the month in the title is dark, the days around it faint.
+- **Year:** the twelve months three across, filling the window (a year to a page); a click on a month's name shows it, a double-click on a day shows that day.
+- **Clicks:** a click chooses a day or an item; a **double-click on an empty day or time** makes a new schedule or task there in Calendar's popover (Schedule | Task at the top, its placeholder on the calendar until it is saved); a double-click on an item opens it in the popover. Return or a click anywhere else saves it, Escape leaves it. In the Day view the pane at the right shows what is chosen or being made. A click on a day's number (Month) or its name (Week) shows that day.
+- **Zoom In ⌘+ and Zoom Out ⌘−** (View): what is on the calendar bigger or smaller (its text, ring or color bar and its chip), nothing else; remembered on this Mac.
+- **Menus and keyboard shortcuts**, as Calendar's: GOOYA → Settings… ⌘, and Accounts… · File → New Schedule or Task ⌘N, New Routine ⇧⌘N, New Category ⌥⌘N · Edit → Search ⌘F · View → By Day ⌘1, By Week ⌘2, By Month ⌘3, By Year ⌘4, Next ⌘→, Previous ⌘←, Go to Today ⌘T, Zoom In ⌘+, Zoom Out ⌘−, Show/Hide Calendar List.
+- **Moving things:** press and drag a task or schedule to another day or time (no holding first, as on the iPhone); **Escape** while dragging puts it back.
 - **The menu bar:** GOOYA's calendar icon lists what is on today and tomorrow for both of you; choose one to see it in its day, or New Task… (Settings → Mac → **Show in Menu Bar**).
 - **Open at login:** set the first time GOOYA runs (Settings → Mac → **Open at Login**, or System Settings → General → Login Items).
-- **Widgets:** right-click the desktop → **Edit Widgets** → search GOOYA: the same widget as the iPhone's, in all four sizes (extra large too), on the desktop or in Notification Center.
+- **Widgets:** the Mac app's own (right-click the desktop → **Edit Widgets** → GOOYA, without "From iPhone"), in all four sizes; a click opens the Mac app. While another app is in front macOS shows desktop widgets grey and see-through: GOOYA's titles, times and today's circle stay readable then. If the gallery shows GOOYA "From iPhone" instead, another copy of GOOYA hides this one's: run `npm run mac` again (it keeps only `~/Applications/GOOYA.app` registered) and trash the TestFlight iPad copy in `/Applications`.
 - **Notifications:** alerts and 은비's additions arrive on the Mac too, once you allow them.
 - **Appearance:** follows the Mac's light or dark mode (Settings → Appearance chooses one). Default View: Month (Day or Week in Settings).
 

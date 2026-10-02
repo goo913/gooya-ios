@@ -5,6 +5,7 @@ import { createContext, useContext, useMemo, useRef, useState, type ReactNode } 
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { create } from "zustand";
+import { beginDrag, endDrag } from "@/lib/dragCancel";
 import { liftPan } from "@/lib/gestures";
 import { canMove, moveEventByDays, moveTaskByDays } from "@/lib/moves";
 import { useColors } from "@/theme";
@@ -76,6 +77,12 @@ function start(h: MonthDragHost, item: Item, x: number, y: number, dx: number, d
   useMonthDrag.setState({ item, grab, target: grab, x, y, dx, dy });
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   if (frame === null) frame = requestAnimationFrame(scrollLoop);
+  // Escape (on the Mac) puts it back: letting go then does nothing.
+  beginDrag(cancel);
+}
+
+function cancel() {
+  finish(false);
 }
 
 function finish(drop: boolean) {
@@ -83,6 +90,7 @@ function finish(drop: boolean) {
   if (frame !== null) cancelAnimationFrame(frame);
   frame = null;
   host = null;
+  endDrag(cancel);
   if (!s.item) return;
   useMonthDrag.setState({ item: null, grab: null, target: null });
   if (!drop || !s.grab || !s.target || s.grab === s.target) return;
@@ -95,7 +103,7 @@ function finish(drop: boolean) {
  * A task, schedule or event on a month: a tap opens it; touch and hold lifts it to drag to another day (when it can be
  * changed; on the Mac, press and drag). Dimmed where it was while it is dragged.
  */
-export function DragPiece({ item, style, onTap, children }: { item: Item; style: StyleProp<ViewStyle>; onTap: () => void; children: ReactNode }) {
+export function DragPiece({ item, style, onTap, onDoubleTap, children }: { item: Item; style: StyleProp<ViewStyle>; onTap: () => void; onDoubleTap?: () => void; children: ReactNode }) {
   const h = useContext(MonthDragContext);
   const lifted = useMonthDrag((s) => s.item?.key === item.key);
   const movable = !!h && canMove(item);
@@ -110,8 +118,10 @@ export function DragPiece({ item, style, onTap, children }: { item: Item; style:
         if (!done) finish(false);
       });
     const tap = Gesture.Tap().runOnJS(true).onEnd(onTap);
+    // The Mac: a click chooses it, a double-click opens it (both, as Apple Calendar's clicks do).
+    if (onDoubleTap) return Gesture.Exclusive(pan, Gesture.Simultaneous(tap, Gesture.Tap().numberOfTaps(2).runOnJS(true).onEnd(onDoubleTap)));
     return Gesture.Exclusive(pan, tap);
-  }, [h, item, movable, onTap]);
+  }, [h, item, movable, onTap, onDoubleTap]);
   return (
     <GestureDetector gesture={gesture}>
       <View accessibilityRole="button" accessibilityLabel={item.title} accessibilityHint={movable ? "Touch and hold to move it to another day." : undefined} style={[style, lifted && styles.dim]}>

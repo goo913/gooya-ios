@@ -1,33 +1,26 @@
 import type { DateKey, EventOccurrence, TaskOccurrence } from "@shared/model";
-import { addDaysKey, makeKey, weekdayOfKey } from "@shared/time";
+import { addDaysKey, weekdayOfKey } from "@shared/time";
 import * as Haptics from "expo-haptics";
-import { router, usePathname } from "expo-router";
+import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DetailContent, EventAnswers, type DetailHost } from "@/app/sheet/detail";
 import { MONTH_NAMES, WEEKDAY_SHORT } from "@/lib/format";
-import { useMacAgenda, useOpenAtLoginOnce } from "@/lib/mac";
 import { useMe } from "@/lib/people";
 import { useToday } from "@/lib/useNow";
-import { usePad, type PadView } from "@/store/pad";
-import { usePrefs } from "@/store/prefs";
+import { usePad } from "@/store/pad";
 import { useSheets, type DetailRequest, type EditorRequest } from "@/store/sheets";
 import { useColors, type Colors } from "@/theme";
 import { DayView, type DayActions } from "@/views/DayView";
-import { isMac, onCommand, setMenuState, setToolbar } from "../../modules/gooya-mac";
 import { PadMonth, PadWeekdays } from "./PadMonth";
-import { PadSidebar, SIDEBAR_WIDTH } from "./PadSidebar";
-import { MAC_TOOLBAR, PAD_HEADER, PadTitle, PadToolbar } from "./PadToolbar";
+import { PAD_HEADER, PadTitle, PadToolbar } from "./PadToolbar";
 import { PadYear } from "./PadYear";
 
 /**
  * The iPad's calendar, after Apple Calendar for iPad (iPadOS 27): one screen with the bar at the top, the title under
  * it, and the Day, Week, Month or Year view. The Day view keeps the chosen item's details beside the day, as Apple's
- * does; elsewhere they open as a sheet.
- *
- * The Mac's too (Apple Calendar on macOS 27): the bar in the window's title bar, the sidebar (people and calendars) at
- * the left when shown, and the menus' commands and keyboard shortcuts (modules/gooya-mac).
+ * does; elsewhere they open as a sheet. (The Mac has its own, after Apple Calendar on macOS: src/mac.)
  */
 export function PadCalendar() {
   const colors = useColors();
@@ -35,9 +28,7 @@ export function PadCalendar() {
   const { width: windowW } = useWindowDimensions();
   const view = usePad((s) => s.view);
   const date = usePad((s) => s.date);
-  const sidebar = usePrefs((s) => s.sidebar) && isMac;
-  const sideW = sidebar ? SIDEBAR_WIDTH : 0;
-  const width = windowW - sideW;
+  const width = windowW;
   const me = useMe();
   const openDetail = useSheets((s) => s.openDetail);
   const openEditor = useSheets((s) => s.openEditor);
@@ -74,65 +65,23 @@ export function PadCalendar() {
   const onToday = useCallback(() => {
     usePad.getState().goToday();
   }, []);
-  // ‹ › on the Mac, and the View menu's Next and Previous: a day, a week, the month or the year shown.
-  const step = useCallback(
-    (dir: 1 | -1) => {
-      const pad = usePad.getState();
-      if (pad.view === "day") pad.show("day", addDaysKey(pad.date, dir));
-      else if (pad.view === "week") pad.show("week", addDaysKey(pad.date, 7 * dir));
-      else if (pad.view === "month") {
-        const m0 = scrolled.y * 12 + scrolled.m - 1 + dir;
-        pad.show("month", makeKey(Math.floor(m0 / 12), (m0 % 12) + 1, 1));
-      } else pad.show("year", makeKey(scrolled.y + dir, 1, 1));
-    },
-    [scrolled],
-  );
-
-  // The Mac's menus: the View menu ticks the view shown; the commands do what the bar's buttons do. New items, Search
-  // and Settings only from the calendar itself (not over a sheet).
-  const pathname = usePathname();
-  useMacAgenda();
-  useOpenAtLoginOnce();
-  useEffect(() => setMenuState(view, sidebar), [view, sidebar]);
-  useEffect(() => {
-    setToolbar(true);
-    return () => setToolbar(false);
-  }, []);
-  useEffect(() => {
-    const sub = onCommand((id) => {
-      const atHome = pathname === "/";
-      if (id.startsWith("view.")) usePad.getState().setView(id.slice(5) as PadView);
-      else if (id === "today") onToday();
-      else if (id === "next" || id === "previous") step(id === "next" ? 1 : -1);
-      else if (id === "sidebar") usePrefs.getState().setSidebar(!usePrefs.getState().sidebar);
-      else if (!atHome) return;
-      else if (id === "new.task" || id === "new.schedule" || id === "new.routine") newItem(date, undefined, id.slice(4) as EditorRequest["kind"]);
-      else if (id === "search") router.push("/search");
-      else if (id === "lists") router.push("/lists");
-      else if (id === "settings") router.push("/settings");
-    });
-    return () => sub?.remove();
-  }, [pathname, onToday, step, newItem, date]);
-
-  // On the Mac the bar is in the window's title bar, above the safe area.
-  const headerH = (isMac ? 0 : insets.top) + PAD_HEADER;
+  const headerH = insets.top + PAD_HEADER;
   const header = (
     <>
       <PadToolbar
         width={windowW}
-        onCalendars={isMac ? () => usePrefs.getState().setSidebar(!sidebar) : () => router.push("/calendars")}
+        onCalendars={() => router.push("/calendars")}
         onLists={() => router.push("/lists")}
         onSettings={() => router.push("/settings")}
         onAdd={() => newItem(date)}
         onSearch={() => router.push("/search")}
       />
-      <PadTitle month={view === "year" ? null : MONTH_NAMES[title.m - 1]} year={title.y} onToday={onToday} onStep={step} left={sideW} />
+      <PadTitle month={view === "year" ? null : MONTH_NAMES[title.m - 1]} year={title.y} onToday={onToday} />
     </>
   );
 
   return (
     <View style={[styles.fill, styles.row, { backgroundColor: colors.bg }]}>
-      {sidebar ? <PadSidebar top={MAC_TOOLBAR} /> : null}
       <View style={{ width }}>
         <View style={{ height: headerH, backgroundColor: view === "day" || view === "week" ? colors.bar : colors.bg }} />
         {view === "month" ? (

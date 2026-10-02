@@ -4,10 +4,13 @@ import UIKit
 import ServiceManagement
 #endif
 
-/// GOOYA's Mac parts for JavaScript (modules/gooya-mac/index.ts): whether this is the Mac, the menus' state and
-/// commands, the agenda in the Mac's menu bar, and opening at login. On an iPhone or iPad it does nothing.
+/// GOOYA's Mac parts for JavaScript (modules/gooya-mac/index.ts): whether this is the Mac, the window's sidebar, the
+/// menus' state and commands, the agenda in the Mac's menu bar, and opening at login. On an iPhone or iPad it does
+/// nothing.
 public class GooyaMacModule: Module {
   static weak var current: GooyaMacModule?
+  /// GOOYA's window is the key window (in front).
+  static var windowActive = true
   /// A row of the menu bar's agenda chosen before JavaScript was listening (GOOYA opened from it).
   private var pendingSelection: String?
   private var listening = false
@@ -23,10 +26,23 @@ public class GooyaMacModule: Module {
       #endif
     }
 
-    Events("onCommand", "onAgendaSelect")
+    Events("onCommand", "onAgendaSelect", "onSidebar", "onWindowActive")
 
     OnCreate {
       GooyaMacModule.current = self
+      #if targetEnvironment(macCatalyst)
+      // The window in front or not (Apple greys today's circle and what is chosen while it is not).
+      for (name, active) in [("NSWindowDidBecomeKeyNotification", true), ("NSWindowDidResignKeyNotification", false)] {
+        NotificationCenter.default.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+          GooyaMacModule.windowActive = active
+          self?.sendEvent("onWindowActive", ["active": active])
+        }
+      }
+      DispatchQueue.main.async {
+        let app = (NSClassFromString("NSApplication") as? NSObject.Type)?.value(forKey: "sharedApplication") as? NSObject
+        GooyaMacModule.windowActive = app?.value(forKey: "keyWindow") != nil
+      }
+      #endif
       DispatchQueue.main.async {
         GooyaMacWindow.start()
         GooyaStatusItem.shared().onSelect = { [weak self] key in
@@ -48,9 +64,8 @@ public class GooyaMacModule: Module {
       self.listening = false
     }
 
-    Function("setMenuState") { (view: String, sidebar: Bool) in
+    Function("setMenuState") { (view: String) in
       GooyaMacMenu.view = view
-      GooyaMacMenu.sidebar = sidebar
       DispatchQueue.main.async {
         UIMenuSystem.main.setNeedsRevalidate()
         #if targetEnvironment(macCatalyst)
@@ -73,6 +88,29 @@ public class GooyaMacModule: Module {
 
     Function("setToolbar") { (shown: Bool) in
       DispatchQueue.main.async { GooyaMacWindow.setToolbar(shown) }
+    }
+
+    Function("setSplit") { (shown: Bool) in
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async { GooyaMacSplit.setShown(shown) }
+      #endif
+    }
+
+    Function("setSidebar") { (sections: [[String: Any]], today: String) in
+      #if targetEnvironment(macCatalyst)
+      DispatchQueue.main.async {
+        GooyaMacSplit.sidebar.update(sections)
+        GooyaMacSplit.sidebar.month.set(today: today)
+      }
+      #endif
+    }
+
+    Function("setEscape") { (on: Bool) in
+      DispatchQueue.main.async { GooyaMacMenu.escape = on }
+    }
+
+    Function("windowActive") { () -> Bool in
+      GooyaMacModule.windowActive
     }
 
     Function("bringForward") {

@@ -156,6 +156,11 @@ const withMacMenus = (config) =>
   @objc func gooyaCommand(_ command: UICommand) {
     GooyaMacMenu.perform(command)
   }
+
+  // ⌘= for Zoom In, and Escape while there is something to cancel.
+  override var keyCommands: [UIKeyCommand]? {
+    (super.keyCommands ?? []) + GooyaMacMenu.keyCommands()
+  }
 #endif
 `,
       );

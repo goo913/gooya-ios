@@ -7,7 +7,7 @@ import { REPEAT_PRESETS, describeRule, repeatPresetKey } from "@shared/recurrenc
 import { SCHEDULE_CALENDAR, hasEndTime } from "@shared/schedules";
 import { addDaysKey, deviceTimeZone, diffDaysKey, fieldsInZone, formatHHmm, keyInZone, zonedMs } from "@shared/time";
 import { router } from "expo-router";
-import { useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActionSheetIOS, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { CategoryValue } from "@/components/ColorSwatches";
 import { DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/components/Form";
@@ -23,6 +23,9 @@ import { useEditZones } from "@/lib/zones";
 import { useData } from "@/store/data";
 import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
+import { CategoryMenu } from "@/mac/CategoryMenu";
+import type { EditorHost } from "./TaskEditor";
 
 /** A calendar of a connected account whose events can be changed in GOOYA (Two-way, and writable). */
 export interface TwoWayCalendar {
@@ -57,8 +60,10 @@ interface Props {
   initialDate?: DateKey;
   /** Minutes since midnight for a new schedule's start. */
   initialMinutes?: number;
+  initialTitle?: string;
   topBar?: ReactNode;
   onClose: () => void;
+  host?: EditorHost;
 }
 
 const MIN_MS = 60_000;
@@ -78,7 +83,8 @@ function defaultStart(date: DateKey, minutes: number | undefined, today: DateKey
  * change there within seconds and takes their version back: functions/src/integrations pushGoogleEvent /
  * pushAppleEvent). A schedule of GOOYA's may have no end time ("lunch at noon").
  */
-export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialMinutes, topBar, onClose }: Props) {
+export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialMinutes, initialTitle, topBar, onClose, host }: Props) {
+  const popover = host?.variant === "mac";
   const colors = useColors();
   const dark = useIsDark();
   const me = useMe();
@@ -90,7 +96,11 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const start0 = occ?.start ?? event?.start ?? defaultStart(initialDate ?? today, initialMinutes, today).getTime();
   const end0 = occ?.end ?? event?.end ?? start0 + 3600_000;
 
-  const [title, setTitle] = useState(occ?.title ?? event?.title ?? "");
+  const [title, setTitleState] = useState(occ?.title ?? event?.title ?? initialTitle ?? "");
+  const setTitle = (t: string) => {
+    setTitleState(t);
+    host?.onTitle?.(t);
+  };
   const [location, setLocation] = useState(ov?.location ?? event?.location ?? "");
   const [notes, setNotes] = useState(ov?.notes ?? event?.notes ?? "");
   const [allDay, setAllDay] = useState(event?.allDay ?? false);
@@ -239,6 +249,24 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
     }
   };
 
+  // The popover's host saves on Return and when clicked away (nothing to save with no title, nor when nothing changed).
+  const snapshot = () => JSON.stringify([title, location, notes, allDay, start.getTime(), end.getTime(), hasEnd, startDate, endDate, owner, repeatKey, calendarKey, categoryId, ownColor, shared]);
+  const opened = useRef<string | null>(null);
+  if (opened.current === null) opened.current = snapshot();
+  const register = host?.register;
+  useLayoutEffect(() => {
+    if (!register) return;
+    register(async () => {
+      if (!valid) return false;
+      if (event && snapshot() === opened.current) {
+        onClose();
+        return true;
+      }
+      await save();
+      return true;
+    });
+  });
+
   const remove = () => {
     if (!event) return;
     const gooya = event.source === GOOYA;
@@ -302,12 +330,12 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const where = inGooya ? null : shown?.source === "google" ? "Google Calendar" : "iCloud";
 
   return (
-    <View style={[styles.fill, { backgroundColor: colors.bg2 }]}>
-      <DetailsBar title={editing ? "Edit Schedule" : "New Schedule"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />
-      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <View style={popover ? styles.popover : [styles.fill, { backgroundColor: colors.bg2 }]}>
+      {popover ? null : <DetailsBar title={editing ? "Edit Schedule" : "New Schedule"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />}
+      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={popover ? styles.popoverContent : styles.content} showsVerticalScrollIndicator={false} style={popover ? styles.popoverScroll : undefined}>
         {topBar}
         <Group>
-          <TextRow value={title} onChange={setTitle} placeholder="Title" autoFocus={!editing} />
+          <TextRow value={title} onChange={setTitle} placeholder={popover && !editing ? "New Schedule" : "Title"} autoFocus={!editing} onSubmitEditing={popover ? () => void save() : undefined} />
           <TextRow value={location} onChange={setLocation} placeholder="Location" />
         </Group>
 
@@ -365,7 +393,11 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           ) : (
             <ValueRow label="Calendar" value={places.find((p) => p.key === calendarKey)?.name ?? SCHEDULE_CALENDAR} options={places.map((p) => p.name)} onPick={(_, i) => setCalendarKey(places[i].key)} />
           )}
-          {inGooya ? (
+          {inGooya && popover ? (
+            <Row label="Category">
+              <CategoryMenu value={category ? categoryId : null} name={category?.name ?? "None"} color={category?.color ?? null} onPick={setCategoryId} allowNone />
+            </Row>
+          ) : inGooya ? (
             <Row
               label="Category"
               accessibilityLabel="Category"
@@ -419,9 +451,12 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   content: { gap: 20, paddingBottom: 60, paddingTop: 4 },
+  popover: { flexShrink: 1 },
+  popoverScroll: { flexGrow: 0 },
+  popoverContent: { gap: 12, paddingTop: 10, paddingBottom: 12 },
   inline: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
   dot: { width: 10, height: 10, borderRadius: 5 },
-  value: { fontSize: 17, flexShrink: 1 },
-  reset: { fontSize: 17 },
+  value: { fontSize: isMac ? 13 : 17, flexShrink: 1 },
+  reset: { fontSize: isMac ? 13 : 17 },
   colorWell: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 });

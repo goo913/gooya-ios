@@ -13,11 +13,15 @@ import { MonthView } from "@/views/MonthView";
 import { useNav } from "@/store/nav";
 import { useIsPad } from "@/lib/layout";
 import { PadCalendar } from "@/pad/PadCalendar";
+import { MacCalendar } from "@/mac/MacCalendar";
+import { isMac } from "../../modules/gooya-mac";
 import { useColors } from "@/theme";
 
-/** The app's home: the iPhone's month screen, or the iPad's calendar (src/pad) in a wide window. */
+/** The app's home: the iPhone's month screen, the iPad's calendar (src/pad) in a wide window, or the Mac's (src/mac). */
 export default function Home() {
-  return useIsPad() ? <PadCalendar /> : <MonthScreen />;
+  const pad = useIsPad();
+  if (isMac) return <MacCalendar />;
+  return pad ? <PadCalendar /> : <MonthScreen />;
 }
 
 /** The month screen, the phone's home: the scrolling months with the floating pills over them. */

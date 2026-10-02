@@ -23,6 +23,9 @@ import { useNav } from "@/store/nav";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
 import { liftPan } from "@/lib/gestures";
+import { useMacColors, type MacColors } from "@/mac/theme";
+import { useMac, type Anchor } from "@/mac/state";
+import { beginDrag, endDrag } from "@/lib/dragCancel";
 import { RULE } from "@/lib/layout";
 
 /** A task occupies half an hour in the timeline, from its due time, as Apple Calendar draws a scheduled reminder. */
@@ -48,13 +51,34 @@ interface ColumnData {
 }
 
 export interface DayActions {
-  openTask: (occ: TaskOccurrence) => void;
-  openRoutine: (occ: RoutineOccurrence) => void;
-  openEvent: (occ: EventOccurrence) => void;
+  /** A tap (the Mac: a double-click, `anchor` being where the item is in the window, for its popover). */
+  openTask: (occ: TaskOccurrence, anchor?: Anchor) => void;
+  openRoutine: (occ: RoutineOccurrence, anchor?: Anchor) => void;
+  openEvent: (occ: EventOccurrence, anchor?: Anchor) => void;
   editTask: (occ: TaskOccurrence) => void;
   editRoutine: (occ: RoutineOccurrence, dayOnly: boolean) => void;
   createTask: (date: DateKey, person: PersonKey, minutes: number) => void;
+  /** The Mac: a click chooses an item (null: a click on an empty time). */
+  select?: (occ: TaskOccurrence | EventOccurrence | RoutineOccurrence | null) => void;
+  /** The Mac: a double-click on an empty time (in a person's column), `anchor` being where its placeholder is. */
+  newAt?: (date: DateKey, minutes: number, anchor: Anchor, person: PersonKey) => void;
 }
+
+/** The Mac's look and clicks for a timeline (Apple Calendar's week and day on macOS 27). */
+interface MacTimeline {
+  colors: MacColors;
+  /** How big what is on the calendar is drawn (View → Zoom In and Out). */
+  z: number;
+  /** A new item's placeholder: on this day at this time. */
+  draft: { date: DateKey; minutes: number; kind: "task" | "schedule"; title: string } | null;
+}
+
+/** Where a tapped view is in the window, from the tap's place in it and in the window. */
+const anchorOf = (e: { x: number; y: number; absoluteX: number; absoluteY: number }, w: number, h: number): Anchor => ({ x: e.absoluteX - e.x, y: e.absoluteY - e.y, w, h });
+
+/** Apple's working day on the Mac (Settings → Day starts at 8 AM, ends at 6 PM): its hour lines are darker. */
+const WORK_START = 8;
+const WORK_END = 18;
 
 function assignLanes<T>(segs: Seg<T>[]): void {
   segs.sort((a, b) => a.startMin - b.startMin || b.endMin - b.startMin - (a.endMin - a.startMin));
@@ -216,10 +240,24 @@ export interface DayViewProps {
   selectedKey?: string | null;
   /** Apple's iPad proportions: 65-point hours (50 on the iPhone) and a 93-point column of hours. */
   pad?: boolean;
+  /**
+   * Apple Calendar's week and day on the Mac: twelve hours fill the view, a 60-point column of hours, weekends shaded,
+   * the hours outside the working day fainter; a click chooses, a double-click opens or (on an empty time) makes a new
+   * item; a day's name and number show that day (`onShowDay`).
+   */
+  mac?: boolean;
+  onShowDay?: (key: DateKey) => void;
 }
 
-export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days: daysProp, merged = false, chrome = true, selectedKey = null, pad = false }: DayViewProps) {
-  const colors = useColors();
+export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days: daysProp, merged = false, chrome = true, selectedKey = null, pad = false, mac = false, onShowDay }: DayViewProps) {
+  const baseColors = useColors();
+  const macColors = useMacColors();
+  // On the Mac the timeline is Apple Calendar's: its background, lines and labels.
+  const colors = mac ? { ...baseColors, bg: macColors.bg, bar: macColors.bg, separator: macColors.line, label: macColors.text, label2: macColors.text2 } : baseColors;
+  const itemZoom = usePrefs((s) => s.itemZoom);
+  const draft = useMac((s) => s.draft);
+  const newKind = usePrefs((s) => s.newKind);
+  const [viewportH, setViewportH] = useState(0);
   const dark = useIsDark();
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();
@@ -233,7 +271,9 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const hourBase = usePrefs((s) => s.hourHeight);
   // The pinch zoom is kept for the default Text Size on a phone; the iPad's hours are 1.3 times the phone's.
   const zoomScale = m.fontScale * (pad ? 1.3 : 1);
-  const hourH = Math.min(260, Math.max(20, hourBase * zoomScale));
+  // The Mac shows twelve hours at a time, as Apple Calendar does (Settings → Show 12 hours at a time).
+  const hourH = mac ? Math.max(36, (viewportH || 900) / 12) : Math.min(260, Math.max(20, hourBase * zoomScale));
+  const macTimeline: MacTimeline | null = mac ? { colors: macColors, z: itemZoom, draft: draft ? { ...draft, kind: newKind } : null } : null;
   const setHourHeight = usePrefs((s) => s.setHourHeight);
   const meInfo = usePerson(me);
   const otherInfo = usePerson(other);
@@ -293,13 +333,15 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
     return max;
   }, [spanLayouts, columns, pageDates, colPeople]);
 
-  const gutterW = (pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
+  const gutterW = (mac ? 60 : pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
   const pageW = width - gutterW;
-  const titleH = m.dayTitle * 1.34;
+  // The Mac's day has no date over its columns (the title says it); its week has "Sun 27" over each day.
+  const titleH = mac ? (days > 1 ? 30 : 0) : m.dayTitle * 1.34;
   const namesH = colPeople.length > 1 ? m.personName * 1.3 : 0;
-  const allDayTop = 7 + titleH + namesH + 2;
-  const allDayRowH = m.chipHeight + 3;
-  const headerH = Math.max(m.dayTitleBand, allDayTop + 3) + (allDayRows ? allDayRows * allDayRowH + 4 : 0);
+  const allDayTop = mac ? titleH + namesH : 7 + titleH + namesH + 2;
+  const allDayRowH = Math.round(m.chipHeight * (mac ? itemZoom : 1)) + 3;
+  // Apple's all-day row on the Mac is there even when empty (24 points), with a 3-point line under it.
+  const headerH = mac ? allDayTop + Math.max(24, allDayRows * allDayRowH + 6) + 3 : Math.max(m.dayTitleBand, allDayTop + 3) + (allDayRows ? allDayRows * allDayRowH + 4 : 0);
   const scrollRef = useRef<ScrollView>(null);
   const pagerRef = useRef<ScrollView>(null);
   const headerPagerRef = useRef<ScrollView>(null);
@@ -327,6 +369,17 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
     if (todayNonce > 0) scrollToMinutes(nowMin - 110, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayNonce]);
+  // The Mac, once its twelve hours are measured: the working day from half an hour before it starts, or the time now
+  // when that is outside it.
+  const measured = viewportH > 0;
+  useEffect(() => {
+    if (!mac || !measured) return;
+    const from = (WORK_START - 0.5) * 60;
+    const target = centerHasToday && (nowMin < from || nowMin > from + 12 * 60) ? Math.max(0, nowMin - 120) : from;
+    const t = setTimeout(() => scrollToMinutes(target, false), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mac, measured]);
 
   // The three pages (yesterday · today · tomorrow) sit in a paging scroll view that is put back on the middle page
   // after every swipe, with the dates moved on: swiping never runs out of days.
@@ -441,7 +494,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
       ) : null}
 
       {/* Column headers (+ all-day strip) */}
-      <View style={[styles.header, { height: headerH, borderBottomColor: colors.separator }]}>
+      <View style={[styles.header, { height: headerH, borderBottomColor: mac ? macColors.allDayLine : colors.separator }, mac && { borderBottomWidth: 3 }]}>
         <View style={{ width: gutterW }}>
           {secondGutter ? (
             <View style={[styles.tzRow, { top: 7 + (titleH - m.personName * 1.3) / 2 }]}>
@@ -449,30 +502,42 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
               <Text allowFontScaling={false} style={[styles.tz, { color: colors.label3, fontSize: m.personName * 0.95 }]}>{tzAbbrev(viewerTz, now)}</Text>
             </View>
           ) : null}
-          {allDayRows ? (
+          {mac ? (
+            <Text allowFontScaling={false} style={[styles.macAllDay, { color: macColors.text2, top: allDayTop + 6 }]}>
+              all-day
+            </Text>
+          ) : allDayRows ? (
             <Text allowFontScaling={false} style={[styles.allDayLabel, { color: colors.label2, top: allDayTop + (allDayRowH - m.chipText * 1.3) / 2, fontSize: m.chipText }]}>
               all-day
             </Text>
           ) : null}
+          {mac && titleH ? <View style={[styles.macHeaderLine, { top: titleH + namesH, backgroundColor: macColors.line }]} /> : null}
         </View>
         <ScrollView ref={headerPagerRef} horizontal pagingEnabled scrollEnabled={false} showsHorizontalScrollIndicator={false} contentOffset={{ x: pageW, y: 0 }} style={{ width: pageW }}>
           {pageDates.map((dates, p) => (
             <View key={p} style={{ width: pageW, flexDirection: "row" }}>
               {dates.map((date, di) => (
-                <View key={date} style={[styles.dateCol, di > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
-                  <Text
-                    allowFontScaling={false}
-                    numberOfLines={1}
-                    style={[
-                      styles.dateTitle,
-                      { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 },
-                      // One day: centred on the whole screen, as Apple's title is, not on the column right of the hours.
-                      days === 1 && { marginLeft: -gutterW, paddingLeft: 0 },
-                    ]}
-                  >
-                    {days === 1 ? formatDayTitle(date) : days >= 5 ? "" : formatColumnHeader(date)}
-                  </Text>
-                  {days >= 5 ? <WeekColumnHeader date={date} today={today} colors={colors} top={people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2} height={titleH} /> : null}
+                <View key={date} style={[styles.dateCol, di > 0 && !mac && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
+                  {mac && di > 0 ? <View pointerEvents="none" style={[styles.macDivider, { top: titleH + namesH, backgroundColor: macColors.line }]} /> : null}
+                  {mac ? (
+                    days > 1 ? (
+                      <MacWeekHeader date={date} today={today} colors={macColors} height={titleH} onShowDay={onShowDay} />
+                    ) : null
+                  ) : (
+                    <Text
+                      allowFontScaling={false}
+                      numberOfLines={1}
+                      style={[
+                        styles.dateTitle,
+                        { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 },
+                        // One day: centred on the whole screen, as Apple's title is, not on the column right of the hours.
+                        days === 1 && { marginLeft: -gutterW, paddingLeft: 0 },
+                      ]}
+                    >
+                      {days === 1 ? formatDayTitle(date) : days >= 5 ? "" : formatColumnHeader(date)}
+                    </Text>
+                  )}
+                  {days >= 5 && !mac ? <WeekColumnHeader date={date} today={today} colors={colors} top={people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2} height={titleH} /> : null}
                   {colPeople.length > 1 ? (
                     <View style={[styles.names, { height: namesH }]}>
                       {colPeople.map((pk) => (
@@ -492,7 +557,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                         return (
                           <View key={pk} style={styles.allDayCol}>
                             {visible.map((o) => (
-                              <AllDayChip key={o.key} occ={o} date={date} dateIndex={di} days={days} dateW={pageW / days} draggable={p === 1} edges={edges} onShift={onShift} onOpen={o.kind === "event" ? () => actions.openEvent(o) : () => actions.openTask(o)} />
+                              <AllDayChip key={o.key} occ={o} date={date} dateIndex={di} days={days} dateW={pageW / days} draggable={p === 1} edges={edges} onShift={onShift} onOpen={(a) => (o.kind === "event" ? actions.openEvent(o, a) : actions.openTask(o, a))} mac={!!mac} onSelect={actions.select} selected={selectedKey === o.key} />
                             ))}
                             {overflow ? (
                               <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
@@ -524,8 +589,11 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                           draggable={p === 1}
                           edges={edges}
                           onShift={onShift}
-                          onOpen={o.kind === "event" ? () => actions.openEvent(o) : () => actions.openTask(o)}
+                          onOpen={(a) => (o.kind === "event" ? actions.openEvent(o, a) : actions.openTask(o, a))}
                           bar={x.kind === "bar" ? { openStart: x.openStart, openEnd: x.openEnd } : undefined}
+                          mac={!!mac}
+                          onSelect={actions.select}
+                          selected={selectedKey === o.key}
                         />
                       </View>
                     );
@@ -545,13 +613,37 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
 
       {/* Timeline */}
       <GestureDetector gesture={pinch}>
-        <ScrollView ref={scrollRef} style={styles.fill} showsVerticalScrollIndicator={false} scrollEventThrottle={16} onScroll={(e) => (scrollTop.current = e.nativeEvent.contentOffset.y)} contentContainerStyle={{ paddingBottom: insets.bottom + 80 }}>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.fill}
+          showsVerticalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onScroll={(e) => (scrollTop.current = e.nativeEvent.contentOffset.y)}
+          onLayout={mac ? (e) => setViewportH(e.nativeEvent.layout.height) : undefined}
+          contentContainerStyle={{ paddingBottom: mac ? 0 : insets.bottom + 80 }}
+        >
           <View style={{ height: 24 * hourH + 24, flexDirection: "row" }}>
             <View style={{ width: gutterW }}>
               {hours.map((h, i) => {
                 const hideNear = centerHasToday && Math.abs(h * 60 - nowMin) < 16 * (62 / hourH);
                 const l = hourLabel(h);
                 const rowH = m.hourNumber * 1.4;
+                if (mac) {
+                  // Apple's Mac hours: "10 AM" (12.5 and 8 points), "Noon"; none at midnight.
+                  if (h === 24) return null;
+                  return (
+                    <View key={h} style={[styles.hourRow, { top: h * hourH - 9, height: 18, paddingRight: 6, opacity: hideNear ? 0 : 1 }]}>
+                      {h === 12 ? (
+                        <Text allowFontScaling={false} style={[styles.macNoon, { color: macColors.hourText }]}>Noon</Text>
+                      ) : (
+                        <>
+                          <Text allowFontScaling={false} style={[styles.macHour, { color: macColors.hourText }]}>{l.num}</Text>
+                          <Text allowFontScaling={false} style={[styles.macSuffix, { color: macColors.hourSuffix }]}>{l.suffix}</Text>
+                        </>
+                      )}
+                    </View>
+                  );
+                }
                 return (
                   <View key={h} style={[styles.hourRow, { top: h * hourH - rowH / 2, height: rowH, paddingRight: 7.3, opacity: hideNear ? 0 : 1 }]}>
                     {secondaryLabels ? (
@@ -581,12 +673,18 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
             <ScrollView ref={pagerRef} horizontal pagingEnabled showsHorizontalScrollIndicator={false} contentOffset={{ x: pageW, y: 0 }} onScroll={syncHeader} scrollEventThrottle={16} onMomentumScrollEnd={onPageEnd} style={{ width: pageW }} nestedScrollEnabled>
               {pageDates.map((dates, p) => (
                 <View key={p} style={{ width: pageW }}>
+                  {mac && days > 1
+                    ? // Saturday and Sunday shaded, as Apple's week has them.
+                      dates.map((date, di) =>
+                        weekdayOfKey(date) === 0 || weekdayOfKey(date) === 6 ? <View key={`w${date}`} pointerEvents="none" style={[styles.macWeekend, { left: (di * pageW) / days, width: pageW / days, backgroundColor: macColors.weekend }]} /> : null,
+                      )
+                    : null}
                   {Array.from({ length: 25 }, (_, h) => (
-                    <View key={h} pointerEvents="none" style={[styles.hourLine, { top: h * hourH, backgroundColor: colors.separator }]} />
+                    <View key={h} pointerEvents="none" style={[styles.hourLine, { top: h * hourH, backgroundColor: mac ? (h >= WORK_START && h <= WORK_END ? macColors.hourLine : macColors.hourLineOff) : colors.separator }]} />
                   ))}
                   <View style={{ flexDirection: "row", height: 24 * hourH }}>
                     {dates.map((date, di) => (
-                      <View key={date} style={[styles.dateBody, di > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
+                      <View key={date} style={[styles.dateBody, di > 0 && { borderLeftWidth: mac ? 1 : StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
                         {colPeople.map((pk, pi) => (
                           <SubColumn
                             key={pk}
@@ -611,6 +709,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                             onMoveEvent={commitEventMove}
                             edges={edges}
                             onShift={onShift}
+                            mac={macTimeline ? { ...macTimeline, draft: p === 1 && macTimeline.draft?.date === date && (colPeople.length === 1 || pk === (draft?.owner ?? me)) ? macTimeline.draft : null } : null}
                           />
                         ))}
                         {date === today ? <View pointerEvents="none" style={[styles.nowLine, { backgroundColor: colors.red, top: (nowMin / 60) * hourH - 1 }]} /> : null}
@@ -651,42 +750,76 @@ interface SubColumnProps {
   /** The view's edges in the window (holding a dragged item there moves it a day), and showing days further on. */
   edges: { current: { left: number; right: number } };
   onShift: (days: number) => void;
+  /** The Mac's look and clicks. */
+  mac: MacTimeline | null;
 }
 
-const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, selectedKey, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent, edges, onShift }: SubColumnProps) {
-  const longPress = useMemo(
-    () =>
-      Gesture.LongPress()
+const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, metrics, divider, intensity, dark, colors, subW, subIndex, subCols, selectedKey, actions, onRoutineMenu, onTaskMenu, onMove, onMoveEvent, edges, onShift, mac }: SubColumnProps) {
+  const gesture = useMemo(() => {
+    if (mac) {
+      // The Mac: a click on an empty time chooses nothing; a double-click starts a new item at its half hour.
+      const single = Gesture.Tap()
         .runOnJS(true)
-        .minDuration(450)
-        .onStart((e) => {
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          actions.createTask(date, person, Math.round(((e.y / hourH) * 60) / 15) * 15);
-        }),
-    [actions, date, person, hourH],
-  );
+        .onEnd(() => actions.select?.(null));
+      const double = Gesture.Tap()
+        .numberOfTaps(2)
+        .runOnJS(true)
+        .onEnd((e) => {
+          const minutes = Math.min(23 * 60 + 30, Math.floor(((e.y / hourH) * 60) / 30) * 30);
+          const top = (minutes / 60) * hourH;
+          actions.newAt?.(date, minutes, { x: e.absoluteX - e.x, y: e.absoluteY - e.y + top, w: subW, h: Math.max(22, hourH / 2) }, person);
+        });
+      return Gesture.Simultaneous(single, double);
+    }
+    return Gesture.LongPress()
+      .runOnJS(true)
+      .minDuration(450)
+      .onStart((e) => {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        actions.createTask(date, person, Math.round(((e.y / hourH) * 60) / 15) * 15);
+      });
+  }, [actions, date, person, hourH, mac, subW]);
   return (
-    <GestureDetector gesture={longPress}>
-      <View style={[styles.subCol, divider && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
+    <GestureDetector gesture={gesture}>
+      <View style={[styles.subCol, divider && { borderLeftWidth: mac ? 1 : StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
         {data.routines.map((seg) => (
-          <RoutineBand key={seg.key} seg={seg} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} />
+          <RoutineBand key={seg.key} seg={seg} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} mac={mac} onSelect={actions.select} selected={seg.occ.key === selectedKey} subW={subW} />
         ))}
         {data.events.map((seg) => (
-          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} edges={edges} onShift={onShift} />
+          <EventBlock key={seg.key} seg={seg} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openEvent} onMove={onMoveEvent} edges={edges} onShift={onShift} mac={mac} onSelect={actions.select} />
         ))}
         {data.timed.map((seg) => (
-          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} edges={edges} onShift={onShift} />
+          <TaskPill key={seg.key} seg={seg} info={info} hourH={hourH} metrics={metrics} dark={dark} colors={colors} date={date} person={person} subW={subW} subIndex={subIndex} subCols={subCols} selected={seg.occ.key === selectedKey} onTap={actions.openTask} onMenu={onTaskMenu} onMove={onMove} edges={edges} onShift={onShift} mac={mac} onSelect={actions.select} />
         ))}
+        {mac?.draft ? <DraftBlock draft={mac.draft} hourH={hourH} mac={mac} /> : null}
       </View>
     </GestureDetector>
   );
 });
 
+/** A new item's placeholder on the Mac's timeline while its popover is open: a task's line, or a schedule's hour. */
+function DraftBlock({ draft, hourH, mac }: { draft: NonNullable<MacTimeline["draft"]>; hourH: number; mac: MacTimeline }) {
+  const z = mac.z;
+  const top = (draft.minutes / 60) * hourH;
+  const task = draft.kind === "task";
+  const height = task ? 22 * z : Math.max(22 * z, hourH - 1);
+  return (
+    <View pointerEvents="none" style={[styles.draft, { top, height, backgroundColor: mac.colors.accent }]}>
+      <View style={styles.draftRow}>
+        {task ? <TaskRing color="#ffffff" done={false} size={11 * z} /> : null}
+        <Text allowFontScaling={false} numberOfLines={1} style={[styles.draftText, { fontSize: 12 * z }]}>
+          {draft.title.trim() || (task ? "New Task" : "New Schedule")}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 /**
  * Routine band: the person's (or the routine's own) colour mixed into the background at the chosen intensity, a
  * solid 3pt accent bar, and a bright (dark mode) or deep (light mode) tint for the title — like Apple Calendar.
  */
-const RoutineBand = memo(function RoutineBand({ seg, hourH, metrics, intensity, dark, colors, onMenu, onTap }: { seg: Seg<RoutineOccurrence>; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: RoutineOccurrence) => void; onTap: (occ: RoutineOccurrence) => void }) {
+const RoutineBand = memo(function RoutineBand({ seg, hourH, metrics, intensity, dark, colors, onMenu, onTap, mac, onSelect, selected, subW }: { seg: Seg<RoutineOccurrence>; hourH: number; metrics: Metrics; intensity: number; dark: boolean; colors: Colors; onMenu: (occ: RoutineOccurrence) => void; onTap: (occ: RoutineOccurrence, anchor?: Anchor) => void; mac: MacTimeline | null; onSelect?: (occ: RoutineOccurrence | null) => void; selected: boolean; subW: number }) {
   // Its owner's colour (a week column holds both people's), or the routine's own.
   const owner = usePerson(seg.occ.routine.owner);
   const sleep = seg.occ.routine.kind === "sleep";
@@ -694,18 +827,37 @@ const RoutineBand = memo(function RoutineBand({ seg, hourH, metrics, intensity, 
   const height = Math.max(6, ((seg.endMin - seg.startMin) / 60) * hourH);
   const base = seg.occ.routine.color ? colorHex(seg.occ.routine.color, dark) : colorHex(owner.color, dark);
   const pct = Math.min(0.95, Math.max(0.1, intensity * (sleep ? 0.8 : 1)));
+  const style = [styles.band, { top, height, left: `${(seg.lane / seg.lanes) * 100}%` as const, width: `${100 / seg.lanes}%` as const, backgroundColor: selected && mac ? base : mix(base, colors.bg, pct), borderLeftColor: base }];
+  const title =
+    seg.startMin > 0 || height > 30 ? (
+      <Text allowFontScaling={false} numberOfLines={1} style={[styles.bandTitle, { color: selected && mac ? "#ffffff" : tintText(base, dark), fontSize: (mac ? 11 * mac.z : 11 * metrics.day), lineHeight: mac ? 13.5 * mac.z : 13.5 * metrics.day }]}>
+        {seg.occ.icon} {seg.occ.title}
+      </Text>
+    ) : null;
+  if (mac) {
+    // The Mac: a click chooses it, a double-click opens its details; a right-click-like hold keeps its menu.
+    const gesture = Gesture.Simultaneous(
+      Gesture.Tap()
+        .runOnJS(true)
+        .onEnd(() => onSelect?.(seg.occ)),
+      Gesture.Tap()
+        .numberOfTaps(2)
+        .runOnJS(true)
+        .onEnd((e) => onTap(seg.occ, anchorOf(e, subW / seg.lanes, height))),
+      Gesture.LongPress()
+        .minDuration(500)
+        .runOnJS(true)
+        .onStart(() => onMenu(seg.occ)),
+    );
+    return (
+      <GestureDetector gesture={gesture}>
+        <View style={style}>{title}</View>
+      </GestureDetector>
+    );
+  }
   return (
-    <Pressable
-      onPress={() => onTap(seg.occ)}
-      onLongPress={() => onMenu(seg.occ)}
-      delayLongPress={420}
-      style={[styles.band, { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: mix(base, colors.bg, pct), borderLeftColor: base }]}
-    >
-      {seg.startMin > 0 || height > 30 ? (
-        <Text allowFontScaling={false} numberOfLines={1} style={[styles.bandTitle, { color: tintText(base, dark), fontSize: 11 * metrics.day, lineHeight: 13.5 * metrics.day }]}>
-          {seg.occ.icon} {seg.occ.title}
-        </Text>
-      ) : null}
+    <Pressable onPress={() => onTap(seg.occ)} onLongPress={() => onMenu(seg.occ)} delayLongPress={420} style={style}>
+      {title}
     </Pressable>
   );
 });
@@ -721,10 +873,12 @@ interface EventBlockProps {
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
   selected: boolean;
-  onTap: (occ: EventOccurrence) => void;
+  onTap: (occ: EventOccurrence, anchor?: Anchor) => void;
   onMove: (seg: Seg<EventOccurrence>, startMin: number, date: DateKey) => void;
   edges: { current: { left: number; right: number } };
   onShift: (days: number) => void;
+  mac: MacTimeline | null;
+  onSelect?: (occ: EventOccurrence | null) => void;
 }
 
 /**
@@ -732,12 +886,15 @@ interface EventBlockProps {
  * bar inset at the left, the title in the calendar's colour, the time under it when there is room. An event of a
  * two-way calendar can be lifted with a long press and dragged to another time or day (its own person's columns).
  */
-const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, selected, onTap, onMove, edges, onShift }: EventBlockProps) {
+const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors, date, subW, subIndex, subCols, selected, onTap, onMove, edges, onShift, mac, onSelect }: EventBlockProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
   const edge = useEdgeShift(edges);
   const [lifted, setLifted] = useState(false);
   const previewRef = useRef<{ startMin: number; dx: number; target: number } | null>(null);
   const moved = useRef(false);
+  // Escape (on the Mac) puts it back where it was; letting go then does nothing.
+  const cancelled = useRef(false);
+  const cancelFn = useRef<(() => void) | null>(null);
   const c = seg.occ.event.color || colors.blue;
   const snap = snapFor(hourH);
   const movable = seg.occ.event.editable && !seg.occ.allDay;
@@ -749,11 +906,21 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
   }, []);
   const onPanStart = useCallback(() => {
     moved.current = false;
+    cancelled.current = false;
     setLifted(true);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-  }, []);
+    const cancel = () => {
+      cancelled.current = true;
+      edge.reset();
+      setLifted(false);
+      showPreview(null);
+    };
+    cancelFn.current = cancel;
+    beginDrag(cancel);
+  }, [edge, showPreview]);
   const onPanUpdate = useCallback(
     (e: { translationX: number; translationY: number; absoluteX: number }) => {
+      if (cancelled.current) return;
       if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
       moved.current = true;
       edge.track(e.absoluteX);
@@ -766,6 +933,7 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
     [hourH, snap, seg.startMin, subIndex, subCols.length, subW, perDay, showPreview, edge],
   );
   const onPanEnd = useCallback(() => {
+    if (cancelled.current) return;
     const p = previewRef.current;
     const shift = edge.shiftRef.current;
     edge.reset();
@@ -790,19 +958,32 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
         .onFinalize(() => {
           setLifted(false);
           edge.reset();
+          endDrag(cancelFn.current ?? undefined);
         }),
     [movable, onPanStart, onPanUpdate, onPanEnd, edge],
   );
   /* eslint-enable react-hooks/refs */
-  const tap = useMemo(() => Gesture.Tap().runOnJS(true).onEnd(() => onTap(seg.occ)), [onTap, seg.occ]);
-  const gesture = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
   const startMin = preview?.startMin ?? seg.startMin;
   const top = (startMin / 60) * hourH;
-  const height = Math.max(metrics.eventTitle * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
+  const titleSize = mac ? 12 * mac.z : metrics.eventTitle;
+  const timeSize = mac ? 11 * mac.z : metrics.eventTime;
+  const height = Math.max(titleSize * 1.35, ((seg.endMin - seg.startMin) / 60) * hourH - 1);
+  const gesture = useMemo(() => {
+    if (!mac) return Gesture.Exclusive(pan, Gesture.Tap().runOnJS(true).onEnd(() => onTap(seg.occ)));
+    // The Mac: a click chooses it, a double-click opens it.
+    const single = Gesture.Tap()
+      .runOnJS(true)
+      .onEnd(() => onSelect?.(seg.occ));
+    const double = Gesture.Tap()
+      .numberOfTaps(2)
+      .runOnJS(true)
+      .onEnd((e) => onTap(seg.occ, anchorOf(e, subW / seg.lanes, height)));
+    return Gesture.Exclusive(pan, Gesture.Simultaneous(single, double));
+  }, [pan, onTap, onSelect, seg.occ, seg.lanes, mac, subW, height]);
   // Selected (the iPad's details pane shows it): filled with its colour, the text white, as Apple marks it.
   const text = selected ? "#ffffff" : readableTint(c, dark);
-  const titleH = metrics.eventTitle * 1.25;
-  const timeH = metrics.eventTime * 1.3;
+  const titleH = titleSize * 1.25;
+  const timeH = timeSize * 1.3;
   // As many title lines as fit, keeping one line for the time when there is room for it (never a half-cut line).
   const avail = height - 4;
   const showTime = !seg.occ.allDay && avail >= titleH + timeH;
@@ -825,11 +1006,11 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
       >
         <View style={[styles.eventBar, { backgroundColor: c }]} />
         <View style={styles.eventText}>
-          <Text allowFontScaling={false} numberOfLines={titleLines} style={[styles.eventTitle, { color: text, fontSize: metrics.eventTitle, lineHeight: titleH }]}>
+          <Text allowFontScaling={false} numberOfLines={titleLines} style={[styles.eventTitle, { color: text, fontSize: titleSize, lineHeight: titleH }]}>
             {seg.occ.title}
           </Text>
           {showTime ? (
-            <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: metrics.eventTime, lineHeight: timeH }]}>
+            <Text allowFontScaling={false} numberOfLines={1} style={[styles.eventTime, { color: text, fontSize: timeSize, lineHeight: timeH }]}>
               {clock}
             </Text>
           ) : null}
@@ -865,11 +1046,13 @@ interface TaskPillProps {
   subIndex: number;
   subCols: { date: DateKey; person: PersonKey }[];
   selected: boolean;
-  onTap: (occ: TaskOccurrence) => void;
+  onTap: (occ: TaskOccurrence, anchor?: Anchor) => void;
   onMenu: (occ: TaskOccurrence) => void;
   onMove: (seg: Seg<TaskOccurrence>, startMin: number, date: DateKey, person: PersonKey) => void;
   edges: { current: { left: number; right: number } };
   onShift: (days: number) => void;
+  mac: MacTimeline | null;
+  onSelect?: (occ: TaskOccurrence | null) => void;
 }
 
 /**
@@ -877,11 +1060,13 @@ interface TaskPillProps {
  * hour, the owner's ring (tap it to complete) and the title. Long-press lifts it and dragging moves it (across days and
  * people); a tap opens it.
  */
-const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, person, subW, subIndex, subCols, selected, onTap, onMenu, onMove, edges, onShift }: TaskPillProps) {
+const TaskPill = memo(function TaskPill({ seg, hourH, metrics, dark, colors, date, person, subW, subIndex, subCols, selected, onTap, onMenu, onMove, edges, onShift, mac, onSelect }: TaskPillProps) {
   const [preview, setPreview] = useState<{ startMin: number; dx: number; target: number } | null>(null);
   const edge = useEdgeShift(edges);
   const [lifted, setLifted] = useState(false);
   const moved = useRef(false);
+  const cancelled = useRef(false);
+  const cancelFn = useRef<(() => void) | null>(null);
   const o = seg.occ;
   const snap = snapFor(hourH);
   // The preview is also kept in a ref: the gesture's end reads it without going through a state update.
@@ -892,11 +1077,21 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
   }, []);
   const onPanStart = useCallback(() => {
     moved.current = false;
+    cancelled.current = false;
     setLifted(true);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-  }, []);
+    const cancel = () => {
+      cancelled.current = true;
+      edge.reset();
+      setLifted(false);
+      showPreview(null);
+    };
+    cancelFn.current = cancel;
+    beginDrag(cancel);
+  }, [edge, showPreview]);
   const onPanUpdate = useCallback(
     (e: { translationX: number; translationY: number; absoluteX: number }) => {
+      if (cancelled.current) return;
       if (Math.abs(e.translationX) < 4 && Math.abs(e.translationY) < 4 && !moved.current) return;
       moved.current = true;
       edge.track(e.absoluteX);
@@ -908,6 +1103,7 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
     [hourH, snap, seg.startMin, subIndex, subCols.length, subW, showPreview, edge],
   );
   const onPanEnd = useCallback(() => {
+    if (cancelled.current) return;
     const p = previewRef.current;
     const days = edge.shiftRef.current;
     edge.reset();
@@ -935,29 +1131,50 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
         .onFinalize(() => {
           setLifted(false);
           edge.reset();
+          endDrag(cancelFn.current ?? undefined);
         }),
     [onPanStart, onPanUpdate, onPanEnd, edge],
   );
   /* eslint-enable react-hooks/refs */
   // A tap on the ring completes the task (its own button handles that); anywhere else on the block opens it.
-  const ringZone = 3 + metrics.taskRing + 8;
-  const tap = useMemo(
-    () =>
-      Gesture.Tap()
-        .runOnJS(true)
-        .onEnd((e) => {
-          if (e.x > ringZone) onTap(o);
-        }),
-    [onTap, o, ringZone],
-  );
-  const gesture = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
+  const ring = mac ? 11 * mac.z : metrics.taskRing;
+  const ringZone = 3 + ring + 8;
   const startMin = preview?.startMin ?? seg.startMin;
   const top = (startMin / 60) * hourH;
-  const height = Math.max(metrics.taskRing + 8, (Math.min(TASK_MINUTES, 24 * 60 - seg.startMin) / 60) * hourH - 1);
+  // The Mac draws a task as Apple draws a reminder there: one line (22 points), not half an hour.
+  const height = mac ? 22 * mac.z : Math.max(metrics.taskRing + 8, (Math.min(TASK_MINUTES, 24 * 60 - seg.startMin) / 60) * hourH - 1);
+  const gesture = useMemo(() => {
+    if (!mac) {
+      return Gesture.Exclusive(
+        pan,
+        Gesture.Tap()
+          .runOnJS(true)
+          .onEnd((e) => {
+            if (e.x > ringZone) onTap(o);
+          }),
+      );
+    }
+    // The Mac: a click chooses it, a double-click opens it.
+    const single = Gesture.Tap()
+      .runOnJS(true)
+      .onEnd((e) => {
+        if (e.x > ringZone) onSelect?.(o);
+      });
+    const double = Gesture.Tap()
+      .numberOfTaps(2)
+      .runOnJS(true)
+      .onEnd((e) => {
+        if (e.x > ringZone) onTap(o, anchorOf(e, subW / seg.lanes, height));
+      });
+    return Gesture.Exclusive(pan, Gesture.Simultaneous(single, double));
+  }, [pan, onTap, onSelect, o, ringZone, mac, subW, seg.lanes, height]);
   const previewTime = preview ? `${edge.shift ? `${shortDay(addDaysKey(preview.target >= 0 ? subCols[preview.target].date : date, edge.shift))} · ` : ""}${formatHM(Math.floor(startMin / 60) % 24, startMin % 60)}` : null;
   const bangs = ["", "!", "!!", "!!!"][o.task.priority ?? 0];
   // Its category's colour.
-  const ring = useTaskColor(o.task);
+  const ringColor = useTaskColor(o.task);
+  // The Mac: Apple's reminder line, light grey with a hairline, chosen in blue.
+  const macFill = mac ? (selected ? mac.colors.accent : dark ? "#2c2c2e" : "#f4f4f4") : null;
+  const macRim = mac ? (selected ? mac.colors.accent : dark ? "#3a3a3c" : "#e0e0e0") : null;
   return (
     <>
     {preview && previewTime ? <DragBadge top={top} left={`${(seg.lane / seg.lanes) * 100}%`} dx={preview.dx} label={previewTime} /> : null}
@@ -967,14 +1184,24 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
         accessibilityLabel={o.title}
         style={[
           styles.pill,
-          { top, height, left: `${(seg.lane / seg.lanes) * 100}%`, width: `${100 / seg.lanes}%`, backgroundColor: selected ? colors.fill : colors.taskBlock, borderColor: selected ? ring : colors.taskBlockRim, zIndex: lifted ? 40 : 30, transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }] },
+          {
+            top,
+            height,
+            left: `${(seg.lane / seg.lanes) * 100}%`,
+            width: `${100 / seg.lanes}%`,
+            backgroundColor: macFill ?? (selected ? colors.fill : colors.taskBlock),
+            borderColor: macRim ?? (selected ? ringColor : colors.taskBlockRim),
+            zIndex: lifted ? 40 : 30,
+            transform: [{ translateX: preview?.dx ?? 0 }, { scale: lifted ? 1.03 : 1 }],
+          },
+          mac && styles.macPill,
           lifted && styles.pillLifted,
         ]}
       >
-        <Pressable accessibilityLabel={o.completed ? "Mark incomplete" : "Mark complete"} onPress={() => void setCompleted(o.task, o.dateKey, !o.completed)} hitSlop={8} style={[styles.check, { height: Math.min(height, metrics.taskRing + 8) }]}>
-          <TaskRing color={ring} done={o.completed} size={metrics.taskRing} />
+        <Pressable accessibilityLabel={o.completed ? "Mark incomplete" : "Mark complete"} onPress={() => void setCompleted(o.task, o.dateKey, !o.completed)} hitSlop={8} style={[styles.check, { height: Math.min(height, ring + 8) }]}>
+          <TaskRing color={mac && selected ? "#ffffff" : ringColor} done={o.completed} size={ring} />
         </Pressable>
-        <Text allowFontScaling={false} numberOfLines={1} style={[styles.pillText, { color: o.completed ? colors.label2 : colors.label, fontSize: metrics.eventTitle, lineHeight: Math.min(height, metrics.taskRing + 8) }]}>
+        <Text allowFontScaling={false} numberOfLines={1} style={[styles.pillText, { color: mac && selected ? "#ffffff" : o.completed ? colors.label2 : colors.label, fontSize: mac ? 12 * mac.z : metrics.eventTitle, lineHeight: Math.min(height, ring + 8) }]}>
           {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
           {o.title}
         </Text>
@@ -988,12 +1215,13 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, colors, date, per
  * An all-day task or schedule over the timeline: a tap opens it; touch and hold lifts it to drag to another day (the
  * days side by side, or held at the view's edge for the days before or after).
  */
-function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShift, onOpen, bar }: { occ: TaskOccurrence | EventOccurrence; date: DateKey; dateIndex: number; days: number; dateW: number; draggable: boolean; edges: { current: { left: number; right: number } }; onShift: (days: number) => void; onOpen: () => void; bar?: { openStart: boolean; openEnd: boolean } }) {
+function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShift, onOpen, bar, mac = false, onSelect, selected = false }: { occ: TaskOccurrence | EventOccurrence; date: DateKey; dateIndex: number; days: number; dateW: number; draggable: boolean; edges: { current: { left: number; right: number } }; onShift: (days: number) => void; onOpen: (anchor?: Anchor) => void; bar?: { openStart: boolean; openEnd: boolean }; mac?: boolean; onSelect?: (occ: TaskOccurrence | EventOccurrence | null) => void; selected?: boolean }) {
   const colors = useColors();
   const [dx, setDx] = useState(0);
   const [to, setTo] = useState(0);
   const [lifted, setLifted] = useState(false);
   const delta = useRef(0);
+  const cancelled = useRef(false);
   const edge = useEdgeShift(edges);
   const movable = draggable && canMove(occ);
   // The handlers read refs, which is fine: the gesture system calls them while a finger moves, never during render.
@@ -1006,14 +1234,22 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
       setTo(0);
       setLifted(false);
     };
+    // Escape (on the Mac) puts it back where it was; letting go then does nothing.
+    const cancel = () => {
+      cancelled.current = true;
+      end();
+    };
     const pan = liftPan(350)
       .enabled(movable)
       .runOnJS(true)
       .onStart(() => {
+        cancelled.current = false;
         setLifted(true);
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        beginDrag(cancel);
       })
       .onUpdate((e) => {
+        if (cancelled.current) return;
         edge.track(e.absoluteX);
         delta.current = Math.max(-dateIndex, Math.min(days - 1 - dateIndex, Math.round(e.translationX / dateW)));
         // Days side by side: it goes from day to day; one day: it follows the finger, to hold it at an edge.
@@ -1021,6 +1257,7 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
         setTo(delta.current);
       })
       .onEnd(() => {
+        if (cancelled.current) return;
         const shift = edge.shiftRef.current;
         const total = delta.current + shift;
         end();
@@ -1030,14 +1267,30 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
         }
         if (shift) onShift(shift);
       })
-      .onFinalize(end);
-    const tap = Gesture.Tap().runOnJS(true).onEnd(onOpen);
+      .onFinalize(() => {
+        end();
+        endDrag(cancel);
+      });
+    if (mac) {
+      // The Mac: a click chooses it, a double-click opens it.
+      const single = Gesture.Tap()
+        .runOnJS(true)
+        .onEnd(() => onSelect?.(occ));
+      const double = Gesture.Tap()
+        .numberOfTaps(2)
+        .runOnJS(true)
+        .onEnd((e) => onOpen(anchorOf(e, dateW, 18)));
+      return Gesture.Exclusive(pan, Gesture.Simultaneous(single, double));
+    }
+    const tap = Gesture.Tap()
+      .runOnJS(true)
+      .onEnd(() => onOpen());
     return Gesture.Exclusive(pan, tap);
-  }, [movable, edge, dateIndex, days, dateW, occ, onShift, onOpen]);
+  }, [movable, edge, dateIndex, days, dateW, occ, onShift, onOpen, mac, onSelect]);
   /* eslint-enable react-hooks/refs */
   return (
     <GestureDetector gesture={gesture}>
-      <View accessibilityRole="button" accessibilityLabel={occ.title} style={[lifted && styles.chipLifted, { transform: [{ translateX: dx }, { scale: lifted ? 1.05 : 1 }] }]}>
+      <View accessibilityRole="button" accessibilityLabel={occ.title} style={[lifted && styles.chipLifted, selected && styles.chipSelected, { transform: [{ translateX: dx }, { scale: lifted ? 1.05 : 1 }] }]}>
         {bar && occ.kind === "event" ? <EventBar occ={occ} openStart={bar.openStart} openEnd={bar.openEnd} /> : occ.kind === "event" ? <EventChip occ={occ} /> : <TaskChip occ={occ} />}
         {lifted && (to || edge.shift) ? (
           // Where it would go, on it (the strip over the timeline has no room around it).
@@ -1049,6 +1302,26 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
         ) : null}
       </View>
     </GestureDetector>
+  );
+}
+
+/** A week column's date as Apple's Mac week has it: "Mon 28" (16 points), weekends grey, today's number in a red circle; a click shows the day. */
+function MacWeekHeader({ date, today, colors, height, onShowDay }: { date: DateKey; today: DateKey; colors: MacColors; height: number; onShowDay?: (key: DateKey) => void }) {
+  const [y, mo, d] = date.split("-").map(Number);
+  const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  const isToday = date === today;
+  const weekend = wd === 0 || wd === 6;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={date} onPress={() => onShowDay?.(date)} style={[styles.macWeekHead, { height }]}>
+      <Text allowFontScaling={false} style={[styles.macWeekHeadText, { color: weekend ? colors.text2 : colors.text }]}>
+        {WEEKDAY_SHORT[wd]}{" "}
+      </Text>
+      <View style={[styles.macWeekHeadNum, isToday && { backgroundColor: colors.red }]}>
+        <Text allowFontScaling={false} style={[styles.macWeekHeadText, { color: isToday ? "#ffffff" : weekend ? colors.text2 : colors.text }]}>
+          {d}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -1145,6 +1418,21 @@ function WeekStrip({ anchor, days, today, width, colors, metrics: m, onPick }: W
 }
 
 const styles = StyleSheet.create({
+  macWeekHead: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  macWeekHeadText: { fontSize: 15.5 },
+  macWeekHeadNum: { minWidth: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
+  macAllDay: { position: "absolute", left: 18, fontSize: 10, fontWeight: "500" },
+  macHeaderLine: { position: "absolute", left: 0, right: -9999, height: 1 },
+  macDivider: { position: "absolute", left: 0, bottom: 0, width: 1 },
+  macHour: { fontSize: 12.5, fontVariant: ["tabular-nums"] },
+  macSuffix: { fontSize: 8, marginLeft: 2, marginTop: 2, fontWeight: "500" },
+  macNoon: { fontSize: 10.5, fontWeight: "600" },
+  macWeekend: { position: "absolute", top: 0, bottom: 0 },
+  macPill: { borderWidth: 1, borderRadius: 4, alignItems: "center" },
+  chipSelected: { opacity: 0.85 },
+  draft: { position: "absolute", left: 1.5, right: 1.5, borderRadius: 4, zIndex: 50, paddingHorizontal: 5, justifyContent: "flex-start", paddingTop: 3 },
+  draftRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  draftText: { color: "#ffffff", fontWeight: "600", flexShrink: 1 },
   weekHead: { position: "absolute", left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "center" },
   weekHeadText: { fontSize: 17 },
   weekHeadNum: { minWidth: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
