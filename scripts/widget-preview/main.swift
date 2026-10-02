@@ -49,6 +49,38 @@ struct Preview {
           print(path)
         }
       }
+      // The Mac's desktop widget while another app is in front: drawn by opacity alone, grey on the desktop.
+      let m = WidgetModel(feed: feed, who: "both", now: now, dark: true)
+      let content = WidgetContent(m: m, family: family, layout: layout, margins: margins)
+        .frame(width: w, height: h)
+        .environment(\.colorScheme, .dark)
+        .environment(\.vibrant, true)
+      let renderer = ImageRenderer(content: content)
+      renderer.scale = 3
+      if let cg = renderer.cgImage, let png = dimmed(cg) {
+        let path = "\(outDir)/\(name)-both-dimmed.png"
+        try png.write(to: URL(fileURLWithPath: path))
+        print(path)
+      }
     }
+  }
+
+  /// What macOS shows of a widget in its grey state: each pixel's opacity sets how light it is over the desktop
+  /// (measured on a dimmed desktop widget: #1f1f1f where nothing is drawn, #c6c6c6 where something opaque is).
+  static func dimmed(_ cg: CGImage) -> Data? {
+    let w = cg.width, h = cg.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+    for i in stride(from: 0, to: px.count, by: 4) {
+      let a = Double(px[i + 3]) / 255
+      let v = UInt8((31 * (1 - a) + 198 * a).rounded())
+      px[i] = v
+      px[i + 1] = v
+      px[i + 2] = v
+      px[i + 3] = 255
+    }
+    guard let out = ctx.makeImage() else { return nil }
+    return NSBitmapImageRep(cgImage: out).representation(using: .png, properties: [:])
   }
 }

@@ -474,15 +474,39 @@ async function mac() {
   fs.mkdirSync(path.dirname(MAC_APP), { recursive: true });
   fs.rmSync(MAC_APP, { recursive: true, force: true });
   run("ditto", [app, MAC_APP], { problem: `${APP_NAME} built but couldn't be copied to ${MAC_APP}.` });
-  spawnSync("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-f", MAC_APP]);
-  spawnSync("open", [MAC_APP]);
+  registerMacCopy(app);
+  // GOOYA_BACKGROUND=1 (a scripted run) opens it without bringing it in front of what you are doing.
+  spawnSync("open", process.env.GOOYA_BACKGROUND === "1" ? ["-g", MAC_APP] : [MAC_APP]);
   const expires = readProfile(path.join(app, "Contents", "embedded.provisionprofile"))?.expires ?? null;
   console.log(`\n✓ ${APP_NAME} is on this Mac, in ${MAC_APP.replace(os.homedir(), "~")} (Launchpad and Spotlight find it). Sign in with Google.`);
   if (expires) console.log(`  This copy keeps opening until ${expires.toLocaleString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}; npm run publish:mac puts it on TestFlight for good.`);
   if (fs.existsSync(path.join("/Applications", `${APP_NAME}.app`, "WrappedBundle"))) {
-    console.log(`  /Applications/${APP_NAME}.app is the iPad app TestFlight put on this Mac: drag it to the Trash (it asks for your password), so links and widgets open the Mac app.`);
+    console.log(`  /Applications/${APP_NAME}.app is the iPad app TestFlight put on this Mac: drag it to the Trash (it asks for your password), so links and widgets open the Mac app (and a TestFlight update of it doesn't hide the Mac app's widgets again).`);
   }
   console.log(`  After any change to the app, run npm run mac again: only what changed is rebuilt.\n`);
+}
+
+/**
+ * Only the copy in ~/Applications is the Mac app macOS knows: the one Xcode built is forgotten, and so is the widget of
+ * the iPad app TestFlight put in /Applications. Other copies' widgets (the same widget, by its id) hide this one's from
+ * the widget gallery, which then offers the iPhone's ("From iPhone") instead.
+ */
+function registerMacCopy(built) {
+  const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+  // Xcode's builds (this one, and a development build's) are forgotten.
+  for (const app of [built, path.join(stateDir, "mac-dd", "Build", "Products", "Debug-maccatalyst", `${APP_NAME}.app`)]) {
+    if (!fs.existsSync(app)) continue;
+    spawnSync(lsregister, ["-u", app]);
+    spawnSync("pluginkit", ["-r", path.join(app, "Contents", "PlugIns", "GOOYAWidget.appex")]);
+  }
+  // So is the iPad app TestFlight put in /Applications: else gooya:// links (a widget's click) open it, not the Mac app.
+  const ipad = path.join("/Applications", `${APP_NAME}.app`);
+  if (fs.existsSync(path.join(ipad, "WrappedBundle"))) {
+    spawnSync("pluginkit", ["-r", path.join(ipad, "Wrapper", `${APP_NAME}.app`, "PlugIns", "GOOYAWidget.appex")]);
+    spawnSync(lsregister, ["-u", ipad]);
+  }
+  spawnSync(lsregister, ["-f", MAC_APP]);
+  spawnSync("pluginkit", ["-a", path.join(MAC_APP, "Contents", "PlugIns", "GOOYAWidget.appex")]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

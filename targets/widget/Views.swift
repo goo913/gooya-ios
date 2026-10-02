@@ -11,10 +11,26 @@ import WidgetKit
 // (gooya://day/YYYY-MM-DD); anywhere else, GOOYA as it opens (gooya://open: today in the view chosen in its Settings →
 // Default View).
 
+/// The Mac's desktop widgets turn grey and see-through while another app is in front (and a Home Screen can tint its
+/// widgets): the system then draws everything by how opaque it is, whatever its colour. So in that state a chip's
+/// title must stand out from its fill by opacity (a faint fill under an opaque title), and today's number is cut out of
+/// its circle; otherwise a chip is a blank grey bar and the circle a blank dot.
+struct VibrantKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  var vibrant: Bool {
+    get { self[VibrantKey.self] }
+    set { self[VibrantKey.self] = newValue }
+  }
+}
+
 struct WidgetRoot: View {
   @Environment(\.widgetFamily) private var family
   @Environment(\.colorScheme) private var systemScheme
   @Environment(\.widgetContentMargins) private var margins
+  @Environment(\.widgetRenderingMode) private var renderingMode
   let entry: Entry
 
   var body: some View {
@@ -31,6 +47,7 @@ struct WidgetRoot: View {
       }
     }
     .environment(\.colorScheme, scheme)
+    .environment(\.vibrant, renderingMode != .fullColor)
     .containerBackground(scheme == .dark ? Color.black : Color.white, for: .widget)
   }
 }
@@ -363,6 +380,7 @@ struct WeekdayLetters: View {
 
 /// A day's number, in a red circle today; the 1st of a month says which ("Oct 1") where days of two months meet.
 struct DayNumber: View {
+  @Environment(\.vibrant) private var vibrant
   let m: WidgetModel
   let key: String
   let weekend: Bool
@@ -372,11 +390,22 @@ struct DayNumber: View {
   var body: some View {
     let isToday = key == m.today
     let p = DayKey.parts(key)
-    Text(withMonth && p.d == 1 && !isToday ? "\(DayKey.monthShort[p.m - 1]) 1" : "\(p.d)")
+    let label = Text(withMonth && p.d == 1 && !isToday ? "\(DayKey.monthShort[p.m - 1]) 1" : "\(p.d)")
       .font(.system(size: 11, weight: isToday || (withMonth && p.d == 1) ? .semibold : .regular))
-      .foregroundStyle(isToday ? Color.white : outside ? Color.secondary.opacity(0.55) : weekend ? Color.secondary : Color.primary)
-      .frame(minWidth: 16, minHeight: 16)
-      .background(isToday ? Color.red : Color.clear, in: Circle())
+    if isToday && vibrant {
+      // Grey and see-through: the number cut out of the circle (a white number on it would vanish into it).
+      ZStack {
+        Circle().fill(Color.primary)
+        label.foregroundStyle(Color.black).blendMode(.destinationOut)
+      }
+      .compositingGroup()
+      .frame(width: 16, height: 16)
+    } else {
+      label
+        .foregroundStyle(isToday ? Color.white : outside ? Color.secondary.opacity(0.55) : weekend ? Color.secondary : Color.primary)
+        .frame(minWidth: 16, minHeight: 16)
+        .background(isToday ? Color.red : Color.clear, in: Circle())
+    }
   }
 }
 
@@ -385,6 +414,7 @@ struct DayNumber: View {
 /// In a wide day (the extra large size across its whole width) it ends with the time, and is a little bigger where the
 /// row has room.
 struct Chip: View {
+  @Environment(\.vibrant) private var vibrant
   let m: WidgetModel
   let item: FeedItem
   var wide = false
@@ -392,10 +422,13 @@ struct Chip: View {
   static func height(big: Bool) -> CGFloat { big ? 14 : 12 }
   var body: some View {
     let base = m.hex(item)
-    let fill = item.isTask
-      ? Color(hex: m.dark ? "#2c2c2e" : "#e9e9ee")
-      : m.dark ? Color(hex: base, over: "#000000", amount: 0.27) : Color(hex: base, over: "#ffffff", amount: 0.2)
-    let text: Color = item.isTask ? (item.completed ? Color.secondary : Color.primary) : Color(readable: base, dark: m.dark)
+    // Grey and see-through (see VibrantKey): a faint fill under an opaque title, so the title reads.
+    let fill = vibrant
+      ? Color.primary.opacity(0.16)
+      : item.isTask
+        ? Color(hex: m.dark ? "#2c2c2e" : "#e9e9ee")
+        : m.dark ? Color(hex: base, over: "#000000", amount: 0.27) : Color(hex: base, over: "#ffffff", amount: 0.2)
+    let text: Color = item.isTask || vibrant ? (item.completed ? Color.secondary : Color.primary) : Color(readable: base, dark: m.dark)
     let title = Text(item.title)
       .font(.system(size: big ? 10 : 9, weight: .semibold))
       .foregroundStyle(text)
@@ -412,7 +445,7 @@ struct Chip: View {
       }
       .clipped()
     HStack(spacing: 2.5) {
-      if item.isTask { Ring(color: Color(hex: base), done: item.completed, size: big ? 8 : 7) }
+      if item.isTask { Ring(color: vibrant ? Color.primary : Color(hex: base), done: item.completed, size: big ? 8 : 7) }
       if wide && !item.allDay {
         // The time at the end when the whole title fits beside it; otherwise the title has the room.
         ViewThatFits(in: .horizontal) {
