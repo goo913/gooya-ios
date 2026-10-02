@@ -8,6 +8,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, typ
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EventBar, EventChip, TaskChip, TaskRing } from "@/components/Chips";
+import { Icon } from "@/components/Icon";
 import { layoutRow } from "@shared/monthRows";
 import { mix, readableTint, tintText } from "@/lib/color";
 import { MONTH_SHORT, WEEKDAY_LETTERS, WEEKDAY_LONG, WEEKDAY_SHORT, formatColumnHeader, formatHM, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
@@ -165,8 +166,19 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
     }
   }
   for (const c of map.values()) {
-    // Tasks and events share the columns: overlapping ones sit side by side, as in Apple Calendar.
-    assignLanes<TaskOccurrence | EventOccurrence>([...c.timed, ...c.events] as Seg<TaskOccurrence | EventOccurrence>[]);
+    // Tasks and events share the columns: overlapping ones sit side by side, as in Apple Calendar. In a week showing
+    // both people, each person's are in their own half of the day (me at the left), as their routines are.
+    const items = [...c.timed, ...c.events] as Seg<TaskOccurrence | EventOccurrence>[];
+    if (!shared) assignLanes(items);
+    else
+      people.forEach((person, half) => {
+        const theirs = items.filter((s) => (s.occ.kind === "task" ? s.occ.task.owner : s.occ.event.owner) === person);
+        assignLanes(theirs);
+        for (const s of theirs) {
+          s.lane += half * s.lanes;
+          s.lanes *= people.length;
+        }
+      });
     c.allDay.sort((a, b) => a.title.localeCompare(b.title));
     c.routines.sort((a, b) => a.startMin - b.startMin);
   }
@@ -258,6 +270,8 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const draft = useMac((s) => s.draft);
   const newKind = usePrefs((s) => s.newKind);
   const [viewportH, setViewportH] = useState(0);
+  /** The all-day row opened to show all it holds ("+N" opens it, the chevron under "all-day" closes it). */
+  const [allDayOpen, setAllDayOpen] = useState(false);
   const dark = useIsDark();
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();
@@ -317,21 +331,23 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
         for (const o of c?.allDay ?? []) list.push({ item: o, key: o.key });
         singles.set(d, list);
       }
-      return layoutRow({ days: dates, spans: [...spans.values()], singles, lines: 2 });
+      return layoutRow({ days: dates, spans: [...spans.values()], singles, lines: allDayOpen ? Infinity : 2 });
     });
-  }, [spanning, pageDates, columns, colPeople]);
-  const allDayRows = useMemo(() => {
+  }, [spanning, pageDates, columns, colPeople, allDayOpen]);
+  // Its lines (two at most until it is opened), and whether it holds more than two lines show.
+  const { allDayRows, allDayFolds } = useMemo(() => {
     if (spanLayouts) {
       const { pieces, more } = spanLayouts[1];
-      return Math.min(2, Math.max(0, ...pieces.map((x) => x.line + 1), more.size ? 2 : 0));
+      const rows = Math.max(0, ...pieces.map((x) => x.line + 1), more.size ? 2 : 0);
+      return { allDayRows: allDayOpen ? rows : Math.min(2, rows), allDayFolds: allDayOpen ? rows > 2 : more.size > 0 };
     }
     let max = 0;
     for (const d of pageDates[1]) for (const p of colPeople) {
       const c = columns.get(colKey(d, p));
-      max = Math.max(max, Math.min(2, (c?.allDay.length ?? 0) + (c?.allDayEvents.length ?? 0)));
+      max = Math.max(max, (c?.allDay.length ?? 0) + (c?.allDayEvents.length ?? 0));
     }
-    return max;
-  }, [spanLayouts, columns, pageDates, colPeople]);
+    return { allDayRows: allDayOpen ? max : Math.min(2, max), allDayFolds: max > 2 };
+  }, [spanLayouts, columns, pageDates, colPeople, allDayOpen]);
 
   const gutterW = (mac ? 60 : pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
   const pageW = width - gutterW;
@@ -511,6 +527,18 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
               all-day
             </Text>
           ) : null}
+          {allDayFolds ? (
+            // Under "all-day": opens the row to all it holds, or closes it to two lines again.
+            <Pressable
+              onPress={() => setAllDayOpen((open) => !open)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={allDayOpen ? "Show fewer all-day" : "Show all all-day"}
+              style={[styles.allDayFold, mac ? styles.macAllDayFold : styles.phoneAllDayFold, { top: mac ? allDayTop + 20 : allDayTop + allDayRowH + (allDayRowH - 14) / 2 }]}
+            >
+              <Icon name={allDayOpen ? "chevron.up" : "chevron.down"} size={mac ? 10 : 12} color={mac ? macColors.text2 : colors.label2} weight="semibold" />
+            </Pressable>
+          ) : null}
           {mac && titleH ? <View style={[styles.macHeaderLine, { top: titleH + namesH, backgroundColor: macColors.line }]} /> : null}
         </View>
         <ScrollView ref={headerPagerRef} horizontal pagingEnabled scrollEnabled={false} showsHorizontalScrollIndicator={false} contentOffset={{ x: pageW, y: 0 }} style={{ width: pageW }}>
@@ -552,7 +580,7 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                       {colPeople.map((pk) => {
                         const col = columns.get(colKey(date, pk));
                         const list: (TaskOccurrence | EventOccurrence)[] = [...(col?.allDayEvents ?? []), ...(col?.allDay ?? [])];
-                        const overflow = list.length > 2 ? list.length - 1 : 0;
+                        const overflow = !allDayOpen && list.length > 2 ? list.length - 1 : 0;
                         const visible = overflow ? list.slice(0, 1) : list;
                         return (
                           <View key={pk} style={styles.allDayCol}>
@@ -560,9 +588,11 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                               <AllDayChip key={o.key} occ={o} date={date} dateIndex={di} days={days} dateW={pageW / days} draggable={p === 1} edges={edges} onShift={onShift} onOpen={(a) => (o.kind === "event" ? actions.openEvent(o, a) : actions.openTask(o, a))} mac={!!mac} onSelect={actions.select} selected={selectedKey === o.key} />
                             ))}
                             {overflow ? (
-                              <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
-                                +{overflow}
-                              </Text>
+                              <Pressable onPress={() => setAllDayOpen(true)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${overflow} more all-day`}>
+                                <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
+                                  +{overflow}
+                                </Text>
+                              </Pressable>
                             ) : null}
                           </View>
                         );
@@ -599,9 +629,17 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                     );
                   })}
                   {[...spanLayouts[p].more].map(([c, n]) => (
-                    <Text key={`more${c}`} pointerEvents="none" allowFontScaling={false} numberOfLines={1} style={[styles.more, styles.spanPiece, { top: allDayRowH, left: c * (pageW / days), width: pageW / days, color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
-                      +{n}
-                    </Text>
+                    <Pressable
+                      key={`more${c}`}
+                      onPress={() => setAllDayOpen(true)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${n} more all-day`}
+                      style={[styles.spanPiece, { top: allDayRowH, left: c * (pageW / days), width: pageW / days }]}
+                    >
+                      <Text allowFontScaling={false} numberOfLines={1} style={[styles.more, { color: colors.label2, fontSize: m.chipText, lineHeight: m.chipHeight }]}>
+                        +{n}
+                      </Text>
+                    </Pressable>
                   ))}
                 </View>
               ) : null}
@@ -1441,6 +1479,9 @@ const styles = StyleSheet.create({
   tzRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 8 },
   tz: { fontWeight: "600" },
   allDayLabel: { position: "absolute", right: 7.3, fontWeight: "500" },
+  allDayFold: { position: "absolute", height: 14, justifyContent: "center" },
+  phoneAllDayFold: { right: 7.3 },
+  macAllDayFold: { left: 18, width: 31, alignItems: "center" },
   dateCol: { flex: 1, minWidth: 0 },
   dateTitle: { textAlign: "center", fontWeight: "600" },
   names: { flexDirection: "row" },
