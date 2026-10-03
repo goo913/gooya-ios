@@ -11,9 +11,9 @@ import { BottomChrome, TopChrome } from "@/components/Chrome";
 import { pickOption } from "@/components/Form";
 import { GlassPill } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
-import { OccurrenceRow } from "@/components/OccurrenceRow";
+import { OccurrenceRow, useTimeColumnWidth } from "@/components/OccurrenceRow";
 import { patchSettings } from "@/lib/db";
-import { MONTH_SHORT, WEEKDAY_LONG, formatHM, formatTime } from "@/lib/format";
+import { MONTH_SHORT, WEEKDAY_LONG, formatHM, formatTime, tzAbbrev } from "@/lib/format";
 import { LIBRARY, SMART, useListOccurrences, type LibraryKind, type SmartList } from "@/lib/listOccurrences";
 import { listIndexOf, scheduleHex, useFilteredPeople, useMe, usePerson, usePersonColor } from "@/lib/people";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
@@ -207,6 +207,7 @@ export default function ListScreen() {
 /** A schedule in a list: its time (or all-day), its colour, its title, whose it is and where. */
 function ScheduleRow({ occ, onOpen }: { occ: EventOccurrence; onOpen: () => void }) {
   const colors = useColors();
+  const timeW = useTimeColumnWidth();
   const person = usePerson(occ.event.owner);
   const category = useData((s) => {
     const id = s.schedules.find((x) => x.id === occ.event.id)?.categoryId;
@@ -214,9 +215,15 @@ function ScheduleRow({ occ, onOpen }: { occ: EventOccurrence; onOpen: () => void
   });
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={onOpen} style={[styles.row, { borderBottomColor: colors.separator }]}>
-      <View style={styles.time}>
-        <Text style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>{occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}</Text>
-        {!occ.allDay && occ.end > occ.start ? <Text style={[styles.timeEnd, { color: colors.label2 }]}>{formatTime(occ.end, viewerTz)}</Text> : null}
+      <View style={[styles.time, { width: timeW }]}>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>
+          {occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}
+        </Text>
+        {!occ.allDay && occ.end > occ.start ? (
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[styles.timeEnd, { color: colors.label2 }]}>
+            {formatTime(occ.end, viewerTz)}
+          </Text>
+        ) : null}
       </View>
       <View style={[styles.bar, { backgroundColor: occ.event.color || colors.blue }]} />
       <View style={styles.text}>
@@ -233,25 +240,37 @@ function ScheduleRow({ occ, onOpen }: { occ: EventOccurrence; onOpen: () => void
   );
 }
 
-/** A routine: its symbol, whose colour, its title, then whose, which days and its hours. */
+/**
+ * A routine, laid out as a schedule is: its hours in the time column (start over end, on its owner's clock, whose zone
+ * is said when it is not this phone's), whose colour, its symbol and title, then whose and which days.
+ */
 function RoutineRow({ routine, onOpen }: { routine: Routine; onOpen: () => void }) {
   const colors = useColors();
   const person = usePerson(routine.owner);
   const color = usePersonColor(routine.owner);
+  const timeW = useTimeColumnWidth();
   const s = parseHHmm(routine.startTime);
   const e = parseHHmm(routine.endTime);
+  const zone = routine.timezone && routine.timezone !== viewerTz ? ` · ${tzAbbrev(routine.timezone)}` : "";
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={routine.title} onPress={onOpen} style={[styles.row, { borderBottomColor: colors.separator }]}>
-      <View style={styles.time}>
-        <Text style={styles.icon}>{routine.icon}</Text>
+      <View style={[styles.time, { width: timeW }]}>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[styles.timeText, { color: colors.label }]}>
+          {formatHM(s.h, s.min)}
+        </Text>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[styles.timeEnd, { color: colors.label2 }]}>
+          {formatHM(e.h, e.min)}
+        </Text>
       </View>
       <View style={[styles.bar, { backgroundColor: color }]} />
       <View style={styles.text}>
         <Text numberOfLines={1} style={[styles.rowTitle, { color: colors.label }]}>
+          {routine.icon ? `${routine.icon} ` : ""}
           {routine.title}
         </Text>
-        <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
-          {person.name} · {describeRule(routine.rrule)} · {formatHM(s.h, s.min)} – {formatHM(e.h, e.min)}
+        <Text numberOfLines={2} style={[styles.sub, { color: colors.label2 }]}>
+          {person.name} · {describeRule(routine.rrule)}
+          {zone}
         </Text>
       </View>
     </Pressable>
@@ -291,10 +310,9 @@ const styles = StyleSheet.create({
   dayDate: { fontSize: 15 },
   newTask: { fontSize: 19, fontWeight: "600" },
   row: { marginLeft: 16, paddingRight: 16, paddingVertical: 10, flexDirection: "row", alignItems: "flex-start", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth },
-  time: { width: 74, alignItems: "flex-end", paddingTop: 1 },
+  time: { alignItems: "flex-end", paddingTop: 1 },
   timeText: { fontSize: 15, lineHeight: 19, fontVariant: ["tabular-nums"] },
   timeEnd: { fontSize: 13, lineHeight: 17, fontVariant: ["tabular-nums"] },
-  icon: { fontSize: 22, lineHeight: 26 },
   bar: { width: 4, height: 34, borderRadius: 2, marginTop: 2 },
   text: { flex: 1, minWidth: 0 },
   rowTitle: { fontSize: 17, lineHeight: 22 },

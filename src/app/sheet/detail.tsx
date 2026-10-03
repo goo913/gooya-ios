@@ -1,7 +1,7 @@
 import { categoryOfList, isCategory } from "@shared/categories";
 import type { AttendeeStatus, DateKey, Task, TaskOccurrence } from "@shared/model";
 import { findConference } from "@shared/conference";
-import { describeRule, expandEvent, expandRoutine, expandTask } from "@shared/recurrence";
+import { describeRule, expandEvent, expandTask } from "@shared/recurrence";
 import { DAY_MS, addDaysKey, minutesSinceMidnight, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { httpsCallable } from "@react-native-firebase/functions";
@@ -20,7 +20,7 @@ import { functions } from "@/lib/firebase";
 import { isMock } from "@/lib/mock";
 import { MONTH_NAMES, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { colorHex, listIndexOf, scheduleHex, useMe, usePerson, useTaskColor } from "@/lib/people";
-import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
+import { deleteRoutineDay, endRoutineBefore, routineOccurrenceNear } from "@/lib/routineOps";
 import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
 import { reminderIdOf } from "@shared/reminders";
@@ -147,13 +147,14 @@ function ActionButton({ label, destructive, onPress }: { label: string; destruct
 function MiniTimeline({ startMin, endMin, children }: { startMin: number; endMin: number; children: (hourH: number, firstHour: number) => ReactNode }) {
   const colors = useColors();
   const hourH = 48;
-  const firstHour = Math.max(0, Math.min(20, Math.floor(startMin / 60) - 1));
+  // From an hour before it starts; late at night that runs past midnight (a routine as Sleep, 11:30 PM to 7 AM).
+  const firstHour = Math.max(0, Math.floor(startMin / 60) - 1);
   const hours = [0, 1, 2, 3].map((i) => firstHour + i);
   const height = Math.max(hourH * 3.2, ((Math.min(endMin, (firstHour + 4) * 60) - firstHour * 60) / 60) * hourH + 24);
   return (
     <View style={[styles.mini, { backgroundColor: colors.bg3, height: Math.min(height, hourH * 3.6) }]}>
       {hours.map((h, i) => {
-        const l = hourLabel(h);
+        const l = hourLabel(h % 24);
         const y = 18 + i * hourH;
         return (
           <View key={h} pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -295,26 +296,23 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
   const openEditor = useSheets((s) => s.openEditor);
   const host = useContext(DetailHostContext);
   const owner = usePerson(routine?.owner ?? "gooya");
-  const occ = useMemo(() => {
-    if (!routine) return null;
-    const from = startOfDayMs(dateKey, routine.timezone) - DAY_MS;
-    const to = startOfDayMs(addDaysKey(dateKey, 1), routine.timezone) + DAY_MS;
-    return expandRoutine(routine, from, to).find((o) => o.dateKey === dateKey) ?? null;
-  }, [routine, dateKey]);
+  // The day asked for, or (a routine not on it: Work on a Saturday, from a list of routines) its nearest day.
+  const occ = useMemo(() => (routine ? routineOccurrenceNear(routine, dateKey) : null), [routine, dateKey]);
   if (!routine || !occ) return <Missing what="routine" />;
+  const day = occ.dateKey;
   const color = routine.color ? colorHex(routine.color, dark) : colorHex(owner.color, dark);
   const ownerTimes = `${formatTime(occ.start, routine.timezone)} – ${formatTime(occ.end, routine.timezone)} ${tzAbbrev(routine.timezone, occ.start)}`;
   const localTimes = routine.timezone !== viewerTz ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)} ${tzAbbrev(viewerTz, occ.start)} for you` : null;
   const edit = (dayOnly: boolean) => {
-    openEditor({ kind: "routine", routine, dayOnly: dayOnly ? dateKey : undefined });
+    openEditor({ kind: "routine", routine, dayOnly: dayOnly ? day : undefined });
     host.toEditor();
   };
   const done = host.close;
   const remove = () => {
     const options = ["Delete This Day Only", "Delete All Future", "Delete Routine", "Cancel"];
     ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex: 3, destructiveButtonIndex: [0, 1, 2] }, (i) => {
-      if (i === 0) void deleteRoutineDay(routine, dateKey).then(done);
-      else if (i === 1) void endRoutineBefore(routine, dateKey).then(done);
+      if (i === 0) void deleteRoutineDay(routine, day).then(done);
+      else if (i === 1) void endRoutineBefore(routine, day).then(done);
       else if (i === 2) void deleteRoutine(routine.id).then(done);
     });
   };
@@ -329,14 +327,14 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
           <Text style={[styles.eventTitle, { color: colors.label }]}>
             {occ.icon} {occ.title}
           </Text>
-          <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(dateKey)}</Text>
+          <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(day)}</Text>
           <Text style={[styles.whenText, { color: colors.label2 }]}>{ownerTimes}</Text>
           {localTimes ? <Text style={[styles.small, { color: colors.label3 }]}>{localTimes}</Text> : null}
           <View style={styles.repeat}>
             <Icon name="repeat" size={17} color={colors.label2} />
             <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(routine.rrule)}</Text>
           </View>
-          {routine.overrides?.[dateKey] ? <Text style={[styles.small, { color: colors.orange }]}>Edited for this day only</Text> : null}
+          {routine.overrides?.[day] ? <Text style={[styles.small, { color: colors.orange }]}>Edited for this day only</Text> : null}
         </View>
       </View>
       <Fact label="Person">

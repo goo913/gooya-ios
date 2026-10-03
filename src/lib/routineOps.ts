@@ -1,6 +1,19 @@
-import type { DateKey, Routine, RoutineOverride } from "@shared/model";
-import { addDaysKey } from "@shared/time";
+import type { DateKey, Routine, RoutineOccurrence, RoutineOverride } from "@shared/model";
+import { expandRoutine } from "@shared/recurrence";
+import { DAY_MS, addDaysKey, startOfDayMs } from "@shared/time";
 import { deleteRoutine, patchRoutine } from "./db";
+
+/**
+ * A routine's day to show from `day`: that day when it is on, else its next day (Work on a Saturday: Monday), else its
+ * last one before (a routine that has ended).
+ */
+export function routineOccurrenceNear(routine: Routine, day: DateKey): RoutineOccurrence | null {
+  const at = startOfDayMs(day, routine.timezone);
+  const next = expandRoutine(routine, at - DAY_MS, at + 400 * DAY_MS).find((o) => o.dateKey >= day);
+  if (next) return next;
+  const before = expandRoutine(routine, at - 400 * DAY_MS, at);
+  return before[before.length - 1] ?? null;
+}
 
 /** "Delete This Day Only": add an EXDATE. */
 export async function deleteRoutineDay(s: Routine, dateKey: DateKey): Promise<void> {

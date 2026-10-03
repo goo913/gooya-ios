@@ -1,5 +1,5 @@
 import type { TaskOccurrence } from "@shared/model";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { formatTime } from "@/lib/format";
 import { usePerson, useTaskColor } from "@/lib/people";
 import { setCompleted } from "@/lib/taskOps";
@@ -10,6 +10,15 @@ import { Icon } from "./Icon";
 
 const BANGS = ["", "!", "!!", "!!!"];
 
+/**
+ * A list's time column (a task's time; a schedule's or routine's start over its end): as wide as "11:59 PM" at the
+ * phone's Text Size, which list text follows, so a time is always one line and the columns line up.
+ */
+export function useTimeColumnWidth(): number {
+  const { fontScale } = useWindowDimensions();
+  return Math.ceil(74 * Math.min(1.8, Math.max(1, fontScale)));
+}
+
 /** List/search row for a task occurrence, Apple list style. */
 export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; onOpen: () => void; showDate?: string }) {
   const colors = useColors();
@@ -17,13 +26,20 @@ export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; 
   const color = useTaskColor(occ.task);
   const list = useData((s) => s.lists.find((l) => l.id === occ.task.listId));
   const firstNote = occ.notes.split("\n").find((l) => l.trim()) ?? "";
+  const timeW = useTimeColumnWidth();
   return (
     <View style={[styles.row, { borderBottomColor: colors.separator }]}>
       <Pressable onPress={onOpen} style={styles.main}>
-        <View style={styles.time}>
+        <View style={[styles.time, { width: timeW }]}>
           {/* A task without a date has no time to show (Apple Reminders shows nothing there either). */}
-          <Text style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>{!occ.task.dueDate ? "" : occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}</Text>
-          {showDate ? <Text style={[styles.date, { color: colors.label3 }]}>{showDate}</Text> : null}
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>
+            {!occ.task.dueDate ? "" : occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}
+          </Text>
+          {showDate ? (
+            <Text numberOfLines={1} style={[styles.date, { color: colors.label3 }]}>
+              {showDate}
+            </Text>
+          ) : null}
         </View>
         <View style={[styles.bar, { backgroundColor: color }]} />
         <View style={styles.text}>
@@ -49,7 +65,7 @@ export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; 
 const styles = StyleSheet.create({
   row: { marginLeft: 16, paddingRight: 16, flexDirection: "row", alignItems: "center", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   main: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 10 },
-  time: { width: 74, alignItems: "flex-end", paddingTop: 1 },
+  time: { alignItems: "flex-end", paddingTop: 1 },
   timeText: { fontSize: 15, lineHeight: 19, fontVariant: ["tabular-nums"] },
   date: { fontSize: 12, lineHeight: 15 },
   bar: { width: 4, height: 34, borderRadius: 2, marginTop: 2 },
