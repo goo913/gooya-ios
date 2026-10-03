@@ -1,6 +1,6 @@
 import { DEFAULT_CATEGORY_ID, categoriesInOrder, categoryOfList, isCategory, listForCategory } from "@shared/categories";
 import type { TaskList } from "@shared/model";
-import type { PersonKey } from "@shared/people";
+import { PEOPLE, type PersonKey } from "@shared/people";
 import { useMemo } from "react";
 import { Alert } from "react-native";
 import { deleteList, deleteSchedule, newId, patchSchedule, patchSettings, patchTask, saveList } from "./db";
@@ -100,19 +100,27 @@ export async function deleteCategory(id: string): Promise<void> {
 
 /**
  * Deleting a category from a menu or its sheet: an empty one goes at once; one with tasks or schedules in it asks first,
- * as they go with it. `onDeleted` runs once it has gone.
+ * as they go with it. It says which: done tasks too (the category's page and count leave them out while completed tasks
+ * are hidden), and whose when they are all one person's (the other's Reminders list may be in it). `onDeleted` runs once
+ * it has gone.
  */
 export function confirmDeleteCategory(category: TaskList, onDeleted?: () => void): void {
   if (category.id === DEFAULT_CATEGORY_ID) return;
   const go = () => void deleteCategory(category.id).then(() => onDeleted?.());
-  const use = categoryUse(category.id);
-  if (!use.tasks && !use.schedules) return go();
-  const { tasks, lists } = useData.getState();
+  const { tasks, schedules, lists, users } = useData.getState();
   const byId = listIndexOf(lists);
-  const reminders = tasks.some((t) => categoryOfList(t.listId, byId)?.id === category.id && reminderIdOf(t));
+  const inIt = tasks.filter((t) => categoryOfList(t.listId, byId)?.id === category.id);
+  const itsSchedules = schedules.filter((x) => x.categoryId === category.id);
+  if (!inIt.length && !itsSchedules.length) return go();
+  const done = inIt.filter((t) => !t.rrule && t.completed).length;
   const part = (n: number, one: string) => (n === 1 ? `1 ${one}` : `${n} ${one}s`);
-  const what = [use.tasks ? part(use.tasks, "task") : null, use.schedules ? part(use.schedules, "schedule") : null].filter(Boolean).join(" and ");
-  Alert.alert(`Delete “${category.name}”?`, `The ${what} in it will be deleted too, for both of you.${reminders ? " Reminders among them go from Apple Reminders too." : ""}`, [
+  const parts = [inIt.length - done ? part(inIt.length - done, "task") : null, done ? part(done, "completed task") : null, itsSchedules.length ? part(itsSchedules.length, "schedule") : null].filter(Boolean);
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+  const owners = new Set([...inIt.map((t) => t.owner), ...itsSchedules.map((x) => x.owner)]);
+  const only = owners.size === 1 ? [...owners][0] : null;
+  const whose = only ? ` (${users[only]?.name || PEOPLE[only].name}’s)` : "";
+  const reminders = inIt.some((t) => reminderIdOf(t));
+  Alert.alert(`Delete “${category.name}”?`, `The ${what}${whose} in it will be deleted too, for both of you.${reminders ? " Reminders among them go from Apple Reminders too." : ""}`, [
     { text: "Cancel", style: "cancel" },
     { text: "Delete", style: "destructive", onPress: go },
   ]);

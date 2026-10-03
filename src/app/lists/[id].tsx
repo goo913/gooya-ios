@@ -4,7 +4,7 @@ import { describeRule, eventDays, expandEvent } from "@shared/recurrence";
 import { scheduleAsEvent } from "@shared/schedules";
 import { addDaysKey, parseHHmm, parseKey, startOfDayMs } from "@shared/time";
 import { router, useLocalSearchParams } from "expo-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BottomChrome, TopChrome } from "@/components/Chrome";
@@ -20,6 +20,7 @@ import { useNow, useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
 import { useColors, useIsDark } from "@/theme";
+import { isMac } from "../../../modules/gooya-mac";
 
 type Row = { kind: "task"; key: string; occ: TaskOccurrence } | { kind: "schedule"; key: string; occ: EventOccurrence };
 
@@ -45,6 +46,9 @@ export default function ListScreen() {
   const openDetail = useSheets((s) => s.openDetail);
   const settings = usePerson(me).settings;
   const showCompleted = settings.showCompleted;
+  // Reminders' "4 Completed · Show": done tasks shown on this page while completed tasks are hidden elsewhere.
+  const [doneShown, setDoneShown] = useState(false);
+  const showDone = showCompleted || doneShown;
   const showPast = settings.showPastSchedules;
   const smart = listId.startsWith("smart:") ? (listId.slice(6) as SmartList) : null;
   const library = listId.startsWith("kind:") ? (listId.slice(5) as LibraryKind) : null;
@@ -54,8 +58,9 @@ export default function ListScreen() {
   // A schedule has ended once its end is past (this, kept fresh by the minute).
   const now = useNow(60_000);
 
-  const { groups, past } = useMemo(() => {
+  const { groups, past, doneCount } = useMemo(() => {
     const rows: { day: string; row: Row; start: number }[] = [];
+    let doneCount = 0;
     // Tasks: a smart list's, a category's or Reminders list's, or all of them.
     if (library !== "schedules" && library !== "routines") {
       let items = occ;
@@ -64,7 +69,10 @@ export default function ListScreen() {
       else if (smart === "completed") items = items.filter((o) => o.completed);
       // A category: its tasks, through their owners' Reminders lists too; a Reminders list in no category: its own.
       else if (!smart && !library) items = items.filter((o) => o.task.listId === listId || categoryOfList(o.task.listId, byId)?.id === listId);
-      if (smart !== "completed" && !showCompleted) items = items.filter((o) => !o.completed);
+      if (smart !== "completed") {
+        doneCount = items.filter((o) => o.completed).length;
+        if (!showDone) items = items.filter((o) => !o.completed);
+      }
       for (const o of items) rows.push({ day: o.dueDate || "No Date", row: { kind: "task", key: o.key, occ: o }, start: o.start });
     }
     // Schedules: a category's, or all of them. Each once: a repeating one at its next day (or its last, once it has
@@ -99,8 +107,8 @@ export default function ListScreen() {
       }
       return map;
     };
-    return { groups: byDay(rows, false), past: showPast ? byDay(pastRows, true) : new Map<string, Row[]>() };
-  }, [occ, smart, library, listId, byId, showCompleted, showPast, today, category, schedules, people, users, lists, dark, now]);
+    return { groups: byDay(rows, false), past: showPast ? byDay(pastRows, true) : new Map<string, Row[]>(), doneCount };
+  }, [occ, smart, library, listId, byId, showDone, showPast, today, category, schedules, people, users, lists, dark, now]);
 
   const routineRows = useMemo(
     () => (library === "routines" ? routines.filter((r) => people.includes(r.owner)).sort((a, b) => people.indexOf(a.owner) - people.indexOf(b.owner) || a.startTime.localeCompare(b.startTime)) : []),
@@ -150,6 +158,14 @@ export default function ListScreen() {
             </Pressable>
           )}
         </View>
+        {doneCount && !showCompleted ? (
+          <View style={[styles.doneRow, { borderBottomColor: colors.separator }]}>
+            <Text style={[styles.doneText, { color: colors.label2 }]}>{doneCount} Completed</Text>
+            <Pressable accessibilityRole="button" hitSlop={8} onPress={() => setDoneShown(!doneShown)}>
+              <Text style={[styles.doneText, { color: colors.blue }]}>{doneShown ? "Hide" : "Show"}</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {total === 0 ? <Text style={[styles.empty, { color: colors.label2 }]}>{empty}</Text> : null}
         {library === "routines"
           ? routineRows.map((r) => <RoutineRow key={r.id} routine={r} onOpen={() => openRoutine(r)} />)
@@ -171,7 +187,8 @@ export default function ListScreen() {
           </>
         ) : null}
       </ScrollView>
-      <TopChrome back="Lists" onBack={() => router.back()} onAdd={newItem} onSearch={() => router.push("/search")} />
+      {/* A Library list (from the month's menu) and any list on the Mac (from its sidebar) go back to the calendar. */}
+      <TopChrome back={library || isMac ? "Calendar" : "Lists"} onBack={() => router.back()} onAdd={newItem} onSearch={() => router.push("/search")} />
       <BottomChrome
         showToday={false}
         left={
@@ -266,6 +283,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, fontWeight: "700", lineHeight: 41 },
   more: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   empty: { paddingHorizontal: 16, paddingTop: 64, textAlign: "center", fontSize: 17 },
+  doneRow: { flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 16, paddingRight: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  doneText: { fontSize: 15 },
   section: { paddingHorizontal: 16, paddingTop: 28, fontSize: 15, fontWeight: "600" },
   dayHead: { flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 },
   dayName: { fontSize: 17, fontWeight: "600" },

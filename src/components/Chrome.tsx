@@ -16,7 +16,7 @@ interface TopChromeProps {
   onViewOptions?: () => void;
   viewIcon?: "month" | "day";
   /** The view button's pull-down menu (Apple's "Single Day · Multi Day · List"); replaces onViewOptions. */
-  viewMenu?: { icon: SFSymbol; groups: MenuGroup[]; actions?: MenuAction[] };
+  viewMenu?: { icon: SFSymbol; groups: MenuGroup[]; actions?: MenuAction[][] };
   /** Without the view button (Apple's year screen has only search and add). */
   hideView?: boolean;
   onSearch?: () => void;

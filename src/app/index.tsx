@@ -6,6 +6,7 @@ import { View } from "react-native";
 import { BottomChrome, TopChrome } from "@/components/Chrome";
 import * as Haptics from "expo-haptics";
 import { useNewItem } from "@/lib/actions";
+import { LIBRARY } from "@/lib/listOccurrences";
 import { useMe } from "@/lib/people";
 import { useSheets } from "@/store/sheets";
 import { usePrefs } from "@/store/prefs";
@@ -44,7 +45,8 @@ function MonthScreen() {
   const newItem = useNewItem();
   const monthDisplay = usePrefs((s) => s.monthDisplay);
   const setMonthDisplay = usePrefs((s) => s.setMonthDisplay);
-  // Apple's month menu: the grid ("Details") or the List, plus GOOYA's task lists.
+  // Apple's month menu: the grid ("Details") or the List; then every task, schedule and routine as a list (Library, as
+  // the Mac's sidebar has), and GOOYA's task lists.
   const viewMenu = {
     icon: (monthDisplay === "list" ? "list.bullet.below.rectangle" : "rectangle.grid.1x2") as "rectangle.grid.1x2",
     groups: [
@@ -57,7 +59,10 @@ function MonthScreen() {
         onSelect: (v: string) => setMonthDisplay(v === "list" ? "list" : "stacked"),
       },
     ],
-    actions: [{ label: "Task Lists", icon: "checklist" as const, onPress: () => router.push("/lists") }],
+    actions: [
+      LIBRARY.map((l) => ({ label: l.label, icon: l.icon as "checklist", onPress: () => router.push({ pathname: "/lists/[id]", params: { id: `kind:${l.key}` } }) })),
+      [{ label: "Task Lists", icon: "list.bullet" as const, onPress: () => router.push("/lists") }],
+    ],
   };
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>

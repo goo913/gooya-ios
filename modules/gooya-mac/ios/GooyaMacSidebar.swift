@@ -159,15 +159,8 @@ final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegat
     cell.contentConfiguration = content
     var accessories: [UICellAccessory] = [.outlineDisclosure(options: .init(style: .header))]
     if header.addable {
-      var plus = UIButton.Configuration.plain()
-      plus.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
-      plus.baseForegroundColor = .secondaryLabel
-      plus.contentInsets = .zero
-      let button = UIButton(configuration: plus, primaryAction: UIAction { [weak self] _ in self?.send(["type": "add", "id": header.id]) })
-      button.toolTip = "New Category"
-      button.accessibilityLabel = "New Category"
-      button.frame = CGRect(x: 0, y: 0, width: 20, height: 20)
-      accessories.append(.customView(configuration: .init(customView: button, placement: .trailing(displayed: .always), reservedLayoutWidth: .custom(20))))
+      let add = GooyaHeaderAdd { [weak self] in self?.send(["type": "add", "id": header.id]) }
+      accessories.append(.customView(configuration: .init(customView: add, placement: .trailing(displayed: .always), reservedLayoutWidth: .custom(18))))
     }
     cell.accessories = accessories
   }
@@ -304,6 +297,34 @@ extension GooyaSidebarSection {
     self.header = header
     self.rows = rows
   }
+}
+
+/// The + by a heading (Categories: a new one): a grey symbol the size of the heading's disclosure arrow, as the arrow is.
+/// Not a button: macOS draws a button's symbol in the app's accent colour (Calendar's red).
+final class GooyaHeaderAdd: UIControl {
+  private let action: () -> Void
+
+  init(action: @escaping () -> Void) {
+    self.action = action
+    super.init(frame: CGRect(x: 0, y: 0, width: 18, height: 18))
+    let symbol = UIImageView(image: UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)))
+    symbol.tintColor = .secondaryLabel
+    symbol.contentMode = .center
+    symbol.frame = bounds
+    symbol.isUserInteractionEnabled = false
+    addSubview(symbol)
+    addTarget(self, action: #selector(tapped), for: .touchUpInside)
+    toolTip = "New Category"
+    isAccessibilityElement = true
+    accessibilityLabel = "New Category"
+    accessibilityTraits = .button
+  }
+
+  required init?(coder: NSCoder) { fatalError() }
+
+  override var intrinsicContentSize: CGSize { CGSize(width: 18, height: 18) }
+
+  @objc private func tapped() { action() }
 }
 
 /// A calendar's tick, as macOS draws it in Calendar's list: a rounded square in the calendar's colour, with a white

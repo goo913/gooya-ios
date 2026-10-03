@@ -37,7 +37,8 @@ interface Props {
   height: number;
   accessibility: string;
   groups: MenuGroup[];
-  actions?: MenuAction[];
+  /** Commands under the choices, a section each (lines between them). */
+  actions?: MenuAction[][];
 }
 
 export function MenuButton({ icon, iconSize, width, height, accessibility, groups, actions }: Props) {
@@ -69,13 +70,15 @@ export function MenuButton({ icon, iconSize, width, height, accessibility, group
             ))}
           </Picker>
         ))}
-        {actions?.length ? (
-          <Section>
-            {actions.map((a) => (
-              <Button key={a.label} label={a.label} systemImage={a.icon} onPress={a.onPress} />
-            ))}
-          </Section>
-        ) : null}
+        {(actions ?? [])
+          .filter((section) => section.length)
+          .map((section, i) => (
+            <Section key={`actions${i}`}>
+              {section.map((a) => (
+                <Button key={a.label} label={a.label} systemImage={a.icon} onPress={a.onPress} />
+              ))}
+            </Section>
+          ))}
       </Menu>
     </Host>
   );
