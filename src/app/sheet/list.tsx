@@ -1,4 +1,3 @@
-import { categoriesOf } from "@shared/categories";
 import type { TaskList } from "@shared/model";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
@@ -6,7 +5,7 @@ import { Group, Row } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { ListBadge } from "@/components/ListIcons";
 import { BarButton, SheetBar } from "@/components/SheetHeader";
-import { useData } from "@/store/data";
+import { useCategories } from "@/lib/categoryOps";
 import { usePickers } from "@/store/pickers";
 import { useColors } from "@/theme";
 
@@ -16,7 +15,7 @@ import { useColors } from "@/theme";
  */
 export default function CategoryPickerSheet() {
   const colors = useColors();
-  const lists = useData((s) => s.lists);
+  const categories = useCategories();
   const req = usePickers((s) => s.list);
   const pick = (id: string | null) => {
     req?.onPick(id);
@@ -58,7 +57,7 @@ export default function CategoryPickerSheet() {
                 {req.value == null ? <Icon name="checkmark" size={18} color={colors.blue} weight="semibold" /> : null}
               </Row>
             ) : null}
-            {categoriesOf(lists).map(row)}
+            {categories.map(row)}
             <Row
               accessibilityLabel="New Category"
               label={

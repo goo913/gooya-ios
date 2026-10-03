@@ -77,6 +77,11 @@ export async function setCompleted(task: Task, dateKey: DateKey | null, complete
   await patchTask(task.id, { completedDates: Array.from(set).sort() })
 }
 
+/** Done, or not done again: a task's ring clicked (this occurrence of a repeating one). */
+export function toggleCompleted(occ: TaskOccurrence): Promise<void> {
+  return setCompleted(occ.task, occ.dateKey, !occ.completed)
+}
+
 /** Apply edited fields with Apple's "this only / future" semantics. */
 export async function applyTaskEdit(task: Task, occ: TaskOccurrence | null, fields: TaskFields, scope: EditScope): Promise<void> {
   // A reminder given to the other person is no longer its owner's reminder: it becomes a GOOYA task (the owner's

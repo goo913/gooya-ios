@@ -6,9 +6,10 @@ import { BottomChrome, TopChrome } from "@/components/Chrome";
 import { GlassPill } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
 import { ListBadge } from "@/components/ListIcons";
+import { useCategories } from "@/lib/categoryOps";
 import { SMART, useListOccurrences } from "@/lib/listOccurrences";
 import { listIndexOf, useFilteredPeople, useMe, usePerson } from "@/lib/people";
-import { categoriesOf, categoryOfList, isCategory } from "@shared/categories";
+import { categoryOfList, isCategory } from "@shared/categories";
 import type { TaskList } from "@shared/model";
 import { otherPerson } from "@shared/people";
 import { useToday } from "@/lib/useNow";
@@ -30,6 +31,7 @@ export default function ListsScreen() {
   const people = useFilteredPeople();
   const today = useToday();
   const lists = useData((s) => s.lists);
+  const categories = useCategories();
   const occ = useListOccurrences(people, today);
   const showCompleted = usePerson(me).settings.showCompleted;
   const openEditor = useSheets((s) => s.openEditor);
@@ -45,7 +47,6 @@ export default function ListsScreen() {
       today: open.filter((o) => o.dueDate && o.dueDate <= today).length,
       scheduled: open.filter((o) => !!o.dueDate).length,
       all: open.length,
-      flagged: open.filter((o) => o.task.flagged).length,
       completed: occ.filter((o) => o.completed).length,
       byList,
     };
@@ -71,7 +72,7 @@ export default function ListsScreen() {
           ))}
         </View>
         <Text style={[styles.h2, { color: colors.label }]}>Categories</Text>
-        <ListCard lists={categoriesOf(lists)} counts={counts.byList} />
+        <ListCard lists={categories} counts={counts.byList} />
         <Pressable
           onPress={() => {
             usePickers.getState().setList(null);

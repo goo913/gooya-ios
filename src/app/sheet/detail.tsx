@@ -229,7 +229,6 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
         <Text style={[styles.taskTitle, { color: occ.completed ? colors.label2 : colors.label }]}>
           {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
           {occ.title}
-          {task.flagged ? <Text style={{ color: colors.orange }}> ⚑</Text> : null}
         </Text>
       </View>
       <View style={styles.when}>

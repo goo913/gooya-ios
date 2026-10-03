@@ -37,7 +37,7 @@ export default function EditSheet() {
     </View>
   ) : null;
   if (kind === "schedule") {
-    return <ScheduleEditor event={req.event} occ={req.eventOcc} initialOwner={req.initialOwner} initialDate={req.initialDate} initialMinutes={req.initialMinutes} topBar={topBar} onClose={onClose} />;
+    return <ScheduleEditor event={req.event} occ={req.eventOcc} initialOwner={req.initialOwner} initialDate={req.initialDate} initialMinutes={req.initialMinutes} initialCategoryId={req.initialListId} topBar={topBar} onClose={onClose} />;
   }
   if (kind === "routine") {
     return <RoutineEditor routine={req.routine} dayOnly={req.dayOnly} initialOwner={req.initialOwner} initialDate={req.initialDate} initialMinutes={req.initialMinutes} topBar={topBar} onClose={onClose} />;

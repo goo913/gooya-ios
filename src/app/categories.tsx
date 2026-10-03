@@ -1,4 +1,4 @@
-import { categoriesOf, categoryOfList } from "@shared/categories";
+import { categoryOfList } from "@shared/categories";
 import { router } from "expo-router";
 import { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
@@ -6,6 +6,7 @@ import { Group, Row } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { ListBadge } from "@/components/ListIcons";
 import { CloseButton, SheetBar } from "@/components/SheetHeader";
+import { useCategories } from "@/lib/categoryOps";
 import { listIndexOf } from "@/lib/people";
 import { useData } from "@/store/data";
 import { usePickers } from "@/store/pickers";
@@ -17,6 +18,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 export default function CategoriesSheet() {
   const colors = useColors();
   const lists = useData((s) => s.lists);
+  const categories = useCategories();
   const tasks = useData((s) => s.tasks);
   const schedules = useData((s) => s.schedules);
   const counts = useMemo(() => {
@@ -37,7 +39,7 @@ export default function CategoriesSheet() {
       <SheetBar title="Categories" left={<CloseButton onPress={() => router.back()} />} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Group footer="Both of you share these. A task's circle and a schedule's color are its category's (a schedule can have its own color). For whoever syncs Apple Reminders, each category a task is in is a list there too, with the same name and color, so Apple Calendar shows it that way.">
-          {categoriesOf(lists).map((l) => {
+          {categories.map((l) => {
             const c = counts.get(l.id);
             const what = [c?.tasks ? plural(c.tasks, "task") : null, c?.schedules ? plural(c.schedules, "schedule") : null].filter(Boolean).join(" · ");
             return (

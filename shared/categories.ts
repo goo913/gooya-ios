@@ -26,6 +26,18 @@ export function categoriesOf(lists: TaskList[]): TaskList[] {
   return lists.filter(isCategory).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
 }
 
+/**
+ * The categories in one person's order (`order`: their ids, as they dragged them; each person has their own). Ones not
+ * in it yet (made since, by either person) follow, in the order they were made.
+ */
+export function categoriesInOrder(lists: TaskList[], order: readonly string[] | undefined): TaskList[] {
+  const all = categoriesOf(lists)
+  if (!order?.length) return all
+  const rank = new Map(order.map((id, i) => [id, i]))
+  const at = (id: string) => rank.get(id) ?? Number.MAX_SAFE_INTEGER
+  return all.map((c, i) => ({ c, i })).sort((a, b) => at(a.c.id) - at(b.c.id) || a.i - b.i).map((x) => x.c)
+}
+
 /** The category a list is: itself for a GOOYA list, the category a Reminders list stands for, else null. */
 export function categoryOfList(listId: string | null | undefined, byId: ListIndex): TaskList | null {
   const l = listId ? byId.get(listId) : undefined

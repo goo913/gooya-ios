@@ -7,11 +7,14 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { DragPiece, MonthDragContext, MonthDragLayer, useMonthDrag, type MonthDragHost } from "@/components/MonthDrag";
 import { MONTH_SHORT, WEEKDAY_SHORT } from "@/lib/format";
 import { daysOf, useEventsByDay, useTasksByDay } from "@/lib/occurrences";
+import { toggleCompleted } from "@/lib/taskOps";
 import { useFilteredPeople } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { usePad } from "@/store/pad";
 import { usePrefs } from "@/store/prefs";
-import { DraftLine, LINE, MonthCapsule, MonthLine } from "./MacItems";
+import { NEW_MENU, itemMenuItems, newKindFrom, runItemMenu } from "./itemMenu";
+import { DraftLine, LINE, MonthCapsule, MonthLine, onRing } from "./MacItems";
+import { MacMenu } from "./MacMenu";
 import { useMac, type Anchor } from "./state";
 import { useMacColors, useWindowActive, type MacColors } from "./theme";
 
@@ -302,13 +305,22 @@ const WeekRow = memo(function WeekRow({ week, rowH, colW, month, today, byDay, e
       items.push(
         <DragPiece key={p.key} item={o} onTap={() => useMac.getState().selectItem(o.key)} onDoubleTap={() => onOpen(o, p.line, p.from, p.to, week)} style={[styles.piece, { top, left, width: right - left }]}>
           <MonthCapsule occ={o} z={z} selected={isSel} active={active} openStart={p.openStart} openEnd={p.openEnd} />
+          <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(o)} onPick={(id) => runItemMenu(o, id, () => onOpen(o, p.line, p.from, p.to, week))} />
         </DragPiece>,
       );
     } else {
       const capsule = o.kind === "event" && o.allDay;
       items.push(
-        <DragPiece key={p.key} item={o} onTap={() => useMac.getState().selectItem(o.key)} onDoubleTap={() => onOpen(o, p.line, p.from, p.from, week)} style={[styles.piece, { top, left: p.from * colW + 3, width: colW - 6 }]}>
+        <DragPiece
+          key={p.key}
+          item={o}
+          // A click on a task's ring completes it (or makes it not done again), as Apple Calendar's does; elsewhere it chooses it.
+          onTap={(x) => (o.kind === "task" && onRing(x, z) ? void toggleCompleted(o) : useMac.getState().selectItem(o.key))}
+          onDoubleTap={(x) => (o.kind === "task" && onRing(x, z) ? undefined : onOpen(o, p.line, p.from, p.from, week))}
+          style={[styles.piece, { top, left: p.from * colW + 3, width: colW - 6 }]}
+        >
           {capsule && o.kind === "event" ? <MonthCapsule occ={o} z={z} selected={isSel} active={active} /> : <MonthLine occ={o} z={z} selected={isSel} active={active} />}
+          <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(o)} onPick={(id) => runItemMenu(o, id, () => onOpen(o, p.line, p.from, p.from, week))} />
         </DragPiece>,
       );
     }
@@ -394,6 +406,8 @@ const DayCell = memo(function DayCell({ dateKey, left, width, height, weekend, i
             </Text>
           </View>
         </View>
+        {/* Right-click on a day: a new schedule or task on it, as Calendar's New Event and New Reminder. */}
+        <MacMenu style={StyleSheet.absoluteFill} items={NEW_MENU} onPick={(id) => newKindFrom(id) && onNew(dateKey)} />
       </View>
     </GestureDetector>
   );

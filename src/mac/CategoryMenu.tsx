@@ -1,12 +1,10 @@
-import { categoriesOf } from "@shared/categories";
 import { StyleSheet, View } from "react-native";
-import { useData } from "@/store/data";
+import { useCategories } from "@/lib/categoryOps";
 import { MacPopup } from "./MacPopup";
 
 /** A category picked from macOS's pop-up menu, its colour's dot beside it (Calendar's popover picks a list so). */
 export function CategoryMenu({ value, name, color, onPick, allowNone = false }: { value: string | null; name: string; color: string | null; onPick: (id: string | null) => void; allowNone?: boolean }) {
-  const lists = useData((s) => s.lists);
-  const categories = categoriesOf(lists);
+  const categories = useCategories();
   const options = [...(allowNone ? ["None"] : []), ...categories.map((c) => c.name)];
   return (
     <View style={styles.row}>

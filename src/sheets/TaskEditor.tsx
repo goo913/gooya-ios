@@ -7,8 +7,9 @@ import { isReminderList } from "@shared/reminders";
 import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey, zonedMs } from "@shared/time";
 import { router } from "expo-router";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ActionSheetIOS, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActionSheetIOS, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, SectionTitle, Switch, ValueRow, pickOption } from "@/components/Form";
+import { TaskRing } from "@/components/Chips";
 import { CategoryValue } from "@/components/ColorSwatches";
 import { ListBadge } from "@/components/ListIcons";
 import { Segmented } from "@/components/Segmented";
@@ -16,8 +17,8 @@ import { DetailsBar } from "@/components/SheetHeader";
 import { EARLY_REMINDERS, earlyReminderLabel } from "@/lib/alerts";
 import { WEEKDAY_SHORT, formatHM, formatLongDate, formatMediumDate } from "@/lib/format";
 import { dateFromHHmm, dateFromKey, hhmmFromDate, keyFromDate } from "@/lib/dates";
-import { listIndexOf, personInfo, useMe, usePerson } from "@/lib/people";
-import { applyTaskEdit, createTask, deleteTaskScope, type EditScope, type TaskFields } from "@/lib/taskOps";
+import { listIndexOf, personInfo, useMe, usePerson, useTaskColor } from "@/lib/people";
+import { applyTaskEdit, createTask, deleteTaskScope, setCompleted, type EditScope, type TaskFields } from "@/lib/taskOps";
 import { useToday, viewerTz } from "@/lib/useNow";
 import { clockOf, onClock, pickedOn, useEditZones } from "@/lib/zones";
 import { WhenRow, useWhenLayout } from "@/components/WhenRows";
@@ -152,7 +153,8 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     return category0 ? listForCategory(category0, owner0, lists) : defaultListFor(owner0, lists);
   });
   const [tags, setTags] = useState<string[]>(task?.tags ?? []);
-  const [flagged, setFlagged] = useState(!!task?.flagged);
+  // GOOYA has no flags: a task keeps the flag it came with from Reminders, nothing shows or changes it.
+  const flagged = !!task?.flagged;
   const [priority, setPriority] = useState<Priority>(task?.priority ?? 0);
   const [shared, setShared] = useState(!task?.private);
   const [busy, setBusy] = useState(false);
@@ -325,7 +327,10 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
             return (
               <>
                 <View style={styles.macGroup}>
-                  <View style={[styles.macCard, fill]}>{titleField}</View>
+                  <View style={[styles.macCard, fill, task && styles.macTitleRow]}>
+                    {task ? <DoneRing task={task} occ={occ ?? null} /> : null}
+                    {titleField}
+                  </View>
                 </View>
                 <View style={styles.macGroup}>
                   <View style={[styles.macCard, fill]}>
@@ -491,9 +496,6 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               {tags.map((t) => `#${t}`).join(" ")}
             </Text>
           </Row>
-          <Row icon="flag" iconColor={flagged ? colors.orange : undefined} label="Flag">
-            <Switch label="Flag" value={flagged} onChange={setFlagged} />
-          </Row>
           <ValueRow icon="exclamationmark" label="Priority" value={PRIORITIES.find((p) => p.value === priority)?.label ?? "None"} options={PRIORITIES.map((p) => p.label)} title="Priority" onPick={(_, i) => setPriority(PRIORITIES[i].value)} />
         </Group>
 
@@ -511,6 +513,28 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   );
 }
 
+/**
+ * The Mac popover's ring before a task's title, as Calendar's reminder has: a click completes it (this occurrence of a
+ * repeating one) or makes it not done again, at once, whatever else is being changed.
+ */
+function DoneRing({ task, occ }: { task: Task; occ: TaskOccurrence | null }) {
+  const color = useTaskColor(task);
+  const [done, setDone] = useState(occ ? occ.completed : !!task.completed);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={done ? "Mark as Incomplete" : "Mark as Completed"}
+      hitSlop={6}
+      onPress={() => {
+        setDone(!done);
+        void setCompleted(task, occ?.dateKey ?? null, !done);
+      }}
+    >
+      <TaskRing color={color} done={done} size={15} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   readOnly: { paddingHorizontal: 32, marginTop: -8, fontSize: 15, lineHeight: 20 },
   fill: { flex: 1 },
@@ -523,7 +547,8 @@ const styles = StyleSheet.create({
   popoverContent: { gap: 12, paddingTop: 10, paddingBottom: 12 },
   macGroup: { paddingHorizontal: 10 },
   macCard: { borderRadius: 10, overflow: "hidden" },
-  macTitle: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 13 },
+  macTitle: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, flex: 1 },
+  macTitleRow: { flexDirection: "row", alignItems: "center", paddingLeft: 10 },
   macNotes: { paddingHorizontal: 10, paddingVertical: 8, fontSize: 13, minHeight: 32 },
   macValue: { fontSize: 13, flexShrink: 1 },
   notes: { paddingHorizontal: 16, paddingBottom: 14, fontSize: 17, lineHeight: 22, minHeight: 60 },

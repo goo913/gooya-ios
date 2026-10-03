@@ -16,7 +16,7 @@ import { isMac } from "../../modules/gooya-mac";
  */
 
 /** The chips' sizes; on the Mac scaled by View → Zoom In and Out (what is on the calendar only). */
-function useChipMetrics(): Metrics {
+export function useChipMetrics(): Metrics {
   const m = useMetrics();
   const z = usePrefs((s) => s.itemZoom);
   if (!isMac || z === 1) return m;

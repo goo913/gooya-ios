@@ -30,7 +30,6 @@ export function OccurrenceRow({ occ, onOpen, showDate }: { occ: TaskOccurrence; 
           <Text numberOfLines={1} style={[styles.title, { color: occ.completed ? colors.label3 : colors.label }, occ.completed && styles.strike]}>
             {occ.task.priority ? <Text style={{ color: colors.orange }}>{BANGS[occ.task.priority]} </Text> : null}
             {occ.title}
-            {occ.task.flagged ? "  ⚑" : ""}
           </Text>
           <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
             {person.name}

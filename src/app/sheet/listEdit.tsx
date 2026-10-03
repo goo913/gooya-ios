@@ -8,7 +8,7 @@ import { DestructiveButton, Group, TextRow } from "@/components/Form";
 import { Icon } from "@/components/Icon";
 import { LIST_ICON_NAMES, ListBadge, listSymbol } from "@/components/ListIcons";
 import { DetailsBar } from "@/components/SheetHeader";
-import { categoryUse, deleteCategory, mergeCategory, saveCategory } from "@/lib/categoryOps";
+import { categoryUse, confirmDeleteCategory, mergeCategory, saveCategory } from "@/lib/categoryOps";
 import { useMe } from "@/lib/people";
 import { syncRemindersSoon } from "@/lib/reminders";
 import { useData } from "@/store/data";
@@ -64,18 +64,8 @@ export default function CategoryEditSheet() {
     ]);
   };
 
-  const askDelete = () => {
-    if (!category) return;
-    const use = categoryUse(category.id);
-    const tasksLine = use.tasks === 1 ? "Its task moves to Tasks. " : use.tasks ? `Its ${use.tasks} tasks move to Tasks. ` : "";
-    const schedulesLine = use.schedules === 1 ? "Its schedule stays, in no category. " : use.schedules ? `Its ${use.schedules} schedules stay, in no category. ` : "";
-    const remindersLine = inReminders.length ? "Its list stays in Apple Reminders (empty), to delete there if you like." : "";
-    Alert.alert(`Delete “${category.name}”?`, `${tasksLine}${schedulesLine}${remindersLine}`.trim() || undefined, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete Category", style: "destructive", onPress: () => void deleteCategory(category.id).then(() => router.back()) },
-    ]);
-  };
-
+  // An empty category goes at once; one with tasks or schedules asks first (they go with it).
+  const askDelete = () => category && confirmDeleteCategory(category, () => router.back());
   const whose = inReminders.map((l) => `${users[l.owner!]?.name || PEOPLE[l.owner!].name}’s`).join(" and ");
   const renamed = !!category && categoryKey(name) !== categoryKey(category.name);
   return (

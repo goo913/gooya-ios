@@ -103,7 +103,8 @@ function finish(drop: boolean) {
  * A task, schedule or event on a month: a tap opens it; touch and hold lifts it to drag to another day (when it can be
  * changed; on the Mac, press and drag). Dimmed where it was while it is dragged.
  */
-export function DragPiece({ item, style, onTap, onDoubleTap, children }: { item: Item; style: StyleProp<ViewStyle>; onTap: () => void; onDoubleTap?: () => void; children: ReactNode }) {
+/** `onTap` and `onDoubleTap` get where the click was, across the piece (the Mac completes a task clicked on its ring). */
+export function DragPiece({ item, style, onTap, onDoubleTap, children }: { item: Item; style: StyleProp<ViewStyle>; onTap: (x: number) => void; onDoubleTap?: (x: number) => void; children: ReactNode }) {
   const h = useContext(MonthDragContext);
   const lifted = useMonthDrag((s) => s.item?.key === item.key);
   const movable = !!h && canMove(item);
@@ -117,9 +118,21 @@ export function DragPiece({ item, style, onTap, onDoubleTap, children }: { item:
       .onFinalize((_, done) => {
         if (!done) finish(false);
       });
-    const tap = Gesture.Tap().runOnJS(true).onEnd(onTap);
+    const tap = Gesture.Tap()
+      .runOnJS(true)
+      .onEnd((e) => onTap(e.x));
     // The Mac: a click chooses it, a double-click opens it (both, as Apple Calendar's clicks do).
-    if (onDoubleTap) return Gesture.Exclusive(pan, Gesture.Simultaneous(tap, Gesture.Tap().numberOfTaps(2).runOnJS(true).onEnd(onDoubleTap)));
+    if (onDoubleTap)
+      return Gesture.Exclusive(
+        pan,
+        Gesture.Simultaneous(
+          tap,
+          Gesture.Tap()
+            .numberOfTaps(2)
+            .runOnJS(true)
+            .onEnd((e) => onDoubleTap(e.x)),
+        ),
+      );
     return Gesture.Exclusive(pan, tap);
   }, [h, item, movable, onTap, onDoubleTap]);
   return (

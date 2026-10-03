@@ -21,6 +21,9 @@ export function capsuleColors(color: string, colors: MacColors, dark: boolean): 
   return dark ? { fill: mix(color, colors.bg, 0.32), text: mix(color, "#ffffff", 0.55) } : { fill: mix(color, colors.bg, 0.25), text: mix(color, "#000000", 0.5) };
 }
 
+/** Whether a click `x` points along a month line is on its ring (with a little room around it). */
+export const onRing = (x: number, z: number): boolean => x < (4 + 10.5 + 5) * z;
+
 /** A task, or an event at a time: the ring or the bar, then the title. */
 export function MonthLine({ occ, z, selected, active }: { occ: Item; z: number; selected: boolean; active: boolean }) {
   const colors = useMacColors();

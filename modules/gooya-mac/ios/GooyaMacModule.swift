@@ -148,6 +148,11 @@ public class GooyaMacModule: Module {
       OnViewDidUpdateProps { (view: GooyaControlView) in view.update() }
     }
 
+    View(GooyaMenuView.self) {
+      Events("onPick")
+      Prop("items") { (view: GooyaMenuView, items: [[String: Any]]) in view.items = items }
+    }
+
     Function("windowActive") { () -> Bool in
       GooyaMacModule.windowActive
     }

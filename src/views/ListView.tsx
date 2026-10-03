@@ -132,7 +132,6 @@ export function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
         <Text numberOfLines={2} style={[styles.title, { color: occ.completed ? colors.label2 : colors.label }]}>
           {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
           {occ.title}
-          {occ.task.flagged ? <Text style={{ color: colors.orange }}> ⚑</Text> : null}
         </Text>
         <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
           {person.name}

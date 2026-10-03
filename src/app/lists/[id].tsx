@@ -1,5 +1,8 @@
-import type { DateKey, TaskOccurrence } from "@shared/model";
-import { parseKey } from "@shared/time";
+import { categoryOfList, isCategory } from "@shared/categories";
+import type { DateKey, EventOccurrence, Routine, TaskOccurrence } from "@shared/model";
+import { describeRule, eventDays, expandEvent } from "@shared/recurrence";
+import { scheduleAsEvent } from "@shared/schedules";
+import { addDaysKey, parseHHmm, parseKey, startOfDayMs } from "@shared/time";
 import { router, useLocalSearchParams } from "expo-router";
 import { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -10,98 +13,231 @@ import { GlassPill } from "@/components/Glass";
 import { Icon } from "@/components/Icon";
 import { OccurrenceRow } from "@/components/OccurrenceRow";
 import { patchSettings } from "@/lib/db";
-import { MONTH_SHORT, WEEKDAY_LONG } from "@/lib/format";
-import { SMART, useListOccurrences, type SmartList } from "@/lib/listOccurrences";
-import { listIndexOf, useFilteredPeople, useMe, usePerson } from "@/lib/people";
-import { useToday } from "@/lib/useNow";
-import { categoryOfList, isCategory } from "@shared/categories";
+import { MONTH_SHORT, WEEKDAY_LONG, formatHM, formatTime } from "@/lib/format";
+import { LIBRARY, SMART, useListOccurrences, type LibraryKind, type SmartList } from "@/lib/listOccurrences";
+import { listIndexOf, scheduleHex, useFilteredPeople, useMe, usePerson, usePersonColor } from "@/lib/people";
+import { useNow, useToday, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets } from "@/store/sheets";
-import { useColors } from "@/theme";
+import { useColors, useIsDark } from "@/theme";
 
-/** One list (smart or shared): rows grouped by day like Reminders' Scheduled view. */
+type Row = { kind: "task"; key: string; occ: TaskOccurrence } | { kind: "schedule"; key: string; occ: EventOccurrence };
+
+/**
+ * One list: a smart list (Today, Scheduled, All, Completed: tasks), a category (its tasks and its schedules), a
+ * Reminders list in no category (its tasks), or one of Library's (every task, every schedule, every routine). Tasks and
+ * schedules are grouped by day as Reminders' Scheduled view is; schedules that have ended come last, newest first.
+ */
 export default function ListScreen() {
   const colors = useColors();
+  const dark = useIsDark();
   const insets = useSafeAreaInsets();
   const { id: listId } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
   const people = useFilteredPeople();
   const today = useToday();
   const lists = useData((s) => s.lists);
+  const schedules = useData((s) => s.schedules);
+  const routines = useData((s) => s.routines);
+  const users = useData((s) => s.users);
   const occ = useListOccurrences(people, today);
   const openEditor = useSheets((s) => s.openEditor);
-  const showCompleted = usePerson(me).settings.showCompleted;
+  const openDetail = useSheets((s) => s.openDetail);
+  const settings = usePerson(me).settings;
+  const showCompleted = settings.showCompleted;
+  const showPast = settings.showPastSchedules;
   const smart = listId.startsWith("smart:") ? (listId.slice(6) as SmartList) : null;
-  const list = smart ? null : lists.find((l) => l.id === listId);
+  const library = listId.startsWith("kind:") ? (listId.slice(5) as LibraryKind) : null;
+  const list = smart || library ? null : lists.find((l) => l.id === listId);
+  const category = list && isCategory(list) ? list : null;
   const byId = listIndexOf(lists);
-  const rows = useMemo(() => {
-    let items = occ;
-    if (smart === "today") items = items.filter((o) => !o.completed && o.dueDate && o.dueDate <= today);
-    else if (smart === "scheduled") items = items.filter((o) => !!o.dueDate);
-    else if (smart === "flagged") items = items.filter((o) => o.task.flagged);
-    else if (smart === "completed") items = items.filter((o) => o.completed);
-    // A category: its tasks, through their owners' Reminders lists too; a Reminders list in no category: its own.
-    else if (smart !== "all") items = items.filter((o) => o.task.listId === listId || categoryOfList(o.task.listId, byId)?.id === listId);
-    if (smart !== "completed" && !showCompleted) items = items.filter((o) => !o.completed);
-    items = [...items].sort((a, b) => ((a.dueDate || "9999") < (b.dueDate || "9999") ? -1 : (a.dueDate || "9999") > (b.dueDate || "9999") ? 1 : a.start - b.start));
-    const groups = new Map<string, TaskOccurrence[]>();
-    for (const o of items) {
-      const k = o.dueDate || "No Date";
-      let g = groups.get(k);
-      if (!g) groups.set(k, (g = []));
-      g.push(o);
+  // A schedule has ended once its end is past (this, kept fresh by the minute).
+  const now = useNow(60_000);
+
+  const { groups, past } = useMemo(() => {
+    const rows: { day: string; row: Row; start: number }[] = [];
+    // Tasks: a smart list's, a category's or Reminders list's, or all of them.
+    if (library !== "schedules" && library !== "routines") {
+      let items = occ;
+      if (smart === "today") items = items.filter((o) => !o.completed && o.dueDate && o.dueDate <= today);
+      else if (smart === "scheduled") items = items.filter((o) => !!o.dueDate);
+      else if (smart === "completed") items = items.filter((o) => o.completed);
+      // A category: its tasks, through their owners' Reminders lists too; a Reminders list in no category: its own.
+      else if (!smart && !library) items = items.filter((o) => o.task.listId === listId || categoryOfList(o.task.listId, byId)?.id === listId);
+      if (smart !== "completed" && !showCompleted) items = items.filter((o) => !o.completed);
+      for (const o of items) rows.push({ day: o.dueDate || "No Date", row: { kind: "task", key: o.key, occ: o }, start: o.start });
     }
-    return groups;
-  }, [occ, smart, listId, byId, showCompleted, today]);
-  const title = smart ? (SMART.find((s) => s.key === smart)?.label ?? "List") : (list?.name ?? "List");
-  const color = smart ? (SMART.find((s) => s.key === smart)?.color ?? "#0091ff") : (list?.color ?? "#0091ff");
-  const total = Array.from(rows.values()).reduce((n, g) => n + g.length, 0);
+    // Schedules: a category's, or all of them. Each once: a repeating one at its next day (or its last, once it has
+    // ended).
+    const pastRows: { day: string; row: Row; start: number }[] = [];
+    if (category || library === "schedules") {
+      const from = startOfDayMs(addDaysKey(today, -400), viewerTz);
+      const to = startOfDayMs(addDaysKey(today, 800), viewerTz);
+      for (const x of schedules) {
+        if (!people.includes(x.owner) || (category && x.categoryId !== category.id)) continue;
+        const all = expandEvent(scheduleAsEvent(x, scheduleHex(x, users, lists, dark)), from, to);
+        const shown = x.rrule ? [all.find((o) => Math.max(o.end, o.start) >= now) ?? all[all.length - 1]].filter(Boolean) : all;
+        for (const o of shown) {
+          const row = { day: eventDays(o, viewerTz)[0], row: { kind: "schedule" as const, key: o.key, occ: o }, start: o.start };
+          if (Math.max(o.end, o.start) < now) pastRows.push(row);
+          else rows.push(row);
+        }
+      }
+    }
+    const byDay = (list: typeof rows, newestFirst: boolean) => {
+      const sorted = [...list].sort((a, b) => {
+        const da = a.day === "No Date" ? "9999" : a.day;
+        const db = b.day === "No Date" ? "9999" : b.day;
+        if (da !== db) return (da < db ? -1 : 1) * (newestFirst ? -1 : 1);
+        return a.start - b.start;
+      });
+      const map = new Map<string, Row[]>();
+      for (const { day, row } of sorted) {
+        let g = map.get(day);
+        if (!g) map.set(day, (g = []));
+        g.push(row);
+      }
+      return map;
+    };
+    return { groups: byDay(rows, false), past: showPast ? byDay(pastRows, true) : new Map<string, Row[]>() };
+  }, [occ, smart, library, listId, byId, showCompleted, showPast, today, category, schedules, people, users, lists, dark, now]);
+
+  const routineRows = useMemo(
+    () => (library === "routines" ? routines.filter((r) => people.includes(r.owner)).sort((a, b) => people.indexOf(a.owner) - people.indexOf(b.owner) || a.startTime.localeCompare(b.startTime)) : []),
+    [library, routines, people],
+  );
+
+  const meta = smart ? SMART.find((s) => s.key === smart) : library ? LIBRARY.find((l) => l.key === library) : null;
+  const title = meta?.label ?? list?.name ?? "List";
+  const color = meta?.color ?? list?.color ?? "#0091ff";
+  const total = library === "routines" ? routineRows.length : [...groups.values(), ...past.values()].reduce((n, g) => n + g.length, 0);
+  const empty = library === "routines" ? "No Routines" : library === "schedules" ? "No Schedules" : category ? "No Tasks or Schedules" : "No Tasks";
+  const newKind = library === "schedules" ? "schedule" : library === "routines" ? "routine" : "task";
+  const newLabel = library === "schedules" ? "New Schedule" : library === "routines" ? "New Routine" : "New Task";
   const openTask = (o: TaskOccurrence) => {
     openEditor({ kind: "task", task: o.task, occ: o.dateKey ? o : undefined });
     router.push("/sheet/edit");
   };
-  const newTask = () => {
-    openEditor({ kind: "task", initialOwner: me, initialListId: list?.id, initialDate: smart === "today" ? today : undefined });
+  const openSchedule = (o: EventOccurrence) => {
+    openDetail({ kind: "event", eventId: o.event.id, dateKey: o.dateKey });
+    router.push("/sheet/detail");
+  };
+  const openRoutine = (r: Routine) => {
+    openDetail({ kind: "routine", routineId: r.id, dateKey: today >= r.startDate ? today : r.startDate });
+    router.push("/sheet/detail");
+  };
+  // A new item here: in this category (task or schedule), or of this Library's kind.
+  const newItem = () => {
+    openEditor({ kind: newKind, initialOwner: me, initialListId: list?.id, initialDate: smart === "today" ? today : undefined });
     router.push("/sheet/edit");
   };
   const more = () =>
     // A Reminders list in no category is named and coloured in Reminders (a change here would come back as it was).
-    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(list && isCategory(list) ? ["Edit Category"] : [])], null, (_, i) => {
+    pickOption([showCompleted ? "Hide Completed" : "Show Completed", ...(category ? ["Edit Category"] : [])], null, (_, i) => {
       if (i === 0) void patchSettings(me, { showCompleted: !showCompleted });
-      else if (list) router.push({ pathname: "/sheet/listEdit", params: { id: list.id } });
+      else if (category) router.push({ pathname: "/sheet/listEdit", params: { id: category.id } });
     });
+  const renderRow = (row: Row) =>
+    row.kind === "task" ? <OccurrenceRow key={row.key} occ={row.occ} onOpen={() => openTask(row.occ)} /> : <ScheduleRow key={row.key} occ={row.occ} onOpen={() => openSchedule(row.occ)} />;
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg }]}>
       <ScrollView contentContainerStyle={{ paddingTop: insets.top + 58, paddingBottom: insets.bottom + 90 }} showsVerticalScrollIndicator={false}>
         <View style={styles.titleRow}>
           <Text style={[styles.title, { color }]}>{title}</Text>
-          <Pressable accessibilityLabel="More" onPress={more} style={[styles.more, { backgroundColor: colors.fill3 }]}>
-            <Icon name="ellipsis" size={18} color={colors.blue} weight="semibold" />
-          </Pressable>
+          {library === "routines" || library === "schedules" ? null : (
+            <Pressable accessibilityLabel="More" onPress={more} style={[styles.more, { backgroundColor: colors.fill3 }]}>
+              <Icon name="ellipsis" size={18} color={colors.blue} weight="semibold" />
+            </Pressable>
+          )}
         </View>
-        {total === 0 ? <Text style={[styles.empty, { color: colors.label2 }]}>No Tasks</Text> : null}
-        {Array.from(rows.entries()).map(([day, items]) => (
-          <View key={day}>
-            <DayHeader day={day} today={today} />
-            {items.map((o) => (
-              <OccurrenceRow key={o.key} occ={o} onOpen={() => openTask(o)} />
+        {total === 0 ? <Text style={[styles.empty, { color: colors.label2 }]}>{empty}</Text> : null}
+        {library === "routines"
+          ? routineRows.map((r) => <RoutineRow key={r.id} routine={r} onOpen={() => openRoutine(r)} />)
+          : Array.from(groups.entries()).map(([day, items]) => (
+              <View key={day}>
+                <DayHeader day={day} today={today} />
+                {items.map(renderRow)}
+              </View>
             ))}
-          </View>
-        ))}
+        {past.size ? (
+          <>
+            <Text style={[styles.section, { color: colors.label2 }]}>Past Schedules</Text>
+            {Array.from(past.entries()).map(([day, items]) => (
+              <View key={`past${day}`}>
+                <DayHeader day={day} today={today} />
+                {items.map(renderRow)}
+              </View>
+            ))}
+          </>
+        ) : null}
       </ScrollView>
-      <TopChrome back="Lists" onBack={() => router.back()} onAdd={newTask} onSearch={() => router.push("/search")} />
+      <TopChrome back="Lists" onBack={() => router.back()} onAdd={newItem} onSearch={() => router.push("/search")} />
       <BottomChrome
         showToday={false}
         left={
-          <GlassPill label="New Task" onPress={newTask} style={{ paddingHorizontal: 18 }}>
+          <GlassPill label={newLabel} onPress={newItem} style={{ paddingHorizontal: 18 }}>
             <Icon name="plus" size={20} color={colors.blue} weight="semibold" />
-            <Text style={[styles.newTask, { color: colors.blue }]}>New Task</Text>
+            <Text style={[styles.newTask, { color: colors.blue }]}>{newLabel}</Text>
           </GlassPill>
         }
         onSettings={() => router.push("/settings")}
         onCalendars={() => router.push("/calendars")}
       />
     </View>
+  );
+}
+
+/** A schedule in a list: its time (or all-day), its colour, its title, whose it is and where. */
+function ScheduleRow({ occ, onOpen }: { occ: EventOccurrence; onOpen: () => void }) {
+  const colors = useColors();
+  const person = usePerson(occ.event.owner);
+  const category = useData((s) => {
+    const id = s.schedules.find((x) => x.id === occ.event.id)?.categoryId;
+    return id ? s.lists.find((l) => l.id === id) : undefined;
+  });
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={onOpen} style={[styles.row, { borderBottomColor: colors.separator }]}>
+      <View style={styles.time}>
+        <Text style={[styles.timeText, { color: occ.allDay ? colors.label2 : colors.label }]}>{occ.allDay ? "all-day" : formatTime(occ.start, viewerTz)}</Text>
+        {!occ.allDay && occ.end > occ.start ? <Text style={[styles.timeEnd, { color: colors.label2 }]}>{formatTime(occ.end, viewerTz)}</Text> : null}
+      </View>
+      <View style={[styles.bar, { backgroundColor: occ.event.color || colors.blue }]} />
+      <View style={styles.text}>
+        <Text numberOfLines={1} style={[styles.rowTitle, { color: colors.label }]}>
+          {occ.title}
+        </Text>
+        <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
+          {person.name}
+          {category ? ` · ${category.name}` : ""}
+          {occ.event.location ? ` · ${occ.event.location}` : ""}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+/** A routine: its symbol, whose colour, its title, then whose, which days and its hours. */
+function RoutineRow({ routine, onOpen }: { routine: Routine; onOpen: () => void }) {
+  const colors = useColors();
+  const person = usePerson(routine.owner);
+  const color = usePersonColor(routine.owner);
+  const s = parseHHmm(routine.startTime);
+  const e = parseHHmm(routine.endTime);
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={routine.title} onPress={onOpen} style={[styles.row, { borderBottomColor: colors.separator }]}>
+      <View style={styles.time}>
+        <Text style={styles.icon}>{routine.icon}</Text>
+      </View>
+      <View style={[styles.bar, { backgroundColor: color }]} />
+      <View style={styles.text}>
+        <Text numberOfLines={1} style={[styles.rowTitle, { color: colors.label }]}>
+          {routine.title}
+        </Text>
+        <Text numberOfLines={1} style={[styles.sub, { color: colors.label2 }]}>
+          {person.name} · {describeRule(routine.rrule)} · {formatHM(s.h, s.min)} – {formatHM(e.h, e.min)}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -130,8 +266,18 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, fontWeight: "700", lineHeight: 41 },
   more: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   empty: { paddingHorizontal: 16, paddingTop: 64, textAlign: "center", fontSize: 17 },
+  section: { paddingHorizontal: 16, paddingTop: 28, fontSize: 15, fontWeight: "600" },
   dayHead: { flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 },
   dayName: { fontSize: 17, fontWeight: "600" },
   dayDate: { fontSize: 15 },
   newTask: { fontSize: 19, fontWeight: "600" },
+  row: { marginLeft: 16, paddingRight: 16, paddingVertical: 10, flexDirection: "row", alignItems: "flex-start", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  time: { width: 74, alignItems: "flex-end", paddingTop: 1 },
+  timeText: { fontSize: 15, lineHeight: 19, fontVariant: ["tabular-nums"] },
+  timeEnd: { fontSize: 13, lineHeight: 17, fontVariant: ["tabular-nums"] },
+  icon: { fontSize: 22, lineHeight: 26 },
+  bar: { width: 4, height: 34, borderRadius: 2, marginTop: 2 },
+  text: { flex: 1, minWidth: 0 },
+  rowTitle: { fontSize: 17, lineHeight: 22 },
+  sub: { fontSize: 15, lineHeight: 19 },
 });

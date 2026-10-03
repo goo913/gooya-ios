@@ -61,6 +61,8 @@ interface Props {
   /** Minutes since midnight for a new schedule's start. */
   initialMinutes?: number;
   initialTitle?: string;
+  /** A new schedule's category (made from a category's list). */
+  initialCategoryId?: string;
   topBar?: ReactNode;
   onClose: () => void;
   host?: EditorHost;
@@ -83,7 +85,7 @@ function defaultStart(date: DateKey, minutes: number | undefined, today: DateKey
  * change there within seconds and takes their version back: functions/src/integrations pushGoogleEvent /
  * pushAppleEvent). A schedule of GOOYA's may have no end time ("lunch at noon").
  */
-export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialMinutes, initialTitle, topBar, onClose, host }: Props) {
+export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialMinutes, initialTitle, initialCategoryId, topBar, onClose, host }: Props) {
   const popover = host?.variant === "mac";
   const colors = useColors();
   const dark = useIsDark();
@@ -112,7 +114,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const [owner, setOwner] = useState<PersonKey>(event?.owner ?? initialOwner ?? me);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(event?.rrule ?? null));
   const [calendarKey, setCalendarKey] = useState(event ? (event.source === GOOYA ? GOOYA : `${event.accountId}/${event.calendarId}`) : GOOYA);
-  const [categoryId, setCategoryId] = useState<string | null>(stored?.categoryId ?? null);
+  const [categoryId, setCategoryId] = useState<string | null>(stored ? (stored.categoryId ?? null) : (initialCategoryId ?? null));
   const [ownColor, setOwnColor] = useState<string | null>(stored?.color ?? null);
   const [shared, setShared] = useState(!stored?.private);
   const [busy, setBusy] = useState(false);

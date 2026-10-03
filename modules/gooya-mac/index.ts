@@ -23,20 +23,31 @@ export interface SidebarRow {
   icon?: string;
   iconColor?: string;
   count?: string;
+  /** "category": dragged into an order; right-click edits, recolours or deletes it. */
+  menu?: "category";
+  deletable?: boolean;
 }
 
 export interface SidebarSection {
   id: string;
   title: string;
+  /** A + by its heading (Categories: a new one). */
+  addable?: boolean;
   rows: SidebarRow[];
 }
 
-/** From the sidebar: a tick changed, a row chosen, a day chosen in its month, or the sidebar shown or hidden. */
+/**
+ * From the sidebar: a tick changed, a row chosen, a day chosen in its month, the sidebar shown or hidden, + by a heading,
+ * the categories dragged into a new order (their ids), or a category's menu (edit, a colour, delete).
+ */
 export type SidebarEvent =
   | { type: "toggle"; id: string }
   | { type: "select"; id: string }
   | { type: "date"; date: string }
-  | { type: "shown"; shown: boolean };
+  | { type: "shown"; shown: boolean }
+  | { type: "add"; id: string }
+  | { type: "order"; ids: string[] }
+  | { type: "menu"; id: string; action: "edit" | "color" | "delete"; color?: string };
 
 export interface AgendaRow {
   /** Given back when the row is chosen. */
@@ -181,6 +192,25 @@ export function setSettingsSize(tab: SettingsTab, width: number, height: number)
 /** GOOYA's window in front of Settings (a button in Settings opened something there). */
 export function showMainWindow(): void {
   if (isMac) native?.showMainWindow();
+}
+
+/** One item of a right-click menu: a command, or a group of them (a submenu, or `inline`: a section between lines). */
+export type MacMenuItem =
+  | { id: string; title: string; symbol?: string; destructive?: boolean; disabled?: boolean; checked?: boolean }
+  | { title?: string; symbol?: string; inline?: boolean; children: MacMenuItem[] };
+
+export interface MacMenuViewProps extends ViewProps {
+  items: MacMenuItem[];
+  /** The command chosen, and where the right-click was: in the view (x, y) and in the window (wx, wy), in points. */
+  onPick?: (e: { nativeEvent: { id: string; x: number; y: number; wx: number; wy: number } }) => void;
+}
+
+let menuView: ComponentType<MacMenuViewProps> | null = null;
+
+/** The view that gives what it wraps a right-click menu (only on the Mac: ios/GooyaMenuView.swift). */
+export function macMenuView(): ComponentType<MacMenuViewProps> {
+  menuView ??= requireNativeViewManager<MacMenuViewProps>("GooyaMac", "GooyaMenuView");
+  return menuView;
 }
 
 let controlView: ComponentType<MacControlProps> | null = null;

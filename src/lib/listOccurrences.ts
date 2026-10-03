@@ -5,13 +5,20 @@ import { useMemo } from "react";
 import { useData } from "@/store/data";
 import { viewerTz } from "./useNow";
 
-export type SmartList = "today" | "scheduled" | "all" | "flagged" | "completed";
+export type SmartList = "today" | "scheduled" | "all" | "completed";
 export const SMART: { key: SmartList; label: string; color: string; icon: string }[] = [
   { key: "today", label: "Today", color: "#0091ff", icon: "calendar" },
   { key: "scheduled", label: "Scheduled", color: "#ff4245", icon: "calendar" },
   { key: "all", label: "All", color: "#8e8e93", icon: "tray.fill" },
-  { key: "flagged", label: "Flagged", color: "#ff9230", icon: "flag.fill" },
   { key: "completed", label: "Completed", color: "#8e8e93", icon: "checkmark.circle.fill" },
+];
+
+/** GOOYA's three kinds of item, each as a list of all of them (the Mac's sidebar, Library): list ids "kind:tasks" … */
+export type LibraryKind = "tasks" | "schedules" | "routines";
+export const LIBRARY: { key: LibraryKind; label: string; color: string; icon: string }[] = [
+  { key: "tasks", label: "Tasks", color: "#0091ff", icon: "checklist" },
+  { key: "schedules", label: "Schedules", color: "#ff4245", icon: "calendar" },
+  { key: "routines", label: "Routines", color: "#af52de", icon: "repeat" },
 ];
 
 /** All occurrences for the smart/user lists: undated tasks appear once (dateKey ''). */

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { TaskList } from './model'
-import { categoriesOf, categoryOfList, defaultListFor, indexLists, listForCategory, sameNamed, scheduleColor, taskColor } from './categories'
+import { categoriesInOrder, categoriesOf, categoryOfList, defaultListFor, indexLists, listForCategory, sameNamed, scheduleColor, taskColor } from './categories'
 
 const list = (id: string, extra: Partial<TaskList> = {}): TaskList => ({ id, name: id, color: '#8e8e93', icon: 'list', order: 1, createdBy: 'gooya', createdAt: 0, updatedAt: 0, ...extra })
 const LISTS = [
@@ -17,6 +17,13 @@ const byId = indexLists(LISTS)
 
 test('categories are GOOYA’s own lists, in their order', () => {
   assert.deepEqual(categoriesOf(LISTS).map((c) => c.id), ['tasks', 'school', 'bills'])
+})
+
+test('each person orders the categories their own way; ones made since follow in their order', () => {
+  assert.deepEqual(categoriesInOrder(LISTS, undefined).map((c) => c.id), ['tasks', 'school', 'bills'])
+  assert.deepEqual(categoriesInOrder(LISTS, ['bills', 'tasks']).map((c) => c.id), ['bills', 'tasks', 'school'])
+  // A category gone since is left out; Reminders lists never are categories.
+  assert.deepEqual(categoriesInOrder(LISTS, ['gone', 'school', 'rl_canvas']).map((c) => c.id), ['school', 'tasks', 'bills'])
 })
 
 test('a task’s category and colour: its list, or the category its Reminders list stands for', () => {

@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { EventBar, EventChip, TaskChip, TaskRing } from "@/components/Chips";
+import { EventBar, EventChip, TaskChip, TaskRing, useChipMetrics } from "@/components/Chips";
 import { Icon } from "@/components/Icon";
 import { layoutRow } from "@shared/monthRows";
 import { mix, readableTint, tintText } from "@/lib/color";
@@ -16,7 +16,7 @@ import { useMetrics, type Metrics } from "@/lib/metrics";
 import { daysOf, useEventOccurrences, useRoutineOccurrences, useTaskOccurrences } from "@/lib/occurrences";
 import { colorHex, useMe, usePerson, useTaskColor, type PersonInfo } from "@/lib/people";
 import { deleteRoutineDay, endRoutineBefore } from "@/lib/routineOps";
-import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
+import { deleteTaskScope, setCompleted, toggleCompleted } from "@/lib/taskOps";
 import { canMove, chooseFrom, moveEventByDays, moveEventTo, moveTaskByDays, moveTaskTo } from "@/lib/moves";
 import { useNow, useToday, viewerTz } from "@/lib/useNow";
 import { deleteRoutine } from "@/lib/db";
@@ -25,6 +25,8 @@ import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark, type Colors } from "@/theme";
 import { liftPan } from "@/lib/gestures";
 import { useMacColors, type MacColors } from "@/mac/theme";
+import { NEW_MENU, itemMenuItems, newKindFrom, runItemMenu } from "@/mac/itemMenu";
+import { MacMenu, type MenuPoint } from "@/mac/MacMenu";
 import { useMac, type Anchor } from "@/mac/state";
 import { beginDrag, endDrag } from "@/lib/dragCancel";
 import { RULE } from "@/lib/layout";
@@ -76,6 +78,8 @@ interface MacTimeline {
 
 /** Where a tapped view is in the window, from the tap's place in it and in the window. */
 const anchorOf = (e: { x: number; y: number; absoluteX: number; absoluteY: number }, w: number, h: number): Anchor => ({ x: e.absoluteX - e.x, y: e.absoluteY - e.y, w, h });
+/** The same for a right-click menu's pick: the view it was in, in the window. */
+const menuAnchor = (at: MenuPoint, w: number, h: number): Anchor => ({ x: at.wx - at.x, y: at.wy - at.y, w, h });
 
 /** Apple's working day on the Mac (Settings → Day starts at 8 AM, ends at 6 PM): its hour lines are darker. */
 const WORK_START = 8;
@@ -820,6 +824,18 @@ const SubColumn = memo(function SubColumn({ date, person, info, data, hourH, met
   return (
     <GestureDetector gesture={gesture}>
       <View style={[styles.subCol, divider && { borderLeftWidth: mac ? 1 : StyleSheet.hairlineWidth, borderLeftColor: colors.separator }]}>
+        {mac ? (
+          // Right-click on an empty time (under what is on it): a new schedule or task at its half hour.
+          <MacMenu
+            style={StyleSheet.absoluteFill}
+            items={NEW_MENU}
+            onPick={(id, at) => {
+              if (!newKindFrom(id)) return;
+              const minutes = Math.min(23 * 60 + 30, Math.floor(((at.y / hourH) * 60) / 30) * 30);
+              actions.newAt?.(date, minutes, { x: at.wx - at.x, y: at.wy - at.y + (minutes / 60) * hourH, w: subW, h: Math.max(22, hourH / 2) }, person);
+            }}
+          />
+        ) : null}
         {data.routines.map((seg) => (
           <RoutineBand key={seg.key} seg={seg} hourH={hourH} metrics={metrics} intensity={intensity} dark={dark} colors={colors} onMenu={onRoutineMenu} onTap={actions.openRoutine} mac={mac} onSelect={actions.select} selected={seg.occ.key === selectedKey} subW={subW} />
         ))}
@@ -889,7 +905,10 @@ const RoutineBand = memo(function RoutineBand({ seg, hourH, metrics, intensity, 
     );
     return (
       <GestureDetector gesture={gesture}>
-        <View style={style}>{title}</View>
+        <View style={style}>
+          {title}
+          <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(seg.occ)} onPick={(id, at) => runItemMenu(seg.occ, id, () => onTap(seg.occ, menuAnchor(at, subW / seg.lanes, height)))} />
+        </View>
       </GestureDetector>
     );
   }
@@ -1053,6 +1072,7 @@ const EventBlock = memo(function EventBlock({ seg, hourH, metrics, dark, colors,
             </Text>
           ) : null}
         </View>
+        {mac ? <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(seg.occ)} onPick={(id, at) => runItemMenu(seg.occ, id, () => onTap(seg.occ, menuAnchor(at, subW / seg.lanes, height)))} /> : null}
       </View>
     </GestureDetector>
     </>
@@ -1192,11 +1212,12 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, dark, colors, dat
           }),
       );
     }
-    // The Mac: a click chooses it, a double-click opens it.
+    // The Mac: a click chooses it (on its ring, completes it or makes it not done again), a double-click opens it.
     const single = Gesture.Tap()
       .runOnJS(true)
       .onEnd((e) => {
         if (e.x > ringZone) onSelect?.(o);
+        else void toggleCompleted(o);
       });
     const double = Gesture.Tap()
       .numberOfTaps(2)
@@ -1236,13 +1257,15 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, dark, colors, dat
           lifted && styles.pillLifted,
         ]}
       >
-        <Pressable accessibilityLabel={o.completed ? "Mark incomplete" : "Mark complete"} onPress={() => void setCompleted(o.task, o.dateKey, !o.completed)} hitSlop={8} style={[styles.check, { height: Math.min(height, ring + 8) }]}>
+        {/* On the Mac its click is the pill's (above): this button would take it only some of the time. */}
+        <Pressable accessibilityLabel={o.completed ? "Mark incomplete" : "Mark complete"} disabled={!!mac} onPress={() => void setCompleted(o.task, o.dateKey, !o.completed)} hitSlop={8} style={[styles.check, { height: Math.min(height, ring + 8) }]}>
           <TaskRing color={mac && selected ? "#ffffff" : ringColor} done={o.completed} size={ring} />
         </Pressable>
         <Text allowFontScaling={false} numberOfLines={1} style={[styles.pillText, { color: mac && selected ? "#ffffff" : o.completed ? colors.label2 : colors.label, fontSize: mac ? 12 * mac.z : metrics.eventTitle, lineHeight: Math.min(height, ring + 8) }]}>
           {bangs ? <Text style={{ color: colors.orange }}>{bangs} </Text> : null}
           {o.title}
         </Text>
+        {mac ? <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(o)} onPick={(id, at) => runItemMenu(o, id, () => onTap(o, menuAnchor(at, subW / seg.lanes, height)))} /> : null}
       </View>
     </GestureDetector>
     </>
@@ -1255,6 +1278,7 @@ const TaskPill = memo(function TaskPill({ seg, hourH, metrics, dark, colors, dat
  */
 function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShift, onOpen, bar, mac = false, onSelect, selected = false }: { occ: TaskOccurrence | EventOccurrence; date: DateKey; dateIndex: number; days: number; dateW: number; draggable: boolean; edges: { current: { left: number; right: number } }; onShift: (days: number) => void; onOpen: (anchor?: Anchor) => void; bar?: { openStart: boolean; openEnd: boolean }; mac?: boolean; onSelect?: (occ: TaskOccurrence | EventOccurrence | null) => void; selected?: boolean }) {
   const colors = useColors();
+  const chipRing = useChipMetrics().chipRing;
   const [dx, setDx] = useState(0);
   const [to, setTo] = useState(0);
   const [lifted, setLifted] = useState(false);
@@ -1310,26 +1334,30 @@ function AllDayChip({ occ, date, dateIndex, days, dateW, draggable, edges, onShi
         endDrag(cancel);
       });
     if (mac) {
-      // The Mac: a click chooses it, a double-click opens it.
+      // The Mac: a click chooses it (a task's ring: completes it or makes it not done again), a double-click opens it.
+      const ring = (x: number) => occ.kind === "task" && x < 2.3 + chipRing + 5;
       const single = Gesture.Tap()
         .runOnJS(true)
-        .onEnd(() => onSelect?.(occ));
+        .onEnd((e) => (occ.kind === "task" && ring(e.x) ? void toggleCompleted(occ) : onSelect?.(occ)));
       const double = Gesture.Tap()
         .numberOfTaps(2)
         .runOnJS(true)
-        .onEnd((e) => onOpen(anchorOf(e, dateW, 18)));
+        .onEnd((e) => {
+          if (!ring(e.x)) onOpen(anchorOf(e, dateW, 18));
+        });
       return Gesture.Exclusive(pan, Gesture.Simultaneous(single, double));
     }
     const tap = Gesture.Tap()
       .runOnJS(true)
       .onEnd(() => onOpen());
     return Gesture.Exclusive(pan, tap);
-  }, [movable, edge, dateIndex, days, dateW, occ, onShift, onOpen, mac, onSelect]);
+  }, [movable, edge, dateIndex, days, dateW, occ, onShift, onOpen, mac, onSelect, chipRing]);
   /* eslint-enable react-hooks/refs */
   return (
     <GestureDetector gesture={gesture}>
       <View accessibilityRole="button" accessibilityLabel={occ.title} style={[lifted && styles.chipLifted, selected && styles.chipSelected, { transform: [{ translateX: dx }, { scale: lifted ? 1.05 : 1 }] }]}>
         {bar && occ.kind === "event" ? <EventBar occ={occ} openStart={bar.openStart} openEnd={bar.openEnd} /> : occ.kind === "event" ? <EventChip occ={occ} /> : <TaskChip occ={occ} />}
+        {mac ? <MacMenu style={StyleSheet.absoluteFill} items={itemMenuItems(occ)} onPick={(id, at) => runItemMenu(occ, id, () => onOpen(menuAnchor(at, dateW, 18)))} /> : null}
         {lifted && (to || edge.shift) ? (
           // Where it would go, on it (the strip over the timeline has no room around it).
           <View pointerEvents="none" style={styles.shiftBadge}>

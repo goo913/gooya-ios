@@ -13,6 +13,10 @@ struct GooyaSidebarRow: Hashable {
   let icon: String?
   let iconColor: String?
   let count: String?
+  /// "category": a category's row (dragged to reorder; right-click: edit, colour, delete).
+  let menu: String?
+  /// It can be deleted (every category but Tasks).
+  let deletable: Bool
 
   init(_ d: [String: Any]) {
     id = d["id"] as? String ?? ""
@@ -22,59 +26,87 @@ struct GooyaSidebarRow: Hashable {
     icon = d["icon"] as? String
     iconColor = d["iconColor"] as? String
     count = d["count"] as? String
+    menu = d["menu"] as? String
+    deletable = d["deletable"] as? Bool ?? false
   }
 }
 
-struct GooyaSidebarSection: Hashable {
+/// A section's heading: it folds its rows away and back (macOS's sidebar disclosure); Categories' has a + too.
+struct GooyaSidebarHeader: Hashable {
   let id: String
   let title: String
+  /// A + at its right, to add one (a category).
+  let addable: Bool
+}
+
+struct GooyaSidebarSection {
+  let header: GooyaSidebarHeader
   let rows: [GooyaSidebarRow]
 
   init(_ d: [String: Any]) {
-    id = d["id"] as? String ?? ""
-    title = d["title"] as? String ?? ""
+    header = GooyaSidebarHeader(id: d["id"] as? String ?? "", title: d["title"] as? String ?? "", addable: d["addable"] as? Bool ?? false)
     rows = (d["rows"] as? [[String: Any]] ?? []).map(GooyaSidebarRow.init)
   }
 }
 
+enum GooyaSidebarItem: Hashable {
+  case header(GooyaSidebarHeader)
+  case row(GooyaSidebarRow)
+}
+
 /// The sidebar's column, after Apple Calendar's: its calendar list (a heading per account, each calendar with a tick in
 /// its colour), then the month at the bottom. A tick shows or hides what it stands for; choosing a link opens it; a
-/// day in the month shows that day. Each sends `onSidebar` to JavaScript.
-final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegate {
+/// day in the month shows that day. A heading folds its section (remembered on this Mac); the categories can be dragged
+/// into each person's own order, and right-clicked to edit, recolour or delete one. Each sends `onSidebar` to JavaScript.
+final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegate, UICollectionViewDragDelegate, UICollectionViewDropDelegate {
   private var sections: [GooyaSidebarSection] = []
   private var collection: UICollectionView!
-  private var source: UICollectionViewDiffableDataSource<String, GooyaSidebarRow>!
+  private var source: UICollectionViewDiffableDataSource<String, GooyaSidebarItem>!
   let month = GooyaMiniMonth()
+  private static let foldedKey = "GooyaSidebarFolded"
+  /// The sections folded away (their ids), as left.
+  private var folded = Set(UserDefaults.standard.stringArray(forKey: foldedKey) ?? [])
+  /// Apple's colours for a list, as shared/categories.ts has them (CATEGORY_COLORS): the colour menu's palette.
+  private static let palette: [(name: String, hex: String)] = [
+    ("Red", "#ff3b30"), ("Orange", "#ff9500"), ("Yellow", "#ffcc00"), ("Green", "#34c759"), ("Mint", "#00c7be"), ("Light Blue", "#32ade6"),
+    ("Blue", "#007aff"), ("Indigo", "#5856d6"), ("Purple", "#af52de"), ("Pink", "#ff2d55"), ("Brown", "#a2845e"), ("Gray", "#8e8e93"),
+  ]
 
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .clear
 
     var config = UICollectionLayoutListConfiguration(appearance: .sidebar)
-    config.headerMode = .supplementary
+    config.headerMode = .firstItemInSection
     config.showsSeparators = false
     config.backgroundColor = .clear
     collection = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout.list(using: config))
     collection.backgroundColor = .clear
     collection.delegate = self
+    collection.dragDelegate = self
+    collection.dropDelegate = self
+    collection.dragInteractionEnabled = true
     collection.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(collection)
 
     let cell = UICollectionView.CellRegistration<UICollectionViewListCell, GooyaSidebarRow> { [weak self] cell, _, row in
       self?.configure(cell, row)
     }
-    let header = UICollectionView.SupplementaryRegistration<UICollectionViewListCell>(elementKind: UICollectionView.elementKindSectionHeader) { [weak self] view, _, index in
-      var content = UIListContentConfiguration.sidebarHeader()
-      content.text = self?.sections[safe: index.section]?.title
-      content.textProperties.font = .systemFont(ofSize: 11, weight: .semibold)
-      content.textProperties.color = .secondaryLabel
-      view.contentConfiguration = content
+    let header = UICollectionView.CellRegistration<UICollectionViewListCell, GooyaSidebarHeader> { [weak self] cell, _, header in
+      self?.configure(cell, header)
     }
-    source = UICollectionViewDiffableDataSource(collectionView: collection) { collection, index, row in
-      collection.dequeueConfiguredReusableCell(using: cell, for: index, item: row)
+    source = UICollectionViewDiffableDataSource(collectionView: collection) { collection, index, item in
+      switch item {
+      case .header(let h): return collection.dequeueConfiguredReusableCell(using: header, for: index, item: h)
+      case .row(let r): return collection.dequeueConfiguredReusableCell(using: cell, for: index, item: r)
+      }
     }
-    source.supplementaryViewProvider = { collection, _, index in
-      collection.dequeueConfiguredReusableSupplementary(using: header, for: index)
+    // A section folded or opened stays so.
+    source.sectionSnapshotHandlers.willCollapseItem = { [weak self] item in
+      if case .header(let h) = item { self?.setFolded(h.id, true) }
+    }
+    source.sectionSnapshotHandlers.willExpandItem = { [weak self] item in
+      if case .header(let h) = item { self?.setFolded(h.id, false) }
     }
 
     month.translatesAutoresizingMaskIntoConstraints = false
@@ -97,17 +129,47 @@ final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegat
     if isViewLoaded { apply() }
   }
 
+  private func setFolded(_ id: String, _ isFolded: Bool) {
+    if isFolded { folded.insert(id) } else { folded.remove(id) }
+    UserDefaults.standard.set(Array(folded), forKey: Self.foldedKey)
+  }
+
   private func apply() {
-    var snapshot = NSDiffableDataSourceSnapshot<String, GooyaSidebarRow>()
-    for section in sections {
-      snapshot.appendSections([section.id])
-      snapshot.appendItems(section.rows, toSection: section.id)
+    var main = NSDiffableDataSourceSnapshot<String, GooyaSidebarItem>()
+    main.appendSections(sections.map(\.header.id))
+    // Sections that went (an account disconnected) go; the others are filled in below, each with its heading.
+    if Set(source.snapshot().sectionIdentifiers) != Set(main.sectionIdentifiers) || source.snapshot().sectionIdentifiers != main.sectionIdentifiers {
+      source.apply(main, animatingDifferences: false)
     }
-    source.apply(snapshot, animatingDifferences: false)
-    // Headings may have new names: the diffable source keeps supplementary views as they were.
-    var reload = snapshot
-    reload.reloadSections(sections.map(\.id))
-    source.apply(reload, animatingDifferences: false)
+    for section in sections {
+      var snap = NSDiffableDataSourceSectionSnapshot<GooyaSidebarItem>()
+      let head = GooyaSidebarItem.header(section.header)
+      snap.append([head])
+      snap.append(section.rows.map { .row($0) }, to: head)
+      if !folded.contains(section.header.id) { snap.expand([head]) }
+      source.apply(snap, to: section.header.id, animatingDifferences: false)
+    }
+  }
+
+  private func configure(_ cell: UICollectionViewListCell, _ header: GooyaSidebarHeader) {
+    var content = UIListContentConfiguration.sidebarHeader()
+    content.text = header.title
+    content.textProperties.font = .systemFont(ofSize: 11, weight: .semibold)
+    content.textProperties.color = .secondaryLabel
+    cell.contentConfiguration = content
+    var accessories: [UICellAccessory] = [.outlineDisclosure(options: .init(style: .header))]
+    if header.addable {
+      var plus = UIButton.Configuration.plain()
+      plus.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+      plus.baseForegroundColor = .secondaryLabel
+      plus.contentInsets = .zero
+      let button = UIButton(configuration: plus, primaryAction: UIAction { [weak self] _ in self?.send(["type": "add", "id": header.id]) })
+      button.toolTip = "New Category"
+      button.accessibilityLabel = "New Category"
+      button.frame = CGRect(x: 0, y: 0, width: 20, height: 20)
+      accessories.append(.customView(configuration: .init(customView: button, placement: .trailing(displayed: .always), reservedLayoutWidth: .custom(20))))
+    }
+    cell.accessories = accessories
   }
 
   private func configure(_ cell: UICollectionViewListCell, _ row: GooyaSidebarRow) {
@@ -137,7 +199,7 @@ final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegat
   }
 
   func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-    guard let row = source.itemIdentifier(for: indexPath) else { return }
+    guard case .row(let row)? = source.itemIdentifier(for: indexPath) else { return }
     send(["type": "select", "id": row.id])
     // A link opens what it stands for; a calendar row keeps no lasting selection either.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { collectionView.deselectItem(at: indexPath, animated: true) }
@@ -145,6 +207,102 @@ final class GooyaMacSidebarController: UIViewController, UICollectionViewDelegat
 
   private func send(_ body: [String: Any]) {
     GooyaMacModule.current?.sendEvent("onSidebar", body)
+  }
+
+  // MARK: Right-click
+
+  func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
+    guard let index = indexPaths.first, let item = source.itemIdentifier(for: index) else { return nil }
+    let newCategory = UIAction(title: "New Category…", image: UIImage(systemName: "plus")) { [weak self] _ in self?.send(["type": "add", "id": "categories"]) }
+    switch item {
+    case .header(let h) where h.addable:
+      return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: [newCategory]) })
+    case .row(let row) where row.menu == "category":
+      return UIContextMenuConfiguration(actionProvider: { [weak self] _ in self?.categoryMenu(row, newCategory) })
+    case .row(let row) where row.color == nil:
+      // A list (Library's): open it.
+      let open = UIAction(title: "Open “\(row.title)”") { [weak self] _ in self?.send(["type": "select", "id": row.id]) }
+      return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: [open]) })
+    default:
+      return nil
+    }
+  }
+
+  /// A category's menu, as Calendar's for a calendar: edit it, its colour (the palette, or a custom one in its sheet),
+  /// a new one, and delete it.
+  private func categoryMenu(_ row: GooyaSidebarRow, _ newCategory: UIAction) -> UIMenu {
+    let id = String(row.id.dropFirst("category:".count))
+    let menu = { [weak self] (action: String, extra: [String: Any]) in
+      self?.send((["type": "menu", "action": action, "id": id] as [String: Any]).merging(extra) { a, _ in a })
+    }
+    let current = row.color?.lowercased()
+    let known = Self.palette.contains { $0.hex == current }
+    let colors = Self.palette.map { swatch in
+      UIAction(title: swatch.name, image: Self.dot(swatch.hex), state: swatch.hex == current ? .on : .off) { _ in menu("color", ["color": swatch.hex]) }
+    }
+    let edit = UIAction(title: "Edit Category…", image: UIImage(systemName: "pencil")) { _ in menu("edit", [:]) }
+    let custom = UIAction(title: "Custom Color…", state: known ? .off : .on) { _ in menu("edit", [:]) }
+    let delete = UIAction(title: "Delete Category…", image: UIImage(systemName: "trash"), attributes: row.deletable ? [.destructive] : [.destructive, .disabled]) { _ in menu("delete", [:]) }
+    return UIMenu(children: [
+      UIMenu(options: .displayInline, children: [edit]),
+      UIMenu(options: .displayInline, children: [UIMenu(options: [.displayInline, .displayAsPalette], children: colors), custom]),
+      UIMenu(options: .displayInline, children: [newCategory]),
+      UIMenu(options: .displayInline, children: [delete]),
+    ])
+  }
+
+  private static func dot(_ hex: String) -> UIImage? {
+    UIImage(systemName: "circle.fill")?.withTintColor(UIColor(gooyaHex: hex) ?? .gray, renderingMode: .alwaysOriginal)
+  }
+
+  // MARK: Dragging the categories into an order
+
+  /// The categories' rows' ids (category:…), as shown.
+  private func categoryIds() -> [String] {
+    guard source.snapshot().sectionIdentifiers.contains("categories") else { return [] }
+    return source.snapshot(for: "categories").items.compactMap { item in
+      if case .row(let r) = item, r.menu == "category" { return r.id }
+      return nil
+    }
+  }
+
+  func collectionView(_ collectionView: UICollectionView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+    guard case .row(let row)? = source.itemIdentifier(for: indexPath), row.menu == "category" else { return [] }
+    let item = UIDragItem(itemProvider: NSItemProvider(object: row.title as NSString))
+    item.localObject = row.id
+    return [item]
+  }
+
+  func collectionView(_ collectionView: UICollectionView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destination: IndexPath?) -> UICollectionViewDropProposal {
+    // Only a category, only among the categories (under their heading).
+    guard session.localDragSession != nil, let destination, source.snapshot().sectionIdentifiers[safe: destination.section] == "categories", destination.item >= 1 else {
+      return UICollectionViewDropProposal(operation: .forbidden)
+    }
+    return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+  }
+
+  func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
+    guard let drop = coordinator.items.first, let id = drop.dragItem.localObject as? String, let destination = coordinator.destinationIndexPath else { return }
+    var ids = categoryIds()
+    guard ids.contains(id) else { return }
+    ids.removeAll { $0 == id }
+    // Item 0 is the heading.
+    ids.insert(id, at: max(0, min(ids.count, destination.item - 1)))
+    if let section = sections.firstIndex(where: { $0.header.id == "categories" }) {
+      let rows = sections[section].rows
+      let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+      let reordered = ids.compactMap { byId[$0] } + rows.filter { $0.menu != "category" }
+      sections[section] = GooyaSidebarSection(header: sections[section].header, rows: reordered)
+      apply()
+    }
+    send(["type": "order", "ids": ids.map { String($0.dropFirst("category:".count)) }])
+  }
+}
+
+extension GooyaSidebarSection {
+  init(header: GooyaSidebarHeader, rows: [GooyaSidebarRow]) {
+    self.header = header
+    self.rows = rows
   }
 }
 

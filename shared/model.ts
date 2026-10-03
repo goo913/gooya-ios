@@ -191,6 +191,8 @@ export interface UserSettings {
   defaultAlertTimed: number | null
   /** Default alert for new all-day tasks (minutes before 09:00); null = none. */
   defaultAlertAllDay: number | null
+  /** This person's order of the categories (ids; each person orders them their own way): categoriesInOrder. */
+  categoryOrder: string[]
 }
 
 export interface UserDoc {
@@ -253,6 +255,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   notifyOnOtherAdds: true,
   defaultAlertTimed: null,
   defaultAlertAllDay: null,
+  categoryOrder: [],
 }
 
 /**
