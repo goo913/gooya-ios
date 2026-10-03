@@ -121,7 +121,8 @@ public class GooyaRemindersModule: Module {
     }
 
     /// Makes a reminder (no id) or changes one. Only the fields given change; `setDue` says the due day/time is given
-    /// (with `dueDate` null to clear it). Returns the reminder as saved, whose id may be new when it moved lists.
+    /// (with `dueDate` null to clear it). Returns the reminder as Reminders keeps it, whose id may be new when it moved
+    /// lists, and which for a repeating reminder marked done is its next time, not done.
     AsyncFunction("save") { (input: ReminderInput) throws -> [String: Any] in
       let reminder: EKReminder
       if let id = input.id {
@@ -164,6 +165,10 @@ public class GooyaRemindersModule: Module {
         reminder.isCompleted = completed
       }
       try self.store.save(reminder, commit: true)
+      // Read back what Reminders keeps rather than what was set. A repeating reminder saved as done is not done: at the
+      // save, Reminders adds a done copy of that time (a new reminder, its own id, no repeat) and moves this one, same id,
+      // to its next date after today, not done. GOOYA takes that state, not the done mark it asked for.
+      _ = reminder.refresh()
       return Self.serialize(reminder)
     }
 

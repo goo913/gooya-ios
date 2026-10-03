@@ -2,7 +2,25 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import type { Task, TaskList } from './model'
-import { applePriority, applyReminderImport, baselineOf, dueOnPhone, gooyaPriority, mergeIntoTask, planCategoryLists, planReminderSync, reminderFields, sameColor, toImport, type DeviceList, type DeviceReminder } from './reminders'
+import {
+  applePriority,
+  applyReminderImport,
+  baselineOf,
+  dueOnPhone,
+  gooyaPriority,
+  mergeIntoTask,
+  planCategoryLists,
+  planReminderSync,
+  reminderFields,
+  reminderIdOf,
+  sameColor,
+  sentBase,
+  toImport,
+  type DeviceList,
+  type DeviceReminder,
+  type ReminderChange,
+  type ReminderFields,
+} from './reminders'
 
 function reminder(extra: Partial<DeviceReminder> = {}): DeviceReminder {
   return { id: 'r1', title: 'Pick up package', notes: '', url: '', dueDate: '2026-09-29', dueTime: '15:00', completed: false, list: 'Errands', listId: 'L1', priority: 0, ...extra }
@@ -348,4 +366,179 @@ test('a list whose category was deleted stands for none, until a category of its
   assert.equal(out.lists.length ? out.lists[0].categoryId : rl.categoryId, '')
   const again = applyReminderImport('gooya', [], [rl, ...CATS.filter((c) => !c.source)], { lists: [device('L1', 'Groceries', '#34c759')], reminders: [], full: true, timezone: 'UTC' }, 5, hash)
   assert.equal(again.lists[0].categoryId, 'groceries')
+})
+
+// ---------------------------------------------------------------- repeating reminders
+
+/**
+ * Apple Reminders on 은비's iPhone, saving as EventKit does: a reminder that repeats (yearly here, as 준이 생일 does)
+ * marked done, in Reminders or from GOOYA, gets a done copy of that time (a new reminder, its own id, no repeat) and
+ * moves on to its next date after `today`, not done.
+ */
+function remindersApp(today: string, ...initial: DeviceReminder[]) {
+  const items = new Map(initial.map((r) => [r.id, { ...r }]))
+  let copies = 0
+  const markDone = (r: DeviceReminder) => {
+    if (!r.recurring || !r.dueDate) return void (r.completed = true)
+    const copy = { ...r, id: `copy${++copies}`, completed: true, recurring: false }
+    items.set(copy.id, copy)
+    let year = Number(r.dueDate.slice(0, 4)) + 1
+    while (`${year}${r.dueDate.slice(4)}` <= today) year++
+    r.dueDate = `${year}${r.dueDate.slice(4)}`
+  }
+  return {
+    read: () => [...items.values()].map((r) => ({ ...r })),
+    get: (id: string) => ({ ...items.get(id)! }),
+    /** GooyaRemindersModule's save: the fields given, then the reminder as Reminders keeps it. */
+    save(c: ReminderChange): DeviceReminder {
+      const r = items.get(c.id)!
+      if (c.title !== undefined) r.title = c.title
+      if (c.notes !== undefined) r.notes = c.notes
+      if (c.dueDate !== undefined) [r.dueDate, r.dueTime] = [c.dueDate, c.dueTime ?? null]
+      if (c.priority !== undefined) r.priority = c.priority
+      if (c.completed === true) markDone(r)
+      else if (c.completed === false) r.completed = false
+      return { ...r }
+    },
+    /** Marked done in the Reminders app. */
+    markDone: (id: string) => markDone(items.get(id)!),
+  }
+}
+
+const PHONE_LISTS: DeviceList[] = [{ id: 'L1', title: '미리 알림', color: '#ff9500', writable: true, isDefault: true }]
+
+/** GOOYA's side for 은비: the server's tasks and lists, and what her iPhone last agreed on with GOOYA. */
+interface World {
+  phone: ReturnType<typeof remindersApp>
+  tasks: Task[]
+  lists: TaskList[]
+  baseline: Record<string, ReminderFields>
+}
+
+/**
+ * One sync as src/lib/reminders.ts makes it: plan, make the changes in Reminders, send what Reminders then has (with
+ * sentBase) to the server, keep the baseline. `local` is GOOYA as the phone has it: the server's tasks, unless the
+ * server's last write has not reached the phone yet.
+ */
+function sync(w: World, local: Task[] = w.tasks): { changes: ReminderChange[]; kept: number } {
+  const plan = planReminderSync(w.phone.read(), local, w.baseline, 'eunbi', w.lists)
+  const reminders = plan.reminders.map((r) => {
+    const c = plan.changes.find((x) => x.id === r.id)
+    return c ? w.phone.save(c) : r
+  })
+  const payload = { lists: PHONE_LISTS, reminders: reminders.map((r) => toImport(r, { base: sentBase(w.baseline[r.id], plan.seen[r.id]) })), full: true, timezone: 'Asia/Seoul' }
+  const out = applyReminderImport('eunbi', w.tasks, w.lists, payload, 1, hash)
+  const written = new Set([...out.lists, ...out.categories].map((l) => l.id))
+  w.lists = [...w.lists.filter((l) => !written.has(l.id) && !out.deleteLists.includes(l.id)), ...out.categories, ...out.lists]
+  const updates = new Map(out.tasks.map((t) => [t.id, t.fields]))
+  w.tasks = [
+    ...w.tasks.filter((t) => !out.deleteTasks.includes(t.id)).map((t) => (updates.has(t.id) ? ({ ...t, ...updates.get(t.id) } as Task) : t)),
+    ...out.tasks.filter((t) => t.create).map((t) => ({ id: t.id, ...t.fields }) as Task),
+  ]
+  w.baseline = baselineOf(reminders)
+  return { changes: plan.changes, kept: out.kept }
+}
+
+/** 은비's iPhone with her yearly "준이 생일" in "미리 알림", synced once. */
+function birthday(dueDate: string): World {
+  const r = reminder({ id: 'R', title: '준이 생일', dueDate, dueTime: null, list: '미리 알림', recurring: true })
+  const w: World = { phone: remindersApp('2026-10-02', r), tasks: [], lists: [], baseline: {} }
+  sync(w)
+  return w
+}
+
+const taskOf = (w: World, reminderId: string) => w.tasks.find((t) => reminderIdOf(t) === reminderId)
+const dueAndDone = (t: Task | undefined) => t && { dueDate: t.dueDate, completed: t.completed }
+const markDoneInGooya = (w: World, reminderId: string) => (w.tasks = w.tasks.map((t) => (reminderIdOf(t) === reminderId ? { ...t, completed: true } : t)))
+const rounds = (w: World, n: number) => Array.from({ length: n }, () => sync(w))
+
+test('a repeating reminder marked done in GOOYA is done once in Reminders, and its task follows it to its next time', () => {
+  // The incident: 준이 생일, last due 2025-03-23, marked done in GOOYA on 2026-10-02.
+  const w = birthday('2025-03-23')
+  markDoneInGooya(w, 'R')
+  const after = rounds(w, 5)
+  // Sent once. Before, every sync sent it again: the server kept GOOYA's done mark (the phone seemed not to have
+  // changed it) and asked for another sync, and each one completed the next year, until the repeat ended.
+  assert.deepEqual(after.map((s) => s.changes), [[{ id: 'R', completed: true }], [], [], [], []])
+  assert.deepEqual(after.map((s) => s.kept), [0, 0, 0, 0, 0])
+  // Reminders: 2025's time done (a copy); the reminder at 2027 (2026's has passed), not done.
+  assert.deepEqual(w.phone.read().map((r) => [r.id, r.dueDate, r.completed]), [['R', '2027-03-23', false], ['copy1', '2025-03-23', true]])
+  // GOOYA: the task is the reminder's next time, not done; the done copy is a task of its own, made once.
+  assert.deepEqual(dueAndDone(taskOf(w, 'R')), { dueDate: '2027-03-23', completed: false })
+  assert.deepEqual(dueAndDone(taskOf(w, 'copy1')), { dueDate: '2025-03-23', completed: true })
+  assert.equal(w.tasks.length, 2)
+  // The next time can be marked done in GOOYA in turn: once again.
+  markDoneInGooya(w, 'R')
+  assert.deepEqual(rounds(w, 3).map((s) => s.changes.length), [1, 0, 0])
+  assert.deepEqual(dueAndDone(taskOf(w, 'R')), { dueDate: '2028-03-23', completed: false })
+  assert.equal(w.tasks.length, 3)
+})
+
+test('a copy of GOOYA that still shows the done mark this phone took to Reminders sends nothing', () => {
+  const w = birthday('2027-03-23')
+  markDoneInGooya(w, 'R')
+  const beforeWrite = w.tasks
+  assert.equal(sync(w).changes.length, 1)
+  // The server's write has not reached the phone yet: GOOYA still shows 2027, done.
+  const stale = sync(w, beforeWrite)
+  assert.deepEqual(stale.changes, [])
+  assert.deepEqual([w.phone.get('R').dueDate, w.phone.get('R').completed], ['2028-03-23', false])
+  assert.deepEqual(dueAndDone(taskOf(w, 'R')), { dueDate: '2028-03-23', completed: false })
+  assert.deepEqual(rounds(w, 2).map((s) => [s.changes.length, s.kept]), [[0, 0], [0, 0]])
+})
+
+test('a repeating reminder marked done in Reminders sends nothing back, also when GOOYA marked it done too', () => {
+  const w = birthday('2027-03-23')
+  w.phone.markDone('R')
+  assert.deepEqual(rounds(w, 3).map((s) => [s.changes.length, s.kept]), [[0, 0], [0, 0], [0, 0]])
+  assert.deepEqual(dueAndDone(taskOf(w, 'R')), { dueDate: '2028-03-23', completed: false })
+  assert.deepEqual(dueAndDone(taskOf(w, 'copy1')), { dueDate: '2027-03-23', completed: true })
+  // Marked done on both sides before the phone synced: the time is done once, in Reminders.
+  markDoneInGooya(w, 'R')
+  w.phone.markDone('R')
+  assert.deepEqual(rounds(w, 3).map((s) => [s.changes.length, s.kept]), [[0, 0], [0, 0], [0, 0]])
+  assert.deepEqual([w.phone.get('R').dueDate, w.phone.get('R').completed], ['2029-03-23', false])
+  assert.deepEqual(dueAndDone(taskOf(w, 'R')), { dueDate: '2029-03-23', completed: false })
+  assert.equal(w.phone.read().length, 3)
+})
+
+test('GOOYA’s done mark on a repeating reminder goes to it only at the time both last agreed on', () => {
+  const r = reminder({ recurring: true, dueDate: '2027-03-23', dueTime: null })
+  const done = taskFrom(r, { completed: true })
+  assert.deepEqual(planReminderSync([r], [done], baselineOf([r]), 'gooya', LISTS).changes, [{ id: 'r1', completed: true }])
+  // Moved on since (done in Reminders): set aside, with the date it was for; nothing is sent.
+  const movedOn = planReminderSync([{ ...r, dueDate: '2028-03-23' }], [done], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(movedOn.changes, [])
+  assert.deepEqual(movedOn.seen.r1, { taken: {}, setAside: { completed: true, dueDate: '2027-03-23', dueTime: null } })
+  // GOOYA's done mark is for another date than the reminder's: neither the mark nor that date is sent.
+  assert.deepEqual(planReminderSync([r], [taskFrom(r, { completed: true, dueDate: '2027-03-20' })], baselineOf([r]), 'gooya', LISTS).changes, [])
+  // A reminder that does not repeat: as before, GOOYA's done mark goes to it, at the date Reminders has.
+  const plain = reminder()
+  assert.deepEqual(planReminderSync([{ ...plain, dueDate: '2026-09-30' }], [taskFrom(plain, { completed: true })], baselineOf([plain]), 'gooya', LISTS).changes, [{ id: 'r1', completed: true }])
+})
+
+test('the base sent with a reminder has GOOYA’s values for what the sync took into account', () => {
+  const r = reminder({ title: 'Old' })
+  const plan = planReminderSync([r], [taskFrom(r, { title: 'New', priority: 2 })], baselineOf([r]), 'gooya', LISTS)
+  assert.deepEqual(plan.seen.r1, { taken: { title: 'New', priority: 2 }, setAside: {} })
+  const base = reminderFields(r)
+  assert.deepEqual(sentBase(base, plan.seen.r1), { ...base, title: 'New', priority: 2 })
+  // A change Reminders refused: the base GOOYA and the phone had (GOOYA's change stays GOOYA's, for the next sync).
+  assert.deepEqual(sentBase(base, plan.seen.r1, false), base)
+  const setAside = { taken: {}, setAside: { completed: true, dueDate: '2026-09-28', dueTime: null } }
+  assert.deepEqual(sentBase(base, setAside, false), { ...base, completed: true, dueDate: '2026-09-28', dueTime: null })
+  assert.equal(sentBase(undefined, plan.seen.r1), undefined)
+  assert.equal(toImport(reminder({ recurring: true })).recurring, true)
+})
+
+test('the server never keeps GOOYA’s done mark on a repeating reminder that has moved on; other reminders as before', () => {
+  const base = { title: 'A', notes: '', dueDate: '2027-03-23', dueTime: null, completed: false, priority: 0 as const, gooyaListId: 'rl_errands' }
+  // Marked done in GOOYA just after the phone looked, and in Reminders too: the reminder is at 2028, not done.
+  const current = { ...base, completed: true, listId: 'rl_errands' }
+  const phone = { ...base, dueDate: '2028-03-23' }
+  const repeating = mergeIntoTask(current, { ...phone, recurring: true }, base)
+  assert.deepEqual([repeating.fields.dueDate, repeating.fields.completed, repeating.kept], ['2028-03-23', false, []])
+  // Not repeating: GOOYA's done mark stays, for the phone to take to the reminder.
+  const plain = mergeIntoTask(current, phone, base)
+  assert.deepEqual([plain.fields.dueDate, plain.fields.completed, plain.kept], ['2028-03-23', true, ['completed']])
 })

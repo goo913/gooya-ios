@@ -31,6 +31,7 @@ export interface NativeReminder {
   completed: boolean;
   /** 0 none, 1–4 high, 5 medium, 6–9 low. */
   priority: number;
+  /** It repeats. Saved as done, it comes back at its next time, not done; a done copy of that time is a new reminder. */
   recurring: boolean;
   alarms: ({ at: number } | { offset: number })[];
   lastModified: number;
@@ -66,6 +67,7 @@ interface GooyaRemindersModule {
   requestAccess(): Promise<boolean>;
   lists(): Promise<NativeReminderList[]>;
   reminders(listIds: string[], completedSince: number): Promise<NativeReminder[]>;
+  /** The reminder as Reminders keeps it after the save (read back from the store). */
   save(input: ReminderSave): Promise<NativeReminder>;
   remove(id: string): Promise<boolean>;
   /** Missing from builds before categories. */

@@ -11,6 +11,7 @@ import {
   planCategoryLists,
   planReminderSync,
   reminderIdOf,
+  sentBase,
   toImport,
   type DeviceList,
   type DeviceReminder,
@@ -133,6 +134,7 @@ function deviceReminder(r: Native.NativeReminder): DeviceReminder {
     list: r.list,
     listId: r.listId,
     priority: r.priority,
+    recurring: r.recurring === true,
   };
 }
 
@@ -223,11 +225,17 @@ function completeBaseline(baseline: Record<string, ReminderFields>, device: Devi
 
 /**
  * Carries out a plan on the phone: changes, new reminders, deletions. What could not be done stays as the phone has it
- * (so GOOYA shows the truth), and is said in `problems`.
+ * (so GOOYA shows the truth), and is said in `problems`; `notMade` are the reminders whose change could not be made.
+ * A changed reminder is as Reminders saved it, which for a repeating one marked done is its next time, not done.
  */
-async function carryOut(plan: ReminderPlan, device: DeviceReminder[], tasksByReminder: Map<string, Task>): Promise<{ reminders: DeviceReminder[]; taskIds: Record<string, string>; problems: string[]; sent: string[] }> {
+async function carryOut(
+  plan: ReminderPlan,
+  device: DeviceReminder[],
+  tasksByReminder: Map<string, Task>,
+): Promise<{ reminders: DeviceReminder[]; taskIds: Record<string, string>; problems: string[]; sent: string[]; notMade: Set<string> }> {
   const problems: string[] = [];
   const sent: string[] = [];
+  const notMade = new Set<string>();
   const moved: Record<string, string> = {};
   const reminders = [...plan.reminders];
   const onPhone = new Map(device.map((r) => [r.id, r]));
@@ -258,6 +266,7 @@ async function carryOut(plan: ReminderPlan, device: DeviceReminder[], tasksByRem
       sent.push(`“${saved.title || tasksByReminder.get(c.id)?.title || "A reminder"}” ${changeWords(c, saved).join(", ")}`);
     } catch (e) {
       problems.push(`“${tasksByReminder.get(c.id)?.title ?? onPhone.get(c.id)?.title ?? "A reminder"}”: ${message(e)}`);
+      notMade.add(c.id);
       const was = onPhone.get(c.id);
       if (was) replace(c.id, was);
     }
@@ -288,7 +297,7 @@ async function carryOut(plan: ReminderPlan, device: DeviceReminder[], tasksByRem
   const ids = new Set(reminders.map((r) => r.id));
   const taskIds: Record<string, string> = { ...moved };
   for (const [taskId, rid] of Object.entries(links)) if (ids.has(rid)) taskIds[rid] = taskId;
-  return { reminders, taskIds, problems, sent };
+  return { reminders, taskIds, problems, sent, notMade };
 }
 
 /** "moved to Mon, Sep 28, 10:00 AM", "completed", … for the sync's record of what it changed in Reminders. */
@@ -365,6 +374,8 @@ async function alignCategoryLists(
 
 let running: Promise<void> | null = null;
 let again = false;
+/** The last sync asked for another one because GOOYA kept a change; that one does not ask again. */
+let keptFollowUp = false;
 let lastRun = 0;
 /** Until then, Reminders' change notices are GOOYA's own saves coming back. */
 let quietUntil = 0;
@@ -417,7 +428,8 @@ export function syncReminders(force = false): Promise<void> {
         full: true,
         timezone: deviceTimeZone(),
         lists: included.map(({ id, title, color, writable: w, editable, isDefault }) => ({ id, title, color, writable: w, ...(editable === undefined ? {} : { editable }), isDefault, ...(categories?.extra[id] ?? {}) })),
-        reminders: done.reminders.map((r) => toImport(r, { taskId: done.taskIds[r.id], base: baseline[r.id] })),
+        // With GOOYA's values for what this sync took to Reminders (sentBase): what Reminders made of it comes back as it is.
+        reminders: done.reminders.map((r) => toImport(r, { taskId: done.taskIds[r.id], base: sentBase(baseline[r.id], plan.seen[r.id], !done.notMade.has(r.id)) })),
         unlink: plan.unlink.map((u) => u.taskId),
       });
       kept = answer.kept ?? 0;
@@ -435,8 +447,11 @@ export function syncReminders(force = false): Promise<void> {
     } finally {
       useReminders.setState({ syncing: false });
       running = null;
-      // GOOYA kept a change made there a moment ago: take it to Reminders once this phone has it.
-      if (kept > 0) setTimeout(() => void syncReminders(true), 2500);
+      // GOOYA kept a change made there a moment ago: take it to Reminders once this phone has it. Once only: a change
+      // the plan does not take to Reminders (a date cleared in GOOYA, a list Reminders keeps read-only, a save it
+      // refused) is kept by every sync, and each sync asking for the next would never stop.
+      keptFollowUp = kept > 0 && !keptFollowUp;
+      if (keptFollowUp) setTimeout(() => void syncReminders(true), 2500);
       if (again) {
         again = false;
         setTimeout(() => void syncReminders(true), 300);

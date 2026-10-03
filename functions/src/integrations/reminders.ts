@@ -39,6 +39,8 @@ interface IncomingReminder {
   taskId?: string
   /** What the phone and GOOYA last agreed on for this reminder. */
   base?: ReminderFields
+  /** It repeats in Reminders (newer apps): a done mark GOOYA has stays only while it is at the same time (mergeIntoTask). */
+  recurring?: boolean
 }
 
 interface Body {
@@ -81,6 +83,7 @@ function normalized(r: IncomingReminder, tz: string): ReminderImport {
     priority: r.priority,
     taskId: r.taskId,
     base: r.base,
+    recurring: r.recurring === true,
   }
 }
 
