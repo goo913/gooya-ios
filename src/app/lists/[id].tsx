@@ -1,8 +1,8 @@
 import { categoryOfList, isCategory } from "@shared/categories";
 import type { DateKey, EventOccurrence, Routine, TaskOccurrence } from "@shared/model";
-import { describeRule, eventDays, expandEvent } from "@shared/recurrence";
-import { scheduleAsEvent } from "@shared/schedules";
-import { addDaysKey, parseHHmm, parseKey, startOfDayMs } from "@shared/time";
+import { listSchedules } from "@shared/lists";
+import { describeRule, eventDays } from "@shared/recurrence";
+import { parseHHmm, parseKey } from "@shared/time";
 import { router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -76,20 +76,12 @@ export default function ListScreen() {
       for (const o of items) rows.push({ day: o.dueDate || "No Date", row: { kind: "task", key: o.key, occ: o }, start: o.start });
     }
     // Schedules: a category's, or all of them. Each once: a repeating one at its next day (or its last, once it has
-    // ended).
+    // ended); ones that have ended under Past Schedules.
     const pastRows: { day: string; row: Row; start: number }[] = [];
     if (category || library === "schedules") {
-      const from = startOfDayMs(addDaysKey(today, -400), viewerTz);
-      const to = startOfDayMs(addDaysKey(today, 800), viewerTz);
-      for (const x of schedules) {
-        if (!people.includes(x.owner) || (category && x.categoryId !== category.id)) continue;
-        const all = expandEvent(scheduleAsEvent(x, scheduleHex(x, users, lists, dark)), from, to);
-        const shown = x.rrule ? [all.find((o) => Math.max(o.end, o.start) >= now) ?? all[all.length - 1]].filter(Boolean) : all;
-        for (const o of shown) {
-          const row = { day: eventDays(o, viewerTz)[0], row: { kind: "schedule" as const, key: o.key, occ: o }, start: o.start };
-          if (Math.max(o.end, o.start) < now) pastRows.push(row);
-          else rows.push(row);
-        }
+      for (const { schedule, occ: o, over } of listSchedules(schedules, people, today, now, viewerTz, (x) => scheduleHex(x, users, lists, dark))) {
+        if (category && schedule.categoryId !== category.id) continue;
+        (over ? pastRows : rows).push({ day: eventDays(o, viewerTz)[0], row: { kind: "schedule", key: o.key, occ: o }, start: o.start });
       }
     }
     const byDay = (list: typeof rows, newestFirst: boolean) => {

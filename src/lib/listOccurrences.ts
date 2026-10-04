@@ -1,9 +1,9 @@
+import { countLists, listSchedules, listTasks, type ListCounts } from "@shared/lists";
 import type { DateKey, TaskOccurrence } from "@shared/model";
-import { expandTask } from "@shared/recurrence";
-import { addDaysKey, startOfDayMs } from "@shared/time";
 import { useMemo } from "react";
 import { useData } from "@/store/data";
-import { viewerTz } from "./useNow";
+import { listIndexOf } from "./people";
+import { useNow, viewerTz } from "./useNow";
 
 export type SmartList = "today" | "scheduled" | "all" | "completed";
 export const SMART: { key: SmartList; label: string; color: string; icon: string }[] = [
@@ -24,24 +24,19 @@ export const LIBRARY: { key: LibraryKind; label: string; color: string; icon: st
 /** All occurrences for the smart/user lists: undated tasks appear once (dateKey ''). */
 export function useListOccurrences(people: string[], today: DateKey): TaskOccurrence[] {
   const tasks = useData((s) => s.tasks);
-  return useMemo(() => {
-    const from = startOfDayMs(addDaysKey(today, -365), viewerTz);
-    const to = startOfDayMs(addDaysKey(today, 400), viewerTz);
-    const out: TaskOccurrence[] = [];
-    for (const t of tasks) {
-      if (!people.includes(t.owner)) continue;
-      if (!t.dueDate) {
-        out.push({ kind: "task", task: t, key: `${t.id}:`, dateKey: "", isRecurring: false, dueDate: "", dueTime: null, allDay: true, start: 0, end: 0, title: t.title, notes: t.notes, completed: !!t.completed });
-        continue;
-      }
-      if (!t.rrule) {
-        out.push(...expandTask(t, 0, Number.MAX_SAFE_INTEGER));
-        continue;
-      }
-      const all = expandTask(t, from, to);
-      const next = all.find((o) => !o.completed && o.dueDate >= today) ?? all.find((o) => !o.completed);
-      for (const o of all) if (o.completed || o === next) out.push(o);
-    }
-    return out;
-  }, [tasks, people, today]);
+  return useMemo(() => listTasks(tasks, people, today, viewerTz), [tasks, people, today]);
+}
+
+/**
+ * What each list counts (the iPhone's Lists, the Mac's sidebar), as its page lists them: tasks not done and schedules
+ * not over, so a category counts both.
+ */
+export function useListCounts(people: string[], today: DateKey): ListCounts {
+  const occ = useListOccurrences(people, today);
+  const schedules = useData((s) => s.schedules);
+  const routines = useData((s) => s.routines);
+  const lists = useData((s) => s.lists);
+  // A schedule stops counting once it has ended (this, kept fresh by the minute).
+  const now = useNow(60_000);
+  return useMemo(() => countLists(occ, listSchedules(schedules, people, today, now, viewerTz), routines, people, today, listIndexOf(lists)), [occ, schedules, routines, lists, people, today, now]);
 }

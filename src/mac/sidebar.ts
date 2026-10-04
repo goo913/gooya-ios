@@ -1,12 +1,12 @@
-import { DEFAULT_CATEGORY_ID, categoryOfList, isCategory } from "@shared/categories";
+import { DEFAULT_CATEGORY_ID, isCategory } from "@shared/categories";
 import type { DateKey } from "@shared/model";
 import { PERSON_KEYS, type PersonKey } from "@shared/people";
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef } from "react";
 import { confirmDeleteCategory, recolorCategory, setCategoryOrder, useCategories } from "@/lib/categoryOps";
-import { LIBRARY, useListOccurrences } from "@/lib/listOccurrences";
-import { colorHex, listIndexOf, peopleForFilter, useFilteredPeople, useMe, usePerson } from "@/lib/people";
-import { useNow, useToday } from "@/lib/useNow";
+import { LIBRARY, useListCounts } from "@/lib/listOccurrences";
+import { colorHex, peopleForFilter, useFilteredPeople, useMe, usePerson } from "@/lib/people";
+import { useToday } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { usePickers } from "@/store/pickers";
 import { usePrefs } from "@/store/prefs";
@@ -17,9 +17,9 @@ import { onSidebar, setSidebar, type SidebarSection } from "../../modules/gooya-
  * The Mac's sidebar (macOS's own, modules/gooya-mac GooyaMacSidebar), laid out as Apple Calendar's calendar list: a
  * heading per kind (each folds away) and each calendar with a tick in its colour. GOOYA's: whose items show (both
  * people), GOOYA's schedules, each connected account's calendars, the categories (a tick shows or hides a category's
- * tasks and schedules; choosing one opens its list of them, with its count of open tasks; dragged into this person's
- * order; + makes one; right-click: edit, colour, delete), and Library: every task, every schedule and every routine as
- * a list. The month at the bottom shows a day it is clicked on.
+ * tasks and schedules; choosing one opens its list of them; it counts its tasks not done and schedules not over;
+ * dragged into this person's order; + makes one; right-click: edit, colour, delete), and Library: every task, every
+ * schedule and every routine as a list, with the same counts. The month at the bottom shows a day it is clicked on.
  */
 export function useMacSidebar({ openList, showDate }: { openList: (id: string) => void; showDate: (key: DateKey) => void }): void {
   const dark = useIsDark();
@@ -28,31 +28,14 @@ export function useMacSidebar({ openList, showDate }: { openList: (id: string) =
   const filter = usePrefs((s) => s.filter);
   const hidden = usePrefs((s) => s.hiddenCalendars);
   const accounts = useData((s) => s.accounts);
-  const lists = useData((s) => s.lists);
-  const schedules = useData((s) => s.schedules);
-  const routines = useData((s) => s.routines);
   const categories = useCategories();
-  const now = useNow(60_000);
   const gooya = usePerson("gooya");
   const eunbi = usePerson("eunbi");
   const people = useFilteredPeople();
-  const occ = useListOccurrences(people, today);
+  const counts = useListCounts(people, today);
   const included = peopleForFilter(me, filter);
 
   const sections = useMemo<SidebarSection[]>(() => {
-    const open = occ.filter((o) => !o.completed);
-    const byId = listIndexOf(lists);
-    const perCategory = new Map<string, number>();
-    for (const o of open) {
-      const key = categoryOfList(o.task.listId, byId)?.id ?? o.task.listId;
-      perCategory.set(key, (perCategory.get(key) ?? 0) + 1);
-    }
-    // Library's counts: open tasks, schedules still to come (or repeating), routines.
-    const counts: Record<string, number> = {
-      tasks: open.length,
-      schedules: schedules.filter((x) => people.includes(x.owner) && (!!x.rrule || Math.max(x.start, x.end) >= now)).length,
-      routines: routines.filter((r) => people.includes(r.owner)).length,
-    };
     const out: SidebarSection[] = [
       {
         id: "people",
@@ -82,7 +65,7 @@ export function useMacSidebar({ openList, showDate }: { openList: (id: string) =
         title: c.name,
         color: c.color,
         checked: !hidden.includes(`category:${c.id}`),
-        count: String(perCategory.get(c.id) ?? 0),
+        count: String(counts.byList.get(c.id) ?? 0),
         menu: "category",
         deletable: c.id !== DEFAULT_CATEGORY_ID,
       })),
@@ -90,10 +73,10 @@ export function useMacSidebar({ openList, showDate }: { openList: (id: string) =
     out.push({
       id: "library",
       title: "Library",
-      rows: LIBRARY.map((l) => ({ id: `kind:${l.key}`, title: l.label, icon: l.icon, iconColor: l.color, count: String(counts[l.key] ?? 0) })),
+      rows: LIBRARY.map((l) => ({ id: `kind:${l.key}`, title: l.label, icon: l.icon, iconColor: l.color, count: String(counts[l.key]) })),
     });
     return out;
-  }, [occ, lists, categories, schedules, routines, people, now, accounts, hidden, gooya, eunbi, me, dark, included]);
+  }, [counts, categories, accounts, hidden, gooya, eunbi, me, dark, included]);
 
   const sent = useRef("");
   useEffect(() => {
