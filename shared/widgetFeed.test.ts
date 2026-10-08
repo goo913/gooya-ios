@@ -150,3 +150,20 @@ test('with Show Past Schedules off, schedules and events that have ended are lef
   assert.deepEqual(shown, ['Old task', 'Dinner'])
   assert.equal(buildWidgetFeed(input).items.length, 4)
 })
+
+test('the feed is on the phone’s clock when it is given, as the app shows days (someone away from home)', () => {
+  // 은비 (home: Seoul) visiting New York: a task due Thursday 9:40 AM in Seoul is Wednesday 8:40 PM there.
+  const tasks = [task('Ruler', 'eunbi', '2026-10-08', '09:40', { timezone: 'Asia/Seoul' })]
+  const now = zonedMs('2026-10-07', '12:00', TZ)
+  const away = buildWidgetFeed({ ...base, me: user('eunbi'), tasks, now, tz: TZ })
+  assert.equal(away.timezone, TZ)
+  assert.equal(away.today, '2026-10-07')
+  assert.equal(away.items.find((i) => i.title === 'Ruler')?.date, '2026-10-07')
+  assert.equal(away.items.find((i) => i.title === 'Ruler')?.time, '8:40 PM')
+  // Without it (or with a zone that does not exist), the home zone as before.
+  for (const tz of [undefined, 'Not/AZone']) {
+    const home = buildWidgetFeed({ ...base, me: user('eunbi'), tasks, now, tz })
+    assert.equal(home.timezone, 'Asia/Seoul')
+    assert.equal(home.items.find((i) => i.title === 'Ruler')?.date, '2026-10-08')
+  }
+})

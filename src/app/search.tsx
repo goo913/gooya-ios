@@ -121,7 +121,8 @@ export default function SearchScreen() {
                     key={s.id}
                     routine={s}
                     onOpen={() => {
-                      openDetail({ kind: "routine", routineId: s.id, dateKey: today >= s.startDate ? today : s.startDate });
+                      // No day: its details show the next one (the one going on, if any).
+                      openDetail({ kind: "routine", routineId: s.id, dateKey: "" });
                       router.push("/sheet/detail");
                     }}
                   />
@@ -136,7 +137,7 @@ export default function SearchScreen() {
                     {dayHeading(day)}
                     {day.slice(0, 4) !== today.slice(0, 4) ? `, ${day.slice(0, 4)}` : ""}
                   </Text>
-                  {results.byDay.get(day)!.map((occ) => (occ.kind === "event" ? <EventRow key={occ.key} occ={occ} day={day} /> : <TaskRow key={occ.key} occ={occ} day={day} />))}
+                  {results.byDay.get(day)!.map((occ) => (occ.kind === "event" ? <EventRow key={occ.key} occ={occ} /> : <TaskRow key={occ.key} occ={occ} />))}
                 </View>
               );
             })}

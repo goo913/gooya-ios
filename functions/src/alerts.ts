@@ -3,8 +3,8 @@ import { logger } from 'firebase-functions'
 import { expandTask } from '../../shared/recurrence'
 import { normalizeTask, normalizeUser } from '../../shared/normalize'
 import type { Task, TaskOccurrence } from '../../shared/model'
-import { DAY_MS, zonedMs } from '../../shared/time'
-import { formatShortDate, formatTime12 } from '../../shared/fmt'
+import { DAY_MS } from '../../shared/time'
+import { formatDue } from '../../shared/fmt'
 import { PEOPLE } from '../../shared/people'
 import { APP_URL, sendToPerson } from './notify'
 
@@ -98,13 +98,6 @@ export async function extendQueues(): Promise<number> {
   return n
 }
 
-function describeWhen(occ: TaskOccurrence, tz: string, now: number): string {
-  const dayStart = zonedMs(occ.dueDate, '00:00', tz)
-  const isToday = dayStart <= now && now < dayStart + DAY_MS
-  const day = isToday ? 'Today' : formatShortDate(occ.dueDate)
-  return occ.allDay ? day : `${day} · ${formatTime12(occ.start, tz)}`
-}
-
 /** Send due alerts (claims entries first so overlapping runs don't double-send). */
 export async function sendDueAlerts(): Promise<number> {
   const db = getFirestore()
@@ -139,7 +132,7 @@ export async function sendDueAlerts(): Promise<number> {
     const user = userSnap.exists ? normalizeUser(userSnap.id, userSnap.data() as Record<string, unknown>) : null
     const ownerTz = user?.timezone || PEOPLE[task.owner].timezone || tz
     const early = entry.offsetMin > 0 ? ` · in ${entry.offsetMin >= 1440 ? `${Math.round(entry.offsetMin / 1440)} day(s)` : entry.offsetMin >= 60 ? `${Math.round(entry.offsetMin / 60)} hour(s)` : `${entry.offsetMin} min`}` : ''
-    const body = `${describeWhen(occ, ownerTz, now)}${early}`
+    const body = `${formatDue(occ, ownerTz, now)}${early}`
     const ok = await sendToPerson(task.owner, {
       title: occ.title || 'Task',
       body,

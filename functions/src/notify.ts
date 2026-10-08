@@ -4,7 +4,7 @@ import { logger } from 'firebase-functions'
 import { normalizeUser } from '../../shared/normalize'
 import { PEOPLE, type PersonKey } from '../../shared/people'
 import type { Task } from '../../shared/model'
-import { formatShortDate, formatTime12 } from '../../shared/fmt'
+import { formatDue } from '../../shared/fmt'
 import { zonedMs } from '../../shared/time'
 
 export const APP_URL = 'https://gooya-eunbee.web.app'
@@ -96,11 +96,8 @@ export async function notifyTaskAdded(task: Task): Promise<void> {
   const creator = creatorSnap.exists ? normalizeUser(creatorSnap.id, creatorSnap.data() as Record<string, unknown>) : null
   const creatorName = creator?.name || PEOPLE[task.createdBy].name
   const tz = owner?.timezone || PEOPLE[task.owner].timezone
-  const when = !task.dueDate
-    ? 'No date'
-    : task.dueTime
-      ? `${formatShortDate(task.dueDate)} · ${formatTime12(zonedMs(task.dueDate, task.dueTime, task.timezone || tz), tz)}`
-      : formatShortDate(task.dueDate)
+  // On the owner's clock, the day as well as the time (a task kept on another clock may be on another day there).
+  const when = !task.dueDate ? 'No date' : formatDue({ allDay: !task.dueTime, dueDate: task.dueDate, start: task.dueTime ? zonedMs(task.dueDate, task.dueTime, task.timezone || tz) : 0 }, tz, Date.now())
   await sendToPerson(task.owner, {
     title: `${creatorName} added “${task.title}”`,
     body: when,

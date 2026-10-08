@@ -5,11 +5,13 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { occurrenceDays, taskOccurrenceOn } from "@shared/recurrence";
 import { isMac } from "../../modules/gooya-mac";
 import { initAuth } from "@/lib/auth";
 import { isMock } from "@/lib/mock";
 import { useIsPad } from "@/lib/layout";
 import { noteExternalOpen, useOpenView } from "@/lib/openView";
+import { viewerTz } from "@/lib/useNow";
 import { refreshPushToken, requestNotifications } from "@/lib/push";
 import { useSheets } from "@/store/sheets";
 import { useData } from "@/store/data";
@@ -54,8 +56,12 @@ export default function RootLayout() {
       const task = useData.getState().tasks.find((t) => t.id === taskId);
       if (!task) return;
       noteExternalOpen();
-      useSheets.getState().openEditor({ kind: "task", task });
-      if (dateKey) router.push({ pathname: "/day/[date]", params: { date: dateKey } });
+      // That occurrence (by its own day, on the task's clock), over the day it is on here: a task due in Seoul's morning
+      // is on the evening before in New York.
+      const occ = dateKey ? taskOccurrenceOn(task, dateKey) : null;
+      useSheets.getState().openEditor({ kind: "task", task, occ: occ ?? undefined });
+      const day = occ ? occurrenceDays(occ, viewerTz)[0] : dateKey;
+      if (day) router.push({ pathname: "/day/[date]", params: { date: day } });
       router.push("/sheet/edit");
     };
     const sub = Notifications.addNotificationResponseReceivedListener((r) => open(r.notification.request.content.data as Record<string, unknown>));

@@ -100,7 +100,8 @@ enum FeedStore {
 
   static func fetch(token: String) async -> Feed? {
     var components = URLComponents(url: feedURL, resolvingAgainstBaseURL: false)!
-    components.queryItems = [URLQueryItem(name: "token", value: token), URLQueryItem(name: "days", value: "31")]
+    // On this phone's clock, as the app shows days.
+    components.queryItems = [URLQueryItem(name: "token", value: token), URLQueryItem(name: "days", value: "31"), URLQueryItem(name: "tz", value: TimeZone.current.identifier)]
     guard let url = components.url else { return nil }
     var request = URLRequest(url: url)
     request.timeoutInterval = 12

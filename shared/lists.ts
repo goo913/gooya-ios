@@ -2,13 +2,19 @@
 // listed as Reminders lists them: undated ones once, a repeating one at its next day and on each day it was done.
 // Schedules each once: a repeating one at its next day (or the one going on), or its last once it has ended. A list
 // counts what is still ahead, as Reminders counts the reminders not done: tasks not done and schedules not over (so a
-// category counts both). Dependency-free.
+// category counts both). Days are the viewer's, as the calendar shows them: a task due at 9:40 AM in Seoul is on the
+// evening before in New York. Dependency-free.
 
 import { categoryOfList, isCategory, type ListIndex } from './categories'
 import type { DateKey, EventOccurrence, Routine, Schedule, Task, TaskOccurrence } from './model'
-import { expandEvent, expandTask } from './recurrence'
+import { expandEvent, expandTask, occurrenceDays } from './recurrence'
 import { scheduleAsEvent } from './schedules'
 import { addDaysKey, startOfDayMs } from './time'
+
+/** The day a task is on for a viewer in `tz`, as the calendar has it ('' without a date). */
+export function taskDay(o: TaskOccurrence, tz: string): DateKey {
+  return o.dueDate ? occurrenceDays(o, tz)[0] : ''
+}
 
 /** These people's tasks as lists show them; `tz` is the viewer's (the window of repeating ones: a year back, 400 days on). */
 export function listTasks(tasks: readonly Task[], people: readonly string[], today: DateKey, tz: string): TaskOccurrence[] {
@@ -26,7 +32,7 @@ export function listTasks(tasks: readonly Task[], people: readonly string[], tod
       continue
     }
     const all = expandTask(t, from, to)
-    const next = all.find((o) => !o.completed && o.dueDate >= today) ?? all.find((o) => !o.completed)
+    const next = all.find((o) => !o.completed && taskDay(o, tz) >= today) ?? all.find((o) => !o.completed)
     for (const o of all) if (o.completed || o === next) out.push(o)
   }
   return out
@@ -68,8 +74,8 @@ export interface ListCounts {
   routines: number
 }
 
-/** What each list counts, from `listTasks` and `listSchedules` (these people's) and the routines (anyone's). */
-export function countLists(tasks: readonly TaskOccurrence[], schedules: readonly ListedSchedule[], routines: readonly Routine[], people: readonly string[], today: DateKey, byId: ListIndex): ListCounts {
+/** What each list counts, from `listTasks` and `listSchedules` (these people's) and the routines (anyone's); `tz` is the viewer's. */
+export function countLists(tasks: readonly TaskOccurrence[], schedules: readonly ListedSchedule[], routines: readonly Routine[], people: readonly string[], today: DateKey, tz: string, byId: ListIndex): ListCounts {
   const byList = new Map<string, number>()
   const add = (id: string) => byList.set(id, (byList.get(id) ?? 0) + 1)
   const open = tasks.filter((o) => !o.completed)
@@ -81,7 +87,7 @@ export function countLists(tasks: readonly TaskOccurrence[], schedules: readonly
   }
   return {
     byList,
-    today: open.filter((o) => !!o.dueDate && o.dueDate <= today).length,
+    today: open.filter((o) => !!o.dueDate && taskDay(o, tz) <= today).length,
     scheduled: open.filter((o) => !!o.dueDate).length,
     all: open.length,
     completed: tasks.length - open.length,

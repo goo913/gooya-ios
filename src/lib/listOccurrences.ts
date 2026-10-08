@@ -38,5 +38,5 @@ export function useListCounts(people: string[], today: DateKey): ListCounts {
   const lists = useData((s) => s.lists);
   // A schedule stops counting once it has ended (this, kept fresh by the minute).
   const now = useNow(60_000);
-  return useMemo(() => countLists(occ, listSchedules(schedules, people, today, now, viewerTz), routines, people, today, listIndexOf(lists)), [occ, schedules, routines, lists, people, today, now]);
+  return useMemo(() => countLists(occ, listSchedules(schedules, people, today, now, viewerTz), routines, people, today, viewerTz, listIndexOf(lists)), [occ, schedules, routines, lists, people, today, now]);
 }

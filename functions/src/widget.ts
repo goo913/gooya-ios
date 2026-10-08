@@ -5,7 +5,7 @@ import type { Schedule } from '../../shared/model'
 import { buildWidgetFeed } from '../../shared/widgetFeed'
 
 /**
- * GET /widgetFeed?token=…&days=31
+ * GET /widgetFeed?token=…&days=31&tz=America/New_York (the phone's clock; else its owner's home zone)
  * JSON feed for the Home Screen widget, authorised by the per-person widget token: tasks, schedules and the events of
  * connected calendars (never routines).
  * The phone app builds the same feed itself (shared/widgetFeed.ts); the widget asks here when the app has not
@@ -34,5 +34,6 @@ export const widgetFeed = onRequest({ cors: true, invoker: 'public' }, async (re
   const lists = listsSnap.docs.map((d) => normalizeList(d.id, data(d)))
 
   res.set('Cache-Control', 'private, max-age=60')
-  res.json(buildWidgetFeed({ me, users, tasks, schedules, events, lists, days: Number.isFinite(days) ? days : 31 }))
+  const tz = typeof req.query.tz === 'string' ? req.query.tz : undefined
+  res.json(buildWidgetFeed({ me, users, tasks, schedules, events, lists, days: Number.isFinite(days) ? days : 31, tz }))
 })

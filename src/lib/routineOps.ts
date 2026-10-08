@@ -1,6 +1,6 @@
 import type { DateKey, Routine, RoutineOccurrence, RoutineOverride } from "@shared/model";
 import { expandRoutine } from "@shared/recurrence";
-import { DAY_MS, addDaysKey, startOfDayMs } from "@shared/time";
+import { DAY_MS, addDaysKey, keyInZone, startOfDayMs } from "@shared/time";
 import { deleteRoutine, patchRoutine } from "./db";
 
 /**
@@ -13,6 +13,12 @@ export function routineOccurrenceNear(routine: Routine, day: DateKey): RoutineOc
   if (next) return next;
   const before = expandRoutine(routine, at - 400 * DAY_MS, at);
   return before[before.length - 1] ?? null;
+}
+
+/** A routine's next day from `now` (the one going on, when it is on now); one that has ended: its last day. */
+export function routineOccurrenceAfter(routine: Routine, now: number): RoutineOccurrence | null {
+  const next = expandRoutine(routine, now - 2 * DAY_MS, now + 400 * DAY_MS).find((o) => o.end > now);
+  return next ?? routineOccurrenceNear(routine, keyInZone(now, routine.timezone));
 }
 
 /** "Delete This Day Only": add an EXDATE. */

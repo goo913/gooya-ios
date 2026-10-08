@@ -26,9 +26,10 @@ export function dayHeading(key: DateKey): string {
   return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} – ${MONTH_SHORT[m - 1]} ${d}`;
 }
 
-function openItem(o: Item, day: DateKey): void {
+/** Its details: this occurrence of it, by its own day (on its own clock, which may not be the day it is listed under). */
+function openItem(o: Item): void {
   const { openDetail } = useSheets.getState();
-  if (o.kind === "event") openDetail({ kind: "event", eventId: o.event.id, dateKey: day });
+  if (o.kind === "event") openDetail({ kind: "event", eventId: o.event.id, dateKey: o.dateKey });
   else openDetail({ kind: "task", taskId: o.task.id, dateKey: o.dateKey });
   router.push("/sheet/detail");
 }
@@ -77,7 +78,7 @@ export function ListView({ from, topInset = 0 }: { from?: DateKey; topInset?: nu
             }}
           >
             <Text style={[styles.dayHead, { color: isToday ? colors.red : colors.label, borderBottomColor: colors.separator }]}>{dayHeading(day)}</Text>
-            {items.map((o) => (o.kind === "event" ? <EventRow key={o.key} occ={o} day={day} /> : <TaskRow key={o.key} occ={o} day={day} />))}
+            {items.map((o) => (o.kind === "event" ? <EventRow key={o.key} occ={o} /> : <TaskRow key={o.key} occ={o} />))}
           </View>
         );
       })}
@@ -96,10 +97,10 @@ function Times({ start, end, allDay }: { start: number; end?: number; allDay: bo
   );
 }
 
-export function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
+export function EventRow({ occ }: { occ: EventOccurrence }) {
   const colors = useColors();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
       <View style={[styles.bar, { backgroundColor: occ.event.color || colors.blue }]} />
       <View style={styles.text}>
         <Text numberOfLines={2} style={[styles.title, { color: colors.label }]}>
@@ -117,14 +118,14 @@ export function EventRow({ occ, day }: { occ: EventOccurrence; day: DateKey }) {
   );
 }
 
-export function TaskRow({ occ, day }: { occ: TaskOccurrence; day: DateKey }) {
+export function TaskRow({ occ }: { occ: TaskOccurrence }) {
   const colors = useColors();
   const person = usePerson(occ.task.owner);
   const list = useData((s) => s.lists.find((l) => l.id === occ.task.listId));
   const ring = useTaskColor(occ.task);
   const bangs = ["", "!", "!!", "!!!"][occ.task.priority ?? 0];
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ, day)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={occ.title} onPress={() => openItem(occ)} style={({ pressed }) => [styles.row, { borderBottomColor: colors.separator, backgroundColor: pressed ? colors.fill4 : "transparent" }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={occ.completed ? "Mark incomplete" : "Mark complete"} hitSlop={10} onPress={() => void setCompleted(occ.task, occ.dateKey, !occ.completed)} style={styles.ring}>
         <TaskRing color={ring} done={occ.completed} size={22} />
       </Pressable>

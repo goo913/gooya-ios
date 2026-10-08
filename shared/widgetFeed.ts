@@ -79,6 +79,8 @@ export interface WidgetFeedInput {
   lists: TaskList[]
   /** How many days of items from today (1–42, default 31). */
   days?: number
+  /** The clock the feed is on: the phone's (as the app shows days), else its owner's home zone. */
+  tz?: string
   now?: number
   appUrl?: string
 }
@@ -95,15 +97,26 @@ export function hex6(c: string | null | undefined): string | null {
   return null
 }
 
+/** Whether `tz` is a time zone this runtime knows ("Asia/Seoul"). */
+export function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** The Sunday on or before a day. */
 function sundayOf(key: DateKey): DateKey {
   const [y, m, d] = key.split('-').map(Number)
   return addDaysKey(key, -new Date(Date.UTC(y, m - 1, d)).getUTCDay())
 }
 
-export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, days = 31, now = Date.now(), appUrl = 'https://gooya-eunbee.web.app' }: WidgetFeedInput): WidgetFeed {
+export function buildWidgetFeed({ me, users, tasks, schedules, events, lists, days = 31, now = Date.now(), appUrl = 'https://gooya-eunbee.web.app', tz: phoneZone }: WidgetFeedInput): WidgetFeed {
   const span = Math.min(42, Math.max(1, days))
-  const tz = me.timezone || PEOPLE[me.key].timezone
+  // On the phone's clock, as the app shows days (someone away from home sees the same days in both).
+  const tz = (phoneZone && isTimeZone(phoneZone) ? phoneZone : null) ?? (me.timezone || PEOPLE[me.key].timezone)
   const today = todayKey(tz, now)
   // The month grid (from the Sunday before the 1st, six weeks), this week and the next, and the list's days ahead.
   const monthGrid = sundayOf(`${today.slice(0, 7)}-01` as DateKey)

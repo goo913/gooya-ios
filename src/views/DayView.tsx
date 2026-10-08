@@ -136,10 +136,10 @@ function buildColumns(dates: DateKey[], people: PersonKey[], tasks: TaskOccurren
       if (dateSet.has(occ.dueDate)) map.get(place(occ.dueDate, occ.task.owner))!.allDay.push(occ);
       continue;
     }
-    for (const s of splitByDay(occ, viewerTz)) {
-      if (!dateSet.has(s.dateKey)) continue;
-      map.get(place(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
-    }
+    // A task is a moment, on the day it is due: the room it takes may run past midnight (one due at 11:59 PM), which
+    // must not put it on the next day as well.
+    const [s] = splitByDay(occ, viewerTz);
+    if (s && dateSet.has(s.dateKey)) map.get(place(s.dateKey, occ.task.owner))!.timed.push({ occ, key: `${occ.key}@${s.dateKey}`, start: s.start, end: s.end, startMin: s.startMin, endMin: Math.min(24 * 60, s.startMin + TASK_MINUTES), lane: 0, lanes: 1 });
   }
   const shared = merged && people.length > 1;
   for (const occ of routines) {

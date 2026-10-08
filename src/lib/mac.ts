@@ -39,12 +39,13 @@ export function useMacAgenda(): void {
     const byId = listIndexOf(lists);
     const personHex = (key: keyof typeof PEOPLE) => colorHex(users[key]?.color || PEOPLE[key].color, dark);
     const time = (o: { allDay: boolean; start: number }) => (o.allDay ? "all-day" : formatTime12(o.start, viewerTz));
-    const eventRow = (o: EventOccurrence): AgendaRow => ({ key: `event|${o.event.id}|${o.dateKey}|${o.key}`, title: o.title, detail: time(o), color: o.event.color || personHex(o.event.owner) });
-    const taskRow = (o: TaskOccurrence): AgendaRow => ({ key: `task|${o.task.id}|${o.dateKey}|${o.key}`, title: o.title, detail: time(o), color: taskColor(o.task, byId) ?? personHex(o.task.owner) });
+    // A row's key: what it is, its own occurrence (by its own day) and the day it is listed under, which it opens.
+    const eventRow = (o: EventOccurrence, on: DateKey): AgendaRow => ({ key: `event|${o.event.id}|${o.dateKey}|${o.key}|${on}`, title: o.title, detail: time(o), color: o.event.color || personHex(o.event.owner) });
+    const taskRow = (o: TaskOccurrence, on: DateKey): AgendaRow => ({ key: `task|${o.task.id}|${o.dateKey}|${o.key}|${on}`, title: o.title, detail: time(o), color: taskColor(o.task, byId) ?? personHex(o.task.owner) });
     const day = (key: DateKey, name: string) => {
       const evs = events.get(key) ?? [];
       const open = (tasks.get(key) ?? []).filter((t) => !t.completed);
-      const rows = [...evs.map((o) => ({ o, row: eventRow(o) })), ...open.map((o) => ({ o, row: taskRow(o) }))]
+      const rows = [...evs.map((o) => ({ o, row: eventRow(o, key) })), ...open.map((o) => ({ o, row: taskRow(o, key) }))]
         .sort((a, b) => (a.o.allDay !== b.o.allDay ? (a.o.allDay ? -1 : 1) : a.o.start - b.o.start))
         .map((x) => x.row);
       return { title: `${name} · ${WEEKDAY_SHORT[weekdayOfKey(key)]}, ${MONTH_SHORT[Number(key.slice(5, 7)) - 1]} ${Number(key.slice(8))}`, rows };
@@ -64,7 +65,7 @@ export function useMacAgenda(): void {
   // A chosen row: its day in the Day view with its details beside it (from wherever GOOYA was).
   useEffect(() => {
     const sub = onAgendaSelect((key) => {
-      const [kind, id, dateKey, occKey] = key.split("|");
+      const [kind, id, dateKey, occKey, on] = key.split("|");
       if (kind === "new") {
         router.dismissTo("/");
         useSheets.getState().openEditor({ kind: "task", initialOwner: me, initialDate: usePad.getState().date });
@@ -74,7 +75,7 @@ export function useMacAgenda(): void {
       if (kind !== "task" && kind !== "event") return;
       router.dismissTo("/");
       const pad = usePad.getState();
-      pad.show("day", dateKey as DateKey);
+      pad.show("day", (on || dateKey) as DateKey);
       pad.select(kind === "task" ? { kind: "task", taskId: id, dateKey: dateKey as DateKey } : { kind: "event", eventId: id, dateKey: dateKey as DateKey }, occKey);
     });
     return () => sub?.remove();

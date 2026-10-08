@@ -8,6 +8,7 @@ import { useData } from "@/store/data";
 import { usePrefs } from "@/store/prefs";
 import { useSession } from "@/store/session";
 import { isMock } from "./mock";
+import { viewerTz } from "./useNow";
 
 /**
  * The Home Screen widget (targets/widget, Swift) reads what the app writes into the App Group: the same feed the
@@ -33,7 +34,8 @@ export function syncWidgetNow(): void {
   if (!me) return;
   if (!isMock && !(loaded.tasks && loaded.schedules && loaded.users)) return;
   const mine = users[me] ?? fallbackUser(me);
-  const feed = buildWidgetFeed({ me: mine, users: Object.values(users).filter((u): u is UserDoc => !!u), tasks, schedules, events, lists, days: 31 });
+  // On this phone's clock, as the app shows days.
+  const feed = buildWidgetFeed({ me: mine, users: Object.values(users).filter((u): u is UserDoc => !!u), tasks, schedules, events, lists, days: 31, tz: viewerTz });
   storage.set(KEYS.feed, JSON.stringify(feed));
   storage.set(KEYS.hidden, JSON.stringify(usePrefs.getState().hiddenCalendars));
   if (mine.widgetToken) storage.set(KEYS.token, mine.widgetToken);

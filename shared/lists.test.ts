@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { indexLists } from './categories'
-import { countLists, listSchedules, listTasks } from './lists'
+import { countLists, listSchedules, listTasks, taskDay } from './lists'
 import type { Routine, Schedule, Task, TaskList } from './model'
 import { startOfDayMs, zonedMs } from './time'
 
@@ -71,7 +71,7 @@ test('schedules are listed once each, a repeating one at its next day; ended one
 
 test('a category counts its tasks not done and its schedules not over', () => {
   const people = ['eunbi']
-  const counts = countLists(listTasks(TASKS, people, TODAY, NY), listSchedules(SCHEDULES, people, TODAY, NOW, NY), ROUTINES, people, TODAY, byId)
+  const counts = countLists(listTasks(TASKS, people, TODAY, NY), listSchedules(SCHEDULES, people, TODAY, NOW, NY), ROUTINES, people, TODAY, NY, byId)
   // Personal: the task due tomorrow and the one in 은비's Reminders list for it; Tuesday's, the next Saturday, today's all-day.
   assert.equal(counts.byList.get('personal'), 5)
   assert.equal(counts.byList.get('tasks'), 1)
@@ -87,7 +87,7 @@ test('a category counts its tasks not done and its schedules not over', () => {
 
 test('with both people ticked, each counts the other’s too', () => {
   const people = ['eunbi', 'gooya']
-  const counts = countLists(listTasks(TASKS, people, TODAY, NY), listSchedules(SCHEDULES, people, TODAY, NOW, NY), ROUTINES, people, TODAY, byId)
+  const counts = countLists(listTasks(TASKS, people, TODAY, NY), listSchedules(SCHEDULES, people, TODAY, NOW, NY), ROUTINES, people, TODAY, NY, byId)
   assert.equal(counts.byList.get('personal'), 7)
   assert.equal(counts.schedules, 6)
   assert.equal(counts.routines, 3)
@@ -96,7 +96,36 @@ test('with both people ticked, each counts the other’s too', () => {
 test('a schedule stops counting once it has ended', () => {
   const people = ['eunbi']
   const later = zonedMs(TODAY, '13:30', NY)
-  const counts = countLists([], listSchedules(SCHEDULES, people, TODAY, later, NY), [], people, TODAY, byId)
+  const counts = countLists([], listSchedules(SCHEDULES, people, TODAY, later, NY), [], people, TODAY, NY, byId)
   assert.equal(counts.byList.get('work'), undefined)
   assert.equal(counts.byList.get('personal'), 3)
+})
+
+// 은비 in Seoul, 구야 in New York: on Wednesday Oct 7 at 9 PM in New York it is Thursday 10 AM in Seoul.
+const SEOUL = 'Asia/Seoul'
+const WED = '2026-10-07'
+const WED_9PM = zonedMs(WED, '21:00', NY)
+
+test('a task is on the viewer’s day, as the calendar shows it, not on its own clock’s', () => {
+  // Due Thursday 9:40 AM in Seoul: Wednesday 8:40 PM in New York.
+  const [o] = listTasks([task('ruler', 'personal', '2026-10-08', { dueTime: '09:40', timezone: SEOUL })], ['eunbi'], WED, NY)
+  assert.equal(o.dueDate, '2026-10-08')
+  assert.equal(taskDay(o, NY), WED)
+  assert.equal(taskDay(o, SEOUL), '2026-10-08')
+  // A date-only task is on its date wherever it is seen.
+  const [d] = listTasks([task('allDay', 'personal', '2026-10-08', { timezone: SEOUL })], ['eunbi'], WED, NY)
+  assert.equal(taskDay(d, NY), '2026-10-08')
+  // So it counts for Today in New York (Wednesday), and Thursday's date-only one does not.
+  const counts = countLists([o, d], [], [], ['eunbi'], WED, NY, byId)
+  assert.equal(counts.today, 1)
+})
+
+test('a repeating task in another zone is listed at its next day on the viewer’s calendar', () => {
+  // Daily at 9:40 AM in Seoul (8:40 PM the evening before in New York), none done yet.
+  const daily = task('stretch', 'personal', '2026-10-01', { dueTime: '09:40', timezone: SEOUL, rrule: 'FREQ=DAILY' })
+  const [next] = listTasks([daily], ['eunbi'], WED, NY)
+  // Seoul's Thursday one, which is tonight (Wednesday) in New York; not Seoul's Wednesday one (Tuesday night here).
+  assert.equal(next.dateKey, '2026-10-08')
+  assert.equal(taskDay(next, NY), WED)
+  assert.ok(next.start < WED_9PM)
 })

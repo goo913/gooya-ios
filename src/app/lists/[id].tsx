@@ -1,6 +1,6 @@
 import { categoryOfList, isCategory } from "@shared/categories";
 import type { DateKey, EventOccurrence, Routine, TaskOccurrence } from "@shared/model";
-import { listSchedules } from "@shared/lists";
+import { listSchedules, taskDay } from "@shared/lists";
 import { describeRule, eventDays } from "@shared/recurrence";
 import { parseHHmm, parseKey } from "@shared/time";
 import { router, useLocalSearchParams } from "expo-router";
@@ -64,7 +64,8 @@ export default function ListScreen() {
     // Tasks: a smart list's, a category's or Reminders list's, or all of them.
     if (library !== "schedules" && library !== "routines") {
       let items = occ;
-      if (smart === "today") items = items.filter((o) => !o.completed && o.dueDate && o.dueDate <= today);
+      // Each task on its day as the calendar shows it (one due in another time zone may be a day off its own date).
+      if (smart === "today") items = items.filter((o) => !o.completed && !!o.dueDate && taskDay(o, viewerTz) <= today);
       else if (smart === "scheduled") items = items.filter((o) => !!o.dueDate);
       else if (smart === "completed") items = items.filter((o) => o.completed);
       // A category: its tasks, through their owners' Reminders lists too; a Reminders list in no category: its own.
@@ -73,7 +74,7 @@ export default function ListScreen() {
         doneCount = items.filter((o) => o.completed).length;
         if (!showDone) items = items.filter((o) => !o.completed);
       }
-      for (const o of items) rows.push({ day: o.dueDate || "No Date", row: { kind: "task", key: o.key, occ: o }, start: o.start });
+      for (const o of items) rows.push({ day: taskDay(o, viewerTz) || "No Date", row: { kind: "task", key: o.key, occ: o }, start: o.start });
     }
     // Schedules: a category's, or all of them. Each once: a repeating one at its next day (or its last, once it has
     // ended); ones that have ended under Past Schedules.
@@ -123,7 +124,8 @@ export default function ListScreen() {
     router.push("/sheet/detail");
   };
   const openRoutine = (r: Routine) => {
-    openDetail({ kind: "routine", routineId: r.id, dateKey: today >= r.startDate ? today : r.startDate });
+    // No day: its details show the next one (the one going on, if any).
+    openDetail({ kind: "routine", routineId: r.id, dateKey: "" });
     router.push("/sheet/detail");
   };
   // A new item here: in this category (task or schedule), or of this Library's kind.
@@ -163,7 +165,7 @@ export default function ListScreen() {
           ? routineRows.map((r) => <RoutineRow key={r.id} routine={r} onOpen={() => openRoutine(r)} />)
           : Array.from(groups.entries()).map(([day, items]) => (
               <View key={day}>
-                <DayHeader day={day} today={today} />
+                <DayHeader day={day} today={today} overdue={items.some((r) => r.kind === "task" && !r.occ.completed)} />
                 {items.map(renderRow)}
               </View>
             ))}
@@ -172,7 +174,7 @@ export default function ListScreen() {
             <Text style={[styles.section, { color: colors.label2 }]}>Past Schedules</Text>
             {Array.from(past.entries()).map(([day, items]) => (
               <View key={`past${day}`}>
-                <DayHeader day={day} today={today} />
+                <DayHeader day={day} today={today} overdue={false} />
                 {items.map(renderRow)}
               </View>
             ))}
@@ -269,13 +271,14 @@ function RoutineRow({ routine, onOpen }: { routine: Routine; onOpen: () => void 
   );
 }
 
-function DayHeader({ day, today }: { day: string; today: DateKey }) {
+/** A day's heading: "Today" in blue; a day gone by in red only while a task on it is still to do (as Reminders shows one overdue). */
+function DayHeader({ day, today, overdue: open }: { day: string; today: DateKey; overdue: boolean }) {
   const colors = useColors();
   if (day === "No Date") return <Text style={[styles.dayName, { color: colors.label2, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 }]}>No Date</Text>;
   const { y, m, d } = parseKey(day);
   const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
   const isToday = day === today;
-  const overdue = day < today;
+  const overdue = open && day < today;
   const c = isToday ? colors.blue : overdue ? colors.red : colors.label;
   return (
     <View style={styles.dayHead}>

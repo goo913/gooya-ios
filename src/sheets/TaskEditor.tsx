@@ -4,7 +4,7 @@ import type { DateKey, HHmm, Priority, Task, TaskOccurrence } from "@shared/mode
 import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPresetKey } from "@shared/recurrence";
 import { isReminderList } from "@shared/reminders";
-import { addDaysKey, formatHHmm, parseHHmm, parseKey, weekdayOfKey, zonedMs } from "@shared/time";
+import { addDaysKey, formatHHmm, parseHHmm, parseKey, todayKey, weekdayOfKey, zonedMs } from "@shared/time";
 import { router } from "expo-router";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActionSheetIOS, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -361,7 +361,8 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
 
         <SectionTitle>Date & Time</SectionTitle>
         <Group header={dual ? zones[0].label : undefined}>
-          <Row icon="calendar" label="Date" detail={dateOn ? describeDate(dueDate, today) : undefined} onPress={dateOn ? () => setShowCal((v) => !v) : undefined}>
+          {/* The date is on the owner's clock (the group's), so "Today" is theirs: 9 AM Thursday in Seoul is today there. */}
+          <Row icon="calendar" label="Date" detail={dateOn ? describeDate(dueDate, todayKey(editZone)) : undefined} onPress={dateOn ? () => setShowCal((v) => !v) : undefined}>
             <Switch
               label="Date"
               value={dateOn}

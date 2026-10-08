@@ -177,6 +177,12 @@ export function splitByDay<T extends { start: number; end: number }>(
   return segments
 }
 
+/** A task's occurrence by its own day (`dateKey`, on the task's clock: an alert's, a link's), or null. */
+export function taskOccurrenceOn(task: Task, dateKey: DateKey): TaskOccurrence | null {
+  const tz = task.timezone || 'UTC'
+  return expandTask(task, startOfDayMs(dateKey, tz) - DAY_MS, startOfDayMs(addDaysKey(dateKey, 1), tz) + DAY_MS).find((o) => o.dateKey === dateKey) ?? null
+}
+
 /** Date key (viewer zone) a task occurrence appears on: its own date when date-only, else the local date of the due instant. */
 export function occurrenceDays(occ: TaskOccurrence, viewerTz: string): DateKey[] {
   return [occ.allDay ? occ.dueDate : keyInZone(occ.start, viewerTz)]

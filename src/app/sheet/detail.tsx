@@ -1,8 +1,8 @@
 import { categoryOfList, isCategory } from "@shared/categories";
 import type { AttendeeStatus, DateKey, Task, TaskOccurrence } from "@shared/model";
 import { findConference } from "@shared/conference";
-import { describeRule, expandEvent, expandTask } from "@shared/recurrence";
-import { DAY_MS, addDaysKey, minutesSinceMidnight, startOfDayMs } from "@shared/time";
+import { describeRule, eventDays, expandEvent, expandTask, occurrenceDays } from "@shared/recurrence";
+import { DAY_MS, addDaysKey, keyInZone, minutesSinceMidnight, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { httpsCallable } from "@react-native-firebase/functions";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -18,15 +18,15 @@ import { mix } from "@/lib/color";
 import { deleteRoutine } from "@/lib/db";
 import { functions } from "@/lib/firebase";
 import { isMock } from "@/lib/mock";
-import { MONTH_NAMES, WEEKDAY_LONG, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
+import { MONTH_NAMES, MONTH_SHORT, WEEKDAY_LONG, WEEKDAY_SHORT, formatTime, hourLabel, tzAbbrev } from "@/lib/format";
 import { colorHex, listIndexOf, scheduleHex, useMe, usePerson, useTaskColor } from "@/lib/people";
-import { deleteRoutineDay, endRoutineBefore, routineOccurrenceNear } from "@/lib/routineOps";
+import { deleteRoutineDay, endRoutineBefore, routineOccurrenceAfter, routineOccurrenceNear } from "@/lib/routineOps";
 import { reminderOwnerName } from "@/lib/reminders";
 import { deleteTaskScope, setCompleted } from "@/lib/taskOps";
 import { reminderIdOf } from "@shared/reminders";
 import { plainNotes } from "@shared/calendarCopy";
 import { hasEndTime, scheduleAsEvent } from "@shared/schedules";
-import { viewerTz } from "@/lib/useNow";
+import { useNow, viewerTz } from "@/lib/useNow";
 import { useData } from "@/store/data";
 import { useSheets, type DetailRequest } from "@/store/sheets";
 import { useColors, useIsDark } from "@/theme";
@@ -92,6 +92,12 @@ export function DetailContent({ req, host }: { req: DetailRequest; host?: Detail
 function longDate(key: DateKey): string {
   const [y, m, d] = key.split("-").map(Number);
   return `${WEEKDAY_LONG[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTH_NAMES[m - 1]} ${d}, ${y}`;
+}
+
+/** "Thu, Oct 8", and with the year "Thu, Oct 8, 2026". */
+function shortDate(key: DateKey, withYear = false): string {
+  const [y, m, d] = key.split("-").map(Number);
+  return `${WEEKDAY_SHORT[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTH_SHORT[m - 1]} ${d}${withYear ? `, ${y}` : ""}`;
 }
 
 /** "9 AM", "9:30 AM": Apple leaves out ":00" in an event's details. */
@@ -216,8 +222,11 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
       void deleteTaskScope(task, occ, scope).then((deleted) => deleted && done());
     });
   };
+  // The day and time it is here, as the calendar shows it; below, its owner's clock when theirs reads differently (with
+  // its date when that is another day: 9:40 AM Thursday in Seoul is 8:40 PM Wednesday in New York).
+  const day = occurrenceDays(occ, viewerTz)[0];
   const time = occ.allDay ? null : formatTime(occ.start, viewerTz);
-  const ownTime = !occ.allDay && task.timezone && task.timezone !== viewerTz ? `${formatTime(occ.start, task.timezone)} ${tzAbbrev(task.timezone, occ.start)} for ${owner.name}` : null;
+  const ownTime = !occ.allDay && task.timezone && task.timezone !== viewerTz ? `${occ.dueDate !== day ? `${shortDate(occ.dueDate)}, ` : ""}${formatTime(occ.start, task.timezone)} ${tzAbbrev(task.timezone, occ.start)} for ${owner.name}` : null;
   const startMin = occ.allDay ? 9 * 60 : minutesSinceMidnight(occ.start, viewerTz);
   const bangs = ["", "!", "!!", "!!!"][task.priority ?? 0];
   return (
@@ -233,7 +242,7 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
         </Text>
       </View>
       <View style={styles.when}>
-        <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(occ.dueDate)}</Text>
+        <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(day)}</Text>
         {time ? <Text style={[styles.whenText, { color: colors.label2 }]}>{time}</Text> : null}
         {ownTime ? <Text style={[styles.small, { color: colors.label3 }]}>{ownTime}</Text> : null}
         {task.rrule ? (
@@ -296,13 +305,18 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
   const openEditor = useSheets((s) => s.openEditor);
   const host = useContext(DetailHostContext);
   const owner = usePerson(routine?.owner ?? "gooya");
-  // The day asked for, or (a routine not on it: Work on a Saturday, from a list of routines) its nearest day.
-  const occ = useMemo(() => (routine ? routineOccurrenceNear(routine, dateKey) : null), [routine, dateKey]);
+  const now = useNow(60_000);
+  // The day asked for (from the calendar; a day it is not on: its nearest), or from a list of routines (no day) the next
+  // one, the one going on if it is on now.
+  const occ = useMemo(() => (routine ? (dateKey ? routineOccurrenceNear(routine, dateKey) : routineOccurrenceAfter(routine, now)) : null), [routine, dateKey, now]);
   if (!routine || !occ) return <Missing what="routine" />;
+  // Its own day, on its owner's clock: what Edit This Day Only and Delete This Day Only change.
   const day = occ.dateKey;
   const color = routine.color ? colorHex(routine.color, dark) : colorHex(owner.color, dark);
-  const ownerTimes = `${formatTime(occ.start, routine.timezone)} – ${formatTime(occ.end, routine.timezone)} ${tzAbbrev(routine.timezone, occ.start)}`;
-  const localTimes = routine.timezone !== viewerTz ? `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)} ${tzAbbrev(viewerTz, occ.start)} for you` : null;
+  // Here, as the calendar shows it; below, its owner's clock when it is kept on another (with its date when another day).
+  const hereDay = keyInZone(occ.start, viewerTz);
+  const hereTimes = `${formatTime(occ.start, viewerTz)} – ${formatTime(occ.end, viewerTz)}`;
+  const ownerTimes = routine.timezone !== viewerTz ? `${day !== hereDay ? `${shortDate(day)}, ` : ""}${formatTime(occ.start, routine.timezone)} – ${formatTime(occ.end, routine.timezone)} ${tzAbbrev(routine.timezone, occ.start)} for ${owner.name}` : null;
   const edit = (dayOnly: boolean) => {
     openEditor({ kind: "routine", routine, dayOnly: dayOnly ? day : undefined });
     host.toEditor();
@@ -327,9 +341,9 @@ function RoutineDetail({ routineId, dateKey }: { routineId: string; dateKey: Dat
           <Text style={[styles.eventTitle, { color: colors.label }]}>
             {occ.icon} {occ.title}
           </Text>
-          <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(day)}</Text>
-          <Text style={[styles.whenText, { color: colors.label2 }]}>{ownerTimes}</Text>
-          {localTimes ? <Text style={[styles.small, { color: colors.label3 }]}>{localTimes}</Text> : null}
+          <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(hereDay)}</Text>
+          <Text style={[styles.whenText, { color: colors.label2 }]}>{hereTimes}</Text>
+          {ownerTimes ? <Text style={[styles.small, { color: colors.label3 }]}>{ownerTimes}</Text> : null}
           <View style={styles.repeat}>
             <Icon name="repeat" size={17} color={colors.label2} />
             <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(routine.rrule)}</Text>
@@ -388,12 +402,24 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
   }, [event, dateKey]);
   if (!event || !occ) return <Missing what="schedule" />;
   const color = event.color || colors.blue;
-  const when = occ.allDay ? "all-day" : hasEndTime(occ) ? `${clockTime(occ.start, viewerTz)} – ${clockTime(occ.end, viewerTz)}` : clockTime(occ.start, viewerTz);
-  // Apple adds the event's own clock when it was made in another time zone ("12:30 AM – 1:30 AM (GMT)").
+  // Its days here, as the calendar shows them: one day (its date, then its times), or several, as Apple writes those
+  // ("from 7 PM Wed, Sep 30, 2026" / "to 10 AM Sat, Oct 3, 2026").
+  const days = eventDays(occ, viewerTz);
+  const first = days[0];
+  const last = days[days.length - 1];
+  const whenLines =
+    first === last
+      ? [longDate(first), occ.allDay ? "all-day" : hasEndTime(occ) ? `${clockTime(occ.start, viewerTz)} – ${clockTime(occ.end, viewerTz)}` : clockTime(occ.start, viewerTz)]
+      : occ.allDay
+        ? [`from ${shortDate(first, true)}`, `to ${shortDate(last, true)}`]
+        : [`from ${clockTime(occ.start, viewerTz)} ${shortDate(first, true)}`, `to ${clockTime(occ.end, viewerTz)} ${shortDate(last, true)}`];
+  // Apple adds the event's own clock when it was made in another time zone ("12:30 AM – 1:30 AM (GMT)"); here with its
+  // date when that is another day.
   const zone = event.timezone;
+  const zoneDay = zone ? keyInZone(occ.start, zone) : first;
   const otherClock =
     !occ.allDay && zone && zone !== viewerTz && formatTime(occ.start, zone) !== formatTime(occ.start, viewerTz)
-      ? `${hasEndTime(occ) ? `${clockTime(occ.start, zone)} – ${clockTime(occ.end, zone)}` : clockTime(occ.start, zone)} (${tzAbbrev(zone, occ.start)})`
+      ? `${zoneDay !== first ? `${shortDate(zoneDay)}, ` : ""}${hasEndTime(occ) ? `${clockTime(occ.start, zone)} – ${clockTime(occ.end, zone)}` : clockTime(occ.start, zone)} (${tzAbbrev(zone, occ.start)})`
       : null;
   const startMin = occ.allDay ? 0 : minutesSinceMidnight(occ.start, viewerTz);
   // A schedule without an end time takes half an hour's room, as in the day view.
@@ -420,8 +446,11 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
         <View style={[styles.titleBar, { backgroundColor: color }]} />
         <View style={styles.barTitleText}>
           <Text style={[styles.eventTitle, { color: colors.label }]}>{occ.title}</Text>
-          <Text style={[styles.whenText, { color: colors.label2 }]}>{longDate(occ.dateKey)}</Text>
-          <Text style={[styles.whenText, { color: colors.label2 }]}>{when}</Text>
+          {whenLines.map((line) => (
+            <Text key={line} style={[styles.whenText, { color: colors.label2 }]}>
+              {line}
+            </Text>
+          ))}
           {otherClock ? <Text style={[styles.whenText, { color: colors.label3 }]}>{otherClock}</Text> : null}
           {event.rrule ? (
             <View style={styles.repeat}>
