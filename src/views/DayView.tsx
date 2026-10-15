@@ -1,7 +1,7 @@
 import type { DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from "@shared/model";
 import { otherPerson, type PersonKey } from "@shared/people";
 import { splitByDay } from "@shared/recurrence";
-import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, minutesSinceMidnight, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
+import { DAY_MS, addDaysKey, fieldsInZone, formatHHmm, minutesSinceMidnight, offsetMinutes, startOfDayMs, weekdayOfKey, zonedMs } from "@shared/time";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
@@ -296,7 +296,6 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const meInfo = usePerson(me);
   const otherInfo = usePerson(other);
   const infos: Record<PersonKey, PersonInfo> = me === "gooya" ? { gooya: meInfo, eunbi: otherInfo } : { gooya: otherInfo, eunbi: meInfo };
-  const secondGutter = meInfo.settings.secondGutter;
   const intensity = meInfo.settings.routineIntensity ?? (dark ? 0.5 : 0.35);
   const days = daysProp ?? timelineDays;
   const people = useMemo<PersonKey[]>(() => (timelinePeople === "me" ? [me] : timelinePeople === "other" ? [other] : [me, other]), [timelinePeople, me, other]);
@@ -305,6 +304,8 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
   const todayNonce = useNav((s) => s.todayNonce);
   const today = useToday();
   const now = useNow(30_000);
+  // The other person's hours beside this device's (on unless turned off in Settings), while their clock reads differently.
+  const secondGutter = meInfo.settings.secondGutter && offsetMinutes(now, otherInfo.timezone) !== offsetMinutes(now, viewerTz);
 
   const pageDates = useMemo(() => [-1, 0, 1].map((p) => Array.from({ length: days }, (_, i) => addDaysKey(dateKey, p * days + i))), [dateKey, days]);
   const allDates = useMemo(() => pageDates.flat(), [pageDates]);
@@ -353,10 +354,15 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
     return { allDayRows: allDayOpen ? max : Math.min(2, max), allDayFolds: max > 2 };
   }, [spanLayouts, columns, pageDates, colPeople, allDayOpen]);
 
-  const gutterW = (mac ? 60 : pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
+  const gutterW = mac ? 60 + (secondGutter ? 44 : 0) : (pad ? 93 : m.gutter) + (secondGutter ? 32 * m.day : 0);
   const pageW = width - gutterW;
   // The Mac's day has no date over its columns (the title says it); its week has "Sun 27" over each day.
   const titleH = mac ? (days > 1 ? 30 : 0) : m.dayTitle * 1.34;
+  // One day's title ("Thursday – Oct 15, 2026") is centred on the whole width, as Apple's is, when it fits between the
+  // hours (two clocks of them at a large Text Size leave less room); otherwise it is centred over the day.
+  const centerTitle = days === 1 && !mac ? formatDayTitle(pageDates[1][0]) : null;
+  const [titleWidth, setTitleWidth] = useState<{ text: string; w: number } | null>(null);
+  const titleCentred = !titleWidth || titleWidth.text !== centerTitle || titleWidth.w <= width - 2 * gutterW - 4;
   const namesH = colPeople.length > 1 ? m.personName * 1.3 : 0;
   const allDayTop = mac ? titleH + namesH : 7 + titleH + namesH + 2;
   const allDayRowH = Math.round(m.chipHeight * (mac ? itemZoom : 1)) + 3;
@@ -517,9 +523,11 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
       <View style={[styles.header, { height: headerH, borderBottomColor: mac ? macColors.allDayLine : colors.separator }, mac && { borderBottomWidth: 3 }]}>
         <View style={{ width: gutterW }}>
           {secondGutter ? (
-            <View style={[styles.tzRow, { top: 7 + (titleH - m.personName * 1.3) / 2 }]}>
-              <Text allowFontScaling={false} style={[styles.tz, { color: colors.label3, fontSize: m.personName * 0.95 }]}>{tzAbbrev(otherInfo.timezone, now)}</Text>
-              <Text allowFontScaling={false} style={[styles.tz, { color: colors.label3, fontSize: m.personName * 0.95 }]}>{tzAbbrev(viewerTz, now)}</Text>
+            // Over the hours: the other person's zone, then this device's ("EDT  KST"). On the Mac level with the people's
+            // names (the day) or the days (the week).
+            <View style={[styles.tzRow, mac ? styles.macTzRow : null, { top: mac ? (namesH ? titleH + (namesH - 13) / 2 : Math.max(0, (titleH - 13) / 2)) : 7 + (titleH - m.personName * 1.3) / 2 }]}>
+              <Text allowFontScaling={false} style={[styles.tz, { color: mac ? macColors.hourSuffix : colors.label3, fontSize: mac ? 10 : m.personName * 0.95 }]}>{tzAbbrev(otherInfo.timezone, now)}</Text>
+              <Text allowFontScaling={false} style={[styles.tz, { color: mac ? macColors.hourText : colors.label3, fontSize: mac ? 10 : m.personName * 0.95 }]}>{tzAbbrev(viewerTz, now)}</Text>
             </View>
           ) : null}
           {mac ? (
@@ -545,6 +553,23 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
           ) : null}
           {mac && titleH ? <View style={[styles.macHeaderLine, { top: titleH + namesH, backgroundColor: macColors.line }]} /> : null}
         </View>
+        {centerTitle ? (
+          // The title's own width, measured unseen.
+          <Text
+            allowFontScaling={false}
+            numberOfLines={1}
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            onTextLayout={(e) => {
+              const w = Math.ceil(e.nativeEvent.lines[0]?.width ?? 0);
+              if (w && (titleWidth?.text !== centerTitle || titleWidth.w !== w)) setTitleWidth({ text: centerTitle, w });
+            }}
+            style={[styles.dateTitle, styles.measure, { fontSize: m.dayTitle }]}
+          >
+            {centerTitle}
+          </Text>
+        ) : null}
         <ScrollView ref={headerPagerRef} horizontal pagingEnabled scrollEnabled={false} showsHorizontalScrollIndicator={false} contentOffset={{ x: pageW, y: 0 }} style={{ width: pageW }}>
           {pageDates.map((dates, p) => (
             <View key={p} style={{ width: pageW, flexDirection: "row" }}>
@@ -563,8 +588,10 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                         styles.dateTitle,
                         { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 },
                         // One day: centred on the whole screen, as Apple's title is, not on the column right of the hours.
-                        days === 1 && { marginLeft: -gutterW, paddingLeft: 0 },
+                        days === 1 && titleCentred && { marginLeft: -gutterW, paddingLeft: 0 },
                       ]}
+                      adjustsFontSizeToFit={days === 1}
+                      minimumFontScale={0.8}
                     >
                       {days === 1 ? formatDayTitle(date) : days >= 5 ? "" : formatColumnHeader(date)}
                     </Text>
@@ -675,6 +702,13 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                   if (h === 24) return null;
                   return (
                     <View key={h} style={[styles.hourRow, { top: h * hourH - 9, height: 18, paddingRight: 6, opacity: hideNear ? 0 : 1 }]}>
+                      {secondaryLabels ? (
+                        // The other person's hour at the left, fainter.
+                        <View style={styles.macSecondary}>
+                          <Text allowFontScaling={false} style={[styles.macSecondaryHour, { color: macColors.hourSuffix }]}>{secondaryLabels[i].num}</Text>
+                          <Text allowFontScaling={false} style={[styles.macSuffix, { color: macColors.hourSuffix }]}>{secondaryLabels[i].suffix}</Text>
+                        </View>
+                      ) : null}
                       {h === 12 ? (
                         <Text allowFontScaling={false} style={[styles.macNoon, { color: macColors.hourText }]}>Noon</Text>
                       ) : (
@@ -1505,6 +1539,9 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   header: { flexDirection: "row", borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
   tzRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 8 },
+  macTzRow: { paddingLeft: 8, paddingRight: 8 },
+  macSecondary: { position: "absolute", left: 8, flexDirection: "row", alignItems: "center" },
+  macSecondaryHour: { fontSize: 11, fontVariant: ["tabular-nums"] },
   tz: { fontWeight: "600" },
   allDayLabel: { position: "absolute", right: 7.3, fontWeight: "500" },
   allDayFold: { position: "absolute", height: 14, justifyContent: "center" },
@@ -1512,6 +1549,7 @@ const styles = StyleSheet.create({
   macAllDayFold: { left: 18, width: 31, alignItems: "center" },
   dateCol: { flex: 1, minWidth: 0 },
   dateTitle: { textAlign: "center", fontWeight: "600" },
+  measure: { position: "absolute", left: 0, top: 0, opacity: 0 },
   names: { flexDirection: "row" },
   name: { flex: 1, textAlign: "center", fontWeight: "600" },
   allDayRow: { position: "absolute", left: 0, right: 0, flexDirection: "row", gap: 2, paddingHorizontal: 2 },

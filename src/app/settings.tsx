@@ -130,7 +130,7 @@ function SettingsSheet() {
 
         <Group
           header="Timeline"
-          footer={`Routine intensity sets how strongly Work, Sleep and other routines are filled in. Showing routines in the day${pad ? " and week views" : " view"} is remembered on this ${device}. Shows ${other.name}’s local hours next to yours when the second gutter is on.`}
+          footer={`Routine intensity sets how strongly Work, Sleep and other routines are filled in. Showing routines in the day${pad ? " and week views" : " view"} is remembered on this ${device}. ${other.name}’s Hours Too shows ${other.name}’s hours (${tzAbbrev(other.timezone)}) next to yours while your clocks differ.`}
         >
           <View style={styles.sliderBlock}>
             <View style={styles.sliderHead}>
@@ -165,8 +165,8 @@ function SettingsSheet() {
               <Switch label="Routines in Week View" value={routinesInWeek} onChange={setRoutinesInWeek} />
             </Row>
           ) : null}
-          <Row label="Second time gutter">
-            <Switch label="Second time gutter" value={mine.settings.secondGutter} onChange={(v) => saveSetting("secondGutter", v)} />
+          <Row label={`${other.name}’s Hours Too`}>
+            <Switch label={`${other.name}’s hours too`} value={mine.settings.secondGutter} onChange={(v) => saveSetting("secondGutter", v)} />
           </Row>
           <Row label="Reset zoom" onPress={() => setHourHeight(DEFAULT_HOUR_HEIGHT)} chevron />
         </Group>

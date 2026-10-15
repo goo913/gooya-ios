@@ -16,6 +16,8 @@ public enum GooyaMacMenu {
   public static var sidebar = true
   /// Escape is JavaScript's while something can be cancelled with it (a drag, a new item's popover).
   public static var escape = false
+  /// Return is JavaScript's while a form is open (it saves it), unless a text field or text view has the key.
+  public static var returnKey = false
 
   public static func build(_ builder: UIMenuBuilder) {
     guard builder.system == .main else { return }
@@ -88,14 +90,22 @@ public enum GooyaMacMenu {
     GooyaMacModule.current?.sendEvent("onCommand", ["id": id])
   }
 
-  /// Keys outside the menus, from the app delegate's key commands: ⌘= for Zoom In (the + key without Shift, as
-  /// Calendar takes it), and Escape while JavaScript wants it.
+  /// Keys outside the menus, from the app delegate's key commands: ⌘= for Zoom In on the Mac (the + key without Shift,
+  /// as Calendar takes it), and Escape and Return while JavaScript wants them (an iPad's keyboard too).
   public static func keyCommands() -> [UIKeyCommand] {
-    var keys = [UIKeyCommand(title: "", action: #selector(GooyaMacCommandTarget.gooyaCommand(_:)), input: "=", modifierFlags: [.command], propertyList: "zoom.in")]
+    var keys: [UIKeyCommand] = []
+    #if targetEnvironment(macCatalyst)
+    keys.append(UIKeyCommand(title: "", action: #selector(GooyaMacCommandTarget.gooyaCommand(_:)), input: "=", modifierFlags: [.command], propertyList: "zoom.in"))
+    #endif
     if escape {
       let esc = UIKeyCommand(title: "", action: #selector(GooyaMacCommandTarget.gooyaCommand(_:)), input: UIKeyCommand.inputEscape, modifierFlags: [], propertyList: "escape")
       esc.wantsPriorityOverSystemBehavior = true
       keys.append(esc)
+    }
+    if returnKey {
+      // Without priority over the system: a field being typed in takes Return first (a title saves the form itself, a
+      // note gets a new line).
+      keys.append(UIKeyCommand(title: "", action: #selector(GooyaMacCommandTarget.gooyaCommand(_:)), input: "\r", modifierFlags: [], propertyList: "return"))
     }
     return keys
   }

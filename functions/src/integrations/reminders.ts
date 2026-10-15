@@ -41,6 +41,8 @@ interface IncomingReminder {
   base?: ReminderFields
   /** It repeats in Reminders (newer apps): a done mark GOOYA has stays only while it is at the same time (mergeIntoTask). */
   recurring?: boolean
+  /** Its repeat as a rule body, null when it does not repeat (newer apps; older ones leave a task's repeat as it is). */
+  rrule?: string | null
 }
 
 interface Body {
@@ -52,6 +54,14 @@ interface Body {
   lists?: DeviceList[]
   /** Tasks that left Reminders in GOOYA (moved to one of GOOYA's own lists): they stay, as GOOYA's own tasks. */
   unlink?: string[]
+}
+
+/** A repeat GOOYA can keep: "FREQ=WEEKLY;BYDAY=MO,WE", null for none; anything else is left out (not known). */
+function repeatOf(r: IncomingReminder): string | null | undefined {
+  if (r.rrule === null) return null
+  if (typeof r.rrule !== 'string') return undefined
+  const rule = r.rrule.trim().toUpperCase()
+  return rule.length <= 300 && /^FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(;[A-Z]+=[A-Z0-9,+-]+)*$/.test(rule) ? rule : undefined
 }
 
 /** A reminder with its due day and time on the phone's clock (the Shortcut sent an instant). */
@@ -84,6 +94,7 @@ function normalized(r: IncomingReminder, tz: string): ReminderImport {
     taskId: r.taskId,
     base: r.base,
     recurring: r.recurring === true,
+    ...(repeatOf(r) !== undefined ? { rrule: repeatOf(r) } : {}),
   }
 }
 

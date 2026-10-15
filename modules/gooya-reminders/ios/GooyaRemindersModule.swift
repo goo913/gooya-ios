@@ -3,8 +3,8 @@ import ExpoModulesCore
 import UIKit
 
 /// Apple Reminders for GOOYA, straight from EventKit: the lists, the reminders in them, and saving GOOYA's changes back
-/// (title, notes, due day and time, completed, priority, list), and the lists that are GOOYA's categories (made, named
-/// and coloured as the categories are). Due days and times are the phone's clock as GOOYA keeps them ("2026-09-29",
+/// (title, notes, due day and time, repeat, completed, priority, list), and the lists that are GOOYA's categories (made,
+/// named and coloured as the categories are). A repeat is an RRULE body as GOOYA keeps it ("FREQ=WEEKLY;BYDAY=MO,WE"). Due days and times are the phone's clock as GOOYA keeps them ("2026-09-29",
 /// "17:00"), so nothing is converted through instants on the way in or out.
 public class GooyaRemindersModule: Module {
   private let store = EKEventStore()
@@ -121,7 +121,7 @@ public class GooyaRemindersModule: Module {
     }
 
     /// Makes a reminder (no id) or changes one. Only the fields given change; `setDue` says the due day/time is given
-    /// (with `dueDate` null to clear it). Returns the reminder as Reminders keeps it, whose id may be new when it moved
+    /// (with `dueDate` null to clear it), `setRepeat` the repeat (`rrule` null: no repeat). Returns the reminder as Reminders keeps it, whose id may be new when it moved
     /// lists, and which for a repeating reminder marked done is its next time, not done.
     AsyncFunction("save") { (input: ReminderInput) throws -> [String: Any] in
       let reminder: EKReminder
@@ -160,6 +160,9 @@ public class GooyaRemindersModule: Module {
       }
       if input.setDue {
         Self.setDue(reminder, date: input.dueDate, time: input.dueTime, alarm: input.alarmAtDue)
+      }
+      if input.setRepeat {
+        Self.setRepeat(reminder, input.rrule)
       }
       if let completed = input.completed {
         reminder.isCompleted = completed
@@ -262,6 +265,119 @@ public class GooyaRemindersModule: Module {
     return parts.count >= 2 ? (parts[0], parts[1]) : nil
   }
 
+  // MARK: - repeats
+
+  /// RRULE's days, in EKWeekday's order (Sunday is 1).
+  static let weekdayCodes = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
+
+  /// A reminder's repeat as an RRULE body, or nil when it does not repeat or repeats in a way GOOYA cannot write down.
+  static func rrule(of reminder: EKReminder) -> String? {
+    guard let rule = reminder.recurrenceRules?.first else {
+      return nil
+    }
+    var parts: [String]
+    switch rule.frequency {
+    case .daily: parts = ["FREQ=DAILY"]
+    case .weekly: parts = ["FREQ=WEEKLY"]
+    case .monthly: parts = ["FREQ=MONTHLY"]
+    case .yearly: parts = ["FREQ=YEARLY"]
+    @unknown default: return nil
+    }
+    if rule.interval > 1 {
+      parts.append("INTERVAL=\(rule.interval)")
+    }
+    if let days = rule.daysOfTheWeek, !days.isEmpty {
+      let sorted = days.sorted { ($0.weekNumber, $0.dayOfTheWeek.rawValue) < ($1.weekNumber, $1.dayOfTheWeek.rawValue) }
+      let codes = sorted.compactMap { day -> String? in
+        let i = day.dayOfTheWeek.rawValue - 1
+        guard weekdayCodes.indices.contains(i) else { return nil }
+        return (day.weekNumber != 0 ? "\(day.weekNumber)" : "") + weekdayCodes[i]
+      }
+      parts.append("BYDAY=" + codes.joined(separator: ","))
+    }
+    let numbers = { (name: String, values: [NSNumber]?) in
+      if let values, !values.isEmpty {
+        parts.append("\(name)=" + values.map { "\($0.intValue)" }.joined(separator: ","))
+      }
+    }
+    numbers("BYMONTHDAY", rule.daysOfTheMonth)
+    numbers("BYMONTH", rule.monthsOfTheYear)
+    numbers("BYWEEKNO", rule.weeksOfTheYear)
+    numbers("BYYEARDAY", rule.daysOfTheYear)
+    numbers("BYSETPOS", rule.setPositions)
+    if let end = rule.recurrenceEnd {
+      if let date = end.endDate {
+        // The last day on this phone's calendar, as GOOYA writes an end ("UNTIL=20261231T235959Z").
+        let day = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        parts.append(String(format: "UNTIL=%04d%02d%02dT235959Z", day.year ?? 0, day.month ?? 0, day.day ?? 0))
+      } else if end.occurrenceCount > 0 {
+        parts.append("COUNT=\(end.occurrenceCount)")
+      }
+    }
+    return parts.joined(separator: ";")
+  }
+
+  /// An RRULE body as EventKit's repeat, or nil when it is not one.
+  static func recurrenceRule(_ body: String) -> EKRecurrenceRule? {
+    var fields: [String: String] = [:]
+    for part in body.uppercased().split(separator: ";") {
+      let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
+      if pair.count == 2 {
+        fields[pair[0]] = pair[1]
+      }
+    }
+    let frequency: EKRecurrenceFrequency
+    switch fields["FREQ"] {
+    case "DAILY": frequency = .daily
+    case "WEEKLY": frequency = .weekly
+    case "MONTHLY": frequency = .monthly
+    case "YEARLY": frequency = .yearly
+    default: return nil
+    }
+    let interval = max(1, Int(fields["INTERVAL"] ?? "") ?? 1)
+    let days = (fields["BYDAY"] ?? "").split(separator: ",").compactMap { token -> EKRecurrenceDayOfWeek? in
+      let code = String(token.suffix(2))
+      guard let i = weekdayCodes.firstIndex(of: code), let weekday = EKWeekday(rawValue: i + 1) else { return nil }
+      let week = Int(token.dropLast(2)) ?? 0
+      return week == 0 ? EKRecurrenceDayOfWeek(weekday) : EKRecurrenceDayOfWeek(weekday, weekNumber: week)
+    }
+    let numbers = { (name: String) -> [NSNumber]? in
+      let values = (fields[name] ?? "").split(separator: ",").compactMap { Int($0) }.map { NSNumber(value: $0) }
+      return values.isEmpty ? nil : values
+    }
+    var end: EKRecurrenceEnd?
+    if let until = fields["UNTIL"], until.count >= 8, let y = Int(until.prefix(4)), let m = Int(until.dropFirst(4).prefix(2)), let d = Int(until.dropFirst(6).prefix(2)) {
+      // The end of that day on this phone's calendar.
+      if let last = Calendar.current.date(from: DateComponents(year: y, month: m, day: d, hour: 23, minute: 59, second: 59)) {
+        end = EKRecurrenceEnd(end: last)
+      }
+    } else if let count = Int(fields["COUNT"] ?? ""), count > 0 {
+      end = EKRecurrenceEnd(occurrenceCount: count)
+    }
+    return EKRecurrenceRule(
+      recurrenceWith: frequency,
+      interval: interval,
+      daysOfTheWeek: days.isEmpty ? nil : days,
+      daysOfTheMonth: numbers("BYMONTHDAY"),
+      monthsOfTheYear: numbers("BYMONTH"),
+      weeksOfTheYear: numbers("BYWEEKNO"),
+      daysOfTheYear: numbers("BYYEARDAY"),
+      setPositions: numbers("BYSETPOS"),
+      end: end
+    )
+  }
+
+  /// Gives a reminder this repeat (an RRULE body), or none. A repeat needs a due date: without one it gets none.
+  static func setRepeat(_ reminder: EKReminder, _ body: String?) {
+    let rule = body.flatMap { $0.isEmpty ? nil : recurrenceRule($0) }
+    for old in reminder.recurrenceRules ?? [] {
+      reminder.removeRecurrenceRule(old)
+    }
+    if let rule, reminder.dueDateComponents != nil {
+      reminder.addRecurrenceRule(rule)
+    }
+  }
+
   // MARK: - values for JavaScript
 
   static func serialize(_ calendar: EKCalendar, defaultId: String?) -> [String: Any] {
@@ -302,6 +418,7 @@ public class GooyaRemindersModule: Module {
       "completed": reminder.isCompleted,
       "priority": reminder.priority,
       "recurring": reminder.hasRecurrenceRules,
+      "rrule": rrule(of: reminder) ?? NSNull(),
       "alarms": (reminder.alarms ?? []).map { alarm -> [String: Any] in
         if let at = alarm.absoluteDate {
           return ["at": at.timeIntervalSince1970 * 1000]
@@ -333,6 +450,9 @@ struct ReminderInput: Record {
   @Field var alarmAtDue: Bool = false
   @Field var completed: Bool?
   @Field var priority: Int?
+  /// Change the repeat to `rrule` (null: no repeat).
+  @Field var setRepeat: Bool = false
+  @Field var rrule: String?
 }
 
 struct ListInput: Record {

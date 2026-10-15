@@ -10,6 +10,7 @@
 
 import { categoryKey, isCategory } from './categories'
 import type { DateKey, HHmm, Priority, Task, TaskList } from './model'
+import { sameRule } from './recurrence'
 import { fieldsInZone, formatHHmm, makeKey, zonedMs } from './time'
 
 export const REMINDERS_SOURCE = 'apple-reminders'
@@ -35,11 +36,16 @@ export interface DeviceReminder {
   /** Apple's priority: 0 none, 1–4 high, 5 medium, 6–9 low. */
   priority: number
   /**
-   * It repeats (Reminders' own repeat, which GOOYA does not model: its task is the reminder's next time). Marked done, in
-   * Reminders or from GOOYA, it is not done: Reminders keeps a done copy of that time (a new reminder, its own id, no
-   * repeat) and moves this one to its next date after today, not done.
+   * It repeats. Its task is the reminder's next time, repeating as it does. Marked done, in Reminders or from GOOYA, it is
+   * not done: Reminders keeps a done copy of that time (a new reminder, its own id, no repeat) and moves this one to its
+   * next date after today, not done.
    */
   recurring?: boolean
+  /**
+   * Its repeat as a rule body ("FREQ=WEEKLY;BYDAY=MO"), null when it does not repeat. Missing (unknown) from builds before
+   * repeats were synced, and for a repeat GOOYA cannot write down.
+   */
+  rrule?: string | null
 }
 
 /** A Reminders list as the iPhone has it. */
@@ -85,6 +91,8 @@ export interface ReminderImport {
   base?: ReminderFields
   /** A repeating reminder (DeviceReminder.recurring); missing from older apps. */
   recurring?: boolean
+  /** Its repeat (DeviceReminder.rrule); missing from older apps, whose tasks keep the repeat they have. */
+  rrule?: string | null
 }
 
 /** The GOOYA task fields a reminder becomes, and what a change to them is compared with. */
@@ -98,6 +106,8 @@ export interface ReminderFields {
   priority: Priority
   /** The Reminders list's id on the iPhone. */
   listId: string
+  /** Its repeat (a rule body) or null; missing from what was agreed before repeats were synced (not known then). */
+  rrule?: string | null
 }
 
 /** A change made in GOOYA that goes back to a reminder on the iPhone. */
@@ -112,6 +122,8 @@ export interface ReminderChange {
   priority?: number
   /** Move to this Reminders list. */
   listId?: string
+  /** Repeat so (a rule body), or no longer repeat (null). */
+  rrule?: string | null
 }
 
 /** A GOOYA task that becomes a new reminder. */
@@ -124,6 +136,8 @@ export interface ReminderCreate {
   dueTime: HHmm | null
   completed: boolean
   priority: number
+  /** Its repeat, which the reminder takes. */
+  rrule: string | null
 }
 
 export interface ReminderPlan {
@@ -160,7 +174,7 @@ export function applePriority(p: Priority | number): number {
   return p === 3 ? 1 : p === 2 ? 5 : p === 1 ? 9 : 0
 }
 
-export function reminderFields(r: Pick<DeviceReminder, 'title' | 'notes' | 'url' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId'>): ReminderFields {
+export function reminderFields(r: Pick<DeviceReminder, 'title' | 'notes' | 'url' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId' | 'rrule'>): ReminderFields {
   return {
     title: r.title.slice(0, 500),
     notes: [r.notes, r.url].filter(Boolean).join('\n'),
@@ -169,6 +183,7 @@ export function reminderFields(r: Pick<DeviceReminder, 'title' | 'notes' | 'url'
     completed: r.completed,
     priority: gooyaPriority(r.priority ?? 0),
     listId: r.listId ?? '',
+    ...(r.rrule !== undefined ? { rrule: r.rrule } : {}),
   }
 }
 
@@ -185,6 +200,7 @@ export function toImport(r: DeviceReminder, extra: Pick<ReminderImport, 'taskId'
     listId: r.listId,
     priority: r.priority,
     ...(r.recurring ? { recurring: true } : {}),
+    ...(r.rrule !== undefined ? { rrule: r.rrule } : {}),
     ...(extra.taskId ? { taskId: extra.taskId } : {}),
     ...(extra.base ? { base: extra.base } : {}),
   }
@@ -215,20 +231,31 @@ export function dueOnPhone(t: Pick<Task, 'dueDate' | 'dueTime' | 'timezone'>, zo
   return { dueDate: makeKey(f.y, f.m, f.d), dueTime: formatHHmm(f.h, f.min) }
 }
 
+/**
+ * A task's done mark as its reminder has it. A repeating task is done time by time (completedDates); its reminder is at
+ * the task's date (the series moves on with the reminder), so its mark is that time's.
+ */
+export function doneAtDue(t: Pick<Task, 'completed' | 'rrule' | 'dueDate'> & { completedDates?: readonly DateKey[] }): boolean {
+  return !!t.completed || (!!t.rrule && !!t.dueDate && (t.completedDates ?? []).includes(t.dueDate))
+}
+
 function taskFields(t: Task, deviceListOf: (listId: string) => string | null, zone?: string): ReminderFields {
   return {
     title: t.title,
     notes: t.notes ?? '',
     ...dueOnPhone(t, zone),
-    completed: !!t.completed,
+    completed: doneAtDue(t),
     priority: t.priority ?? 0,
     listId: deviceListOf(t.listId) ?? '',
+    rrule: t.dueDate ? (t.rrule ?? null) : null,
   }
 }
 
 const sameDue = (a: Pick<ReminderFields, 'dueDate' | 'dueTime'>, b: Pick<ReminderFields, 'dueDate' | 'dueTime'>) => a.dueDate === b.dueDate && a.dueTime === b.dueTime
+/** The same repeat, or one side's is not known. */
+const sameRepeat = (a: ReminderFields, b: ReminderFields) => a.rrule === undefined || b.rrule === undefined || sameRule(a.rrule, b.rrule)
 const sameFields = (a: ReminderFields, b: ReminderFields) =>
-  a.title === b.title && a.notes === b.notes && sameDue(a, b) && a.completed === b.completed && a.priority === b.priority && a.listId === b.listId
+  a.title === b.title && a.notes === b.notes && sameDue(a, b) && a.completed === b.completed && a.priority === b.priority && a.listId === b.listId && sameRepeat(a, b)
 
 /**
  * A three-way merge per reminder: what the iPhone has, what GOOYA has, and what they last agreed on (`baseline`, kept
@@ -241,9 +268,10 @@ const sameFields = (a: ReminderFields, b: ReminderFields) =>
  *
  * A date cleared in GOOYA is not cleared in Reminders.
  *
- * A repeating reminder is one task at its next time (GOOYA does not model Reminders' repeat), and Reminders never keeps
- * it done: marked done, it gets a done copy of that time and moves on to its next date, not done. So GOOYA's done mark
- * on it is for the time at the task's date, and goes to the reminder once, while the reminder is still at that time.
+ * A repeating reminder is one task at its next time, repeating as the reminder does (its repeat goes both ways, as the
+ * other fields do), and Reminders never keeps it done: marked done, it gets a done copy of that time and moves on to its
+ * next date, not done. So GOOYA's done mark on it is for the time at the task's date (doneAtDue), and goes to the
+ * reminder once, while the reminder is still at that time.
  *
  * With `categoryTargets` (the phone's list for each category, from planCategoryLists), a task in a category is a
  * reminder in that list; without, a task in one of GOOYA's own lists leaves Reminders (builds before categories).
@@ -335,7 +363,7 @@ export function planReminderSync(
     // (done in Reminders too, moved there, or a copy of GOOYA that still shows a mark this phone took there already):
     // the mark and that date are set aside and the task follows the reminder. Sent again, each sync would complete the
     // next time, and the next, until the repeat ends.
-    const doneMark = !!r.recurring && gooya.completed && !phone.completed
+    const doneMark = (!!r.recurring || !!r.rrule) && gooya.completed && !phone.completed
     if (doneMark) {
       if (!base.completed && sameDue(gooya, phone) && sameDue(phone, base)) {
         change.completed = true
@@ -371,19 +399,31 @@ export function planReminderSync(
       next.priority = change.priority
       taken.priority = gooya.priority
     }
+    // The repeat, when this phone can say what the reminder's is: GOOYA's when it changed since both last agreed and
+    // Reminders' did not. What was agreed before repeats were synced knows none; then a repeat GOOYA has goes to a
+    // reminder that has none (it was set in GOOYA), and otherwise the reminder's stays.
+    if (r.rrule !== undefined) {
+      const mine = gooya.rrule ?? null
+      const changedInGooya = base.rrule === undefined ? !!mine && !r.rrule : !sameRule(mine, base.rrule) && sameRule(r.rrule, base.rrule)
+      if (changedInGooya && !sameRule(mine, r.rrule) && (!mine || next.dueDate)) {
+        change.rrule = mine
+        next.rrule = mine
+        next.recurring = !!mine
+        taken.rrule = mine
+      }
+    }
     if (Object.keys(change).length > 1) plan.changes.push(change)
     if (Object.keys(taken).length || Object.keys(setAside).length) plan.seen[r.id] = { taken, setAside }
     plan.reminders.push(next)
   }
-  // GOOYA's own tasks put in one of this person's Reminders lists (or in a category) become reminders there. One that
-  // repeats stays GOOYA's (Reminders would get a single reminder: its repeat is GOOYA's to keep), and so does one
-  // already done when it was put in a category.
+  // GOOYA's own tasks put in one of this person's Reminders lists (or in a category) become reminders there, repeating as
+  // they do. One already done when it was put in a category stays GOOYA's.
   for (const t of mine) {
     if (reminderIdOf(t) || (links[t.id] && deviceIds.has(links[t.id]))) continue
     const intent = intentOf(t)
     if (intent.kind !== 'list' || !canWrite(intent.listId)) continue
-    if (isCategory(listById.get(t.listId)) && (t.completed || t.rrule)) continue
-    plan.creates.push({ taskId: t.id, listId: intent.listId, title: t.title, notes: t.notes ?? '', ...dueOnPhone(t, opts.zone), completed: !!t.completed, priority: applePriority(t.priority ?? 0) })
+    if (isCategory(listById.get(t.listId)) && t.completed) continue
+    plan.creates.push({ taskId: t.id, listId: intent.listId, title: t.title, notes: t.notes ?? '', ...dueOnPhone(t, opts.zone), completed: !!t.completed, priority: applePriority(t.priority ?? 0), rrule: t.dueDate ? (t.rrule ?? null) : null })
   }
   return plan
 }
@@ -430,7 +470,7 @@ export interface CategoryListsPlan {
 
 /**
  * The phone's Reminders lists as GOOYA's categories, for one person (`owner`). Every category their tasks are in (not a
- * done or repeating task that never was a reminder) gets a list here: the one that stands for it, one of the same name in no category
+ * done task that never was a reminder) gets a list here: the one that stands for it, one of the same name in no category
  * yet, or a new one. A list that stands for a category has its name and colour: what changed since `baseline` (what
  * both last agreed on) wins, a change in Reminders over one in GOOYA; with no baseline GOOYA's is taken.
  */
@@ -448,7 +488,7 @@ export function planCategoryLists(owner: string, device: DeviceList[], tasks: Ta
     if (t.owner !== owner) continue
     const l = byId.get(t.listId)
     if (!l || !isCategory(l) || needed.includes(l.id)) continue
-    if ((t.completed || t.rrule) && !reminderIdOf(t)) continue
+    if (t.completed && !reminderIdOf(t)) continue
     needed.push(l.id)
   }
   for (const id of needed) {
@@ -497,12 +537,16 @@ export function planCategoryLists(owner: string, device: DeviceList[], tasks: Ta
  * A repeating reminder at another time than `base` has moved on (marked done, in Reminders or by the phone, or re-dated
  * there): a done mark GOOYA has was for the time before, so the reminder's own stays. Kept, the phone would take it to
  * the reminder's next time.
+ *
+ * The repeat merges as the other fields do; a phone that does not say (an older app) leaves the task's as it is. A
+ * repeating task is done time by time: the reminder's done mark is its time's (completedDates), and the marks of the
+ * times a reminder has moved on from go with them (that time's done copy is a task of its own).
  */
 export function mergeIntoTask(
-  current: Pick<Task, 'title' | 'notes' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId'>,
+  current: Pick<Task, 'title' | 'notes' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId'> & Partial<Pick<Task, 'rrule' | 'completedDates'>>,
   incoming: Omit<ReminderFields, 'listId'> & { gooyaListId: string; recurring?: boolean },
   base: (Omit<ReminderFields, 'listId'> & { gooyaListId: string }) | null,
-): { fields: Pick<Task, 'title' | 'notes' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId'>; kept: string[] } {
+): { fields: Pick<Task, 'title' | 'notes' | 'dueDate' | 'dueTime' | 'completed' | 'priority' | 'listId'> & Partial<Pick<Task, 'rrule' | 'completedDates'>>; kept: string[] } {
   const kept: string[] = []
   const pick = <T>(name: string, gooya: T, phone: T, was: T | undefined, same: (a: T, b: T) => boolean = (a, b) => a === b): T => {
     if (base && was !== undefined && !same(gooya, was) && same(phone, was)) {
@@ -518,19 +562,31 @@ export function mergeIntoTask(
     base ? { dueDate: base.dueDate, dueTime: base.dueDate ? base.dueTime : null } : undefined,
     sameDue,
   )
-  const movedOn = !!incoming.recurring && !!base && !sameDue({ dueDate: incoming.dueDate, dueTime: incoming.dueDate ? incoming.dueTime : null }, { dueDate: base.dueDate, dueTime: base.dueDate ? base.dueTime : null })
-  return {
-    fields: {
-      title: pick('title', current.title, incoming.title, base?.title),
-      notes: pick('notes', current.notes ?? '', incoming.notes, base?.notes),
-      dueDate: due.dueDate,
-      dueTime: due.dueTime,
-      completed: movedOn ? incoming.completed : pick('completed', !!current.completed, incoming.completed, base?.completed),
-      priority: pick('priority', current.priority ?? 0, incoming.priority, base?.priority),
-      listId: current.listId === LEGACY_REMINDERS_LIST_ID ? incoming.gooyaListId : pick('list', current.listId, incoming.gooyaListId, base?.gooyaListId),
-    },
-    kept,
+  const repeats = !!incoming.recurring || !!incoming.rrule
+  const movedOn = repeats && !!base && !sameDue({ dueDate: incoming.dueDate, dueTime: incoming.dueDate ? incoming.dueTime : null }, { dueDate: base.dueDate, dueTime: base.dueDate ? base.dueTime : null })
+  const rrule = incoming.rrule === undefined ? (current.rrule ?? null) : pick('repeat', current.rrule ?? null, incoming.rrule, base?.rrule, sameRule)
+  const done = movedOn ? incoming.completed : pick('completed', doneAtDue({ ...current, rrule: current.rrule ?? null }), incoming.completed, base?.completed)
+  const fields: ReturnType<typeof mergeIntoTask>['fields'] = {
+    title: pick('title', current.title, incoming.title, base?.title),
+    notes: pick('notes', current.notes ?? '', incoming.notes, base?.notes),
+    dueDate: due.dueDate,
+    dueTime: due.dueTime,
+    completed: done,
+    priority: pick('priority', current.priority ?? 0, incoming.priority, base?.priority),
+    listId: current.listId === LEGACY_REMINDERS_LIST_ID ? incoming.gooyaListId : pick('list', current.listId, incoming.gooyaListId, base?.gooyaListId),
   }
+  if (incoming.rrule !== undefined) fields.rrule = rrule
+  if (rrule) {
+    const dates = new Set((current.completedDates ?? []).filter((k) => !movedOn || !due.dueDate || k >= due.dueDate))
+    // Moved on to a time GOOYA marked done ahead: the mark stays (the phone takes it to the reminder next).
+    if (due.dueDate) {
+      if (done) dates.add(due.dueDate)
+      else if (!movedOn) dates.delete(due.dueDate)
+    }
+    fields.completed = false
+    fields.completedDates = [...dates].sort()
+  }
+  return { fields, kept }
 }
 
 // ---------------------------------------------------------------- applying what the phone sends (server and demo)
@@ -670,9 +726,11 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
       priority: typeof r.priority === 'number' ? gooyaPriority(r.priority) : ((current?.priority ?? 0) as Priority),
       gooyaListId,
       recurring: r.recurring === true,
+      // A repeat needs a date (Reminders' does too).
+      ...(r.rrule !== undefined ? { rrule: dueDate && typeof r.rrule === 'string' && r.rrule ? r.rrule : null } : {}),
     }
     const base = r.base && current ? { ...r.base, priority: r.base.priority ?? phone.priority, gooyaListId: r.base.listId && listIdOf.has(r.base.listId) ? listIdOf.get(r.base.listId)! : gooyaListId } : null
-    const merged = current ? mergeIntoTask(current, phone, base) : { fields: { title: phone.title, notes: phone.notes, dueDate, dueTime, completed: phone.completed, priority: phone.priority, listId: gooyaListId }, kept: [] }
+    const merged = current ? mergeIntoTask(current, phone, base) : mergeIntoTask({ title: phone.title, notes: phone.notes, dueDate, dueTime, completed: false, priority: phone.priority, listId: gooyaListId, rrule: null, completedDates: [] }, phone, null)
     out.kept += merged.kept.length
     const fields: Partial<Task> = {
       ...merged.fields,
@@ -685,7 +743,7 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
       out.tasks.push({
         id: `ar_${hash(`${person}:${r.id}`, 20)}`,
         create: true,
-        fields: { ...fields, createdBy: person as Task['createdBy'], rrule: null, exdates: [], overrides: {}, completedDates: [], earlyReminders: [], tags: [], flagged: false, private: false, createdAt: now, updatedAt: now },
+        fields: { rrule: null, completedDates: [], ...fields, createdBy: person as Task['createdBy'], exdates: [], overrides: {}, earlyReminders: [], tags: [], flagged: false, private: false, createdAt: now, updatedAt: now },
       })
       out.created++
       continue
@@ -719,7 +777,7 @@ export function applyReminderImport(person: string, mine: Task[], lists: TaskLis
 /** Who wrote a task last: the app (either person, any device), or the iPhone's Reminders sync (remindersImport). */
 export type LastEdit = 'app' | 'reminders'
 
-const REMINDER_FIELDS = ['owner', 'title', 'notes', 'dueDate', 'dueTime', 'completed', 'priority', 'listId', 'rrule'] as const
+const REMINDER_FIELDS = ['owner', 'title', 'notes', 'dueDate', 'dueTime', 'completed', 'completedDates', 'priority', 'listId', 'rrule'] as const
 
 /** A task that is, or is to become, one of its owner's reminders (a reminder, or a task put in a Reminders list). */
 function onReminders(d: Record<string, unknown> | null): boolean {

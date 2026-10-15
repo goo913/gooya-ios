@@ -25,6 +25,8 @@ import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
 import { isMac } from "../../modules/gooya-mac";
 import { CategoryMenu } from "@/mac/CategoryMenu";
+import { MacFormBar } from "@/mac/MacFormBar";
+import { MacTimeMenu } from "@/mac/MacTimeMenu";
 import type { EditorHost } from "./TaskEditor";
 
 /** A calendar of a connected account whose events can be changed in GOOYA (Two-way, and writable). */
@@ -113,6 +115,8 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const [endDate, setEndDate] = useState<DateKey>(occ?.endDate ?? event?.endDate ?? initialDate ?? today);
   const [owner, setOwner] = useState<PersonKey>(event?.owner ?? initialOwner ?? me);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(event?.rrule ?? null));
+  // A repeat left as it was is kept as it was (with its end, which the menu does not show).
+  const [repeatTouched, setRepeatTouched] = useState(false);
   const [calendarKey, setCalendarKey] = useState(event ? (event.source === GOOYA ? GOOYA : `${event.accountId}/${event.calendarId}`) : GOOYA);
   const [categoryId, setCategoryId] = useState<string | null>(stored ? (stored.categoryId ?? null) : (initialCategoryId ?? null));
   const [ownColor, setOwnColor] = useState<string | null>(stored?.color ?? null);
@@ -135,7 +139,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   // Its own colour, else its category's, else its owner's: as it is drawn.
   const drawnColor = ownColor ?? category?.color ?? ownerColor;
   const setListPicker = usePickers((s) => s.setList);
-  const rrule = repeatKey === "custom" ? (event?.rrule ?? null) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null);
+  const rrule = event && (!repeatTouched || repeatKey === "custom") ? (event.rrule ?? null) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null);
 
   const valid = title.trim().length > 0 && (inGooya || !!calendar) && (allDay ? endDate >= startDate : endless || end.getTime() > start.getTime());
 
@@ -178,8 +182,10 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
     else await patchEvent(ev.id, { overrides });
   };
 
+  // A save under way (a second Return or click while it is made would make the schedule twice).
+  const saving = useRef(false);
   const save = async () => {
-    if (!valid || busy) return;
+    if (!valid || busy || saving.current) return;
     const repeating = !!(event && occ && event.rrule);
     if (repeating && event && occ) {
       // Apple's question for a repeating schedule. Switching all-day, the repeat or the person is for all of them.
@@ -193,8 +199,8 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
       });
       return;
     }
-    setBusy(true);
-    try {
+    saving.current = true;
+    const write = (async () => {
       if (event) await saveAll(event);
       else if (inGooya) {
         const now = Date.now();
@@ -245,28 +251,40 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           deleted: false,
         });
       }
+    })();
+    if (popover) {
+      // The Mac's popover and pane close at once: the calendar has the change as soon as it is made here.
+      onClose();
+      void write.catch((e: unknown) => console.warn("Couldn't save the schedule", e));
+      return;
+    }
+    setBusy(true);
+    try {
+      await write;
       onClose();
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   };
 
-  // The popover's host saves on Return and when clicked away (nothing to save with no title, nor when nothing changed).
+  // On the Mac: Done, Return, Escape and a click elsewhere save (nothing with no title; only close when nothing changed).
   const snapshot = () => JSON.stringify([title, location, notes, allDay, start.getTime(), end.getTime(), hasEnd, startDate, endDate, owner, repeatKey, calendarKey, categoryId, ownColor, shared]);
   const opened = useRef<string | null>(null);
   if (opened.current === null) opened.current = snapshot();
+  const submit = async (): Promise<boolean> => {
+    if (saving.current) return true;
+    if (!valid) return false;
+    if (event && snapshot() === opened.current) {
+      onClose();
+      return true;
+    }
+    await save();
+    return true;
+  };
   const register = host?.register;
   useLayoutEffect(() => {
-    if (!register) return;
-    register(async () => {
-      if (!valid) return false;
-      if (event && snapshot() === opened.current) {
-        onClose();
-        return true;
-      }
-      await save();
-      return true;
-    });
+    register?.(submit);
   });
 
   const remove = () => {
@@ -294,10 +312,14 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   };
 
   const when = useWhenLayout();
-  // A day's pickers (all-day) are on this phone's calendar; a time's on the clock of their zone.
-  const picker = (mode: "date" | "time", value: Date, zone: string | undefined, onChange: (d: Date) => void, min?: Date) => (
-    <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} timeZoneName={zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
-  );
+  // A day's pickers (all-day) are on this phone's calendar; a time's on the clock of their zone. On the Mac a time is
+  // picked from a menu of the day's quarter hours (macOS's pop-up button).
+  const picker = (mode: "date" | "time", value: Date, zone: string | undefined, onChange: (d: Date) => void, min?: Date) =>
+    isMac && mode === "time" ? (
+      <MacTimeMenu value={clockIn(value, zone ?? viewerTz)} onChange={(t) => onChange(new Date(zonedMs(keyInZone(value.getTime(), zone ?? viewerTz), t, zone ?? viewerTz)))} />
+    ) : (
+      <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} timeZoneName={zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
+    );
   const setStartKeepingLength = (d: Date) => {
     const length = end.getTime() - start.getTime();
     setStart(d);
@@ -337,8 +359,8 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
       <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={popover ? styles.popoverContent : styles.content} showsVerticalScrollIndicator={false} style={popover ? styles.popoverScroll : undefined}>
         {topBar}
         <Group>
-          <TextRow value={title} onChange={setTitle} placeholder={popover && !editing ? "New Schedule" : "Title"} autoFocus={!editing} onSubmitEditing={popover ? () => void save() : undefined} />
-          <TextRow value={location} onChange={setLocation} placeholder="Location" />
+          <TextRow value={title} onChange={setTitle} placeholder={popover && !editing ? "New Schedule" : "Title"} autoFocus={!editing} onSubmitEditing={popover ? () => void submit() : undefined} />
+          <TextRow value={location} onChange={setLocation} placeholder="Location" onSubmitEditing={popover ? () => void submit() : undefined} />
         </Group>
 
         {inGooya ? (
@@ -376,7 +398,10 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
 
         <Group footer={where ? `Changes go to ${where} as you save them.` : "Copied to the GOOYA calendar in your Google or iCloud when that is on (Settings → Calendar integrations)."}>
           {inGooya ? (
-            <ValueRow icon="repeat" label="Repeat" value={repeatKey === "custom" ? describeRule(rrule) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.label ?? "Never")} options={REPEAT_PRESETS.map((p) => p.label)} title="Repeat" onPick={(_, i) => setRepeatKey(REPEAT_PRESETS[i].key)} />
+            <ValueRow icon="repeat" label="Repeat" value={repeatKey === "custom" ? describeRule(rrule) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.label ?? "Never")} options={REPEAT_PRESETS.map((p) => p.label)} title="Repeat" onPick={(_, i) => {
+                setRepeatTouched(true);
+                setRepeatKey(REPEAT_PRESETS[i].key);
+              }} />
           ) : event?.rrule ? (
             <Row label="Repeat">
               <Text style={[styles.value, { color: colors.label2 }]}>{describeRule(event.rrule)}</Text>
@@ -446,6 +471,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
 
         {editing && (event?.source !== GOOYA || stored) ? <DestructiveButton onPress={remove}>Delete Schedule</DestructiveButton> : null}
       </ScrollView>
+      {popover ? <MacFormBar onCancel={onClose} onDone={() => void submit()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} /> : null}
     </View>
   );
 }

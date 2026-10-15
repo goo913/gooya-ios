@@ -22,7 +22,7 @@ import { MacMonth, MacWeekdays, type MacMonthActions } from "./MacMonth";
 import { MacPopoverLayer } from "./MacPopover";
 import { MacYear, type MacYearActions } from "./MacYear";
 import { useMacSidebar } from "./sidebar";
-import { useMac, type Anchor } from "./state";
+import { commitOpen, commitThen, useMac, type Anchor } from "./state";
 import { useMacColors, ZOOMS } from "./theme";
 
 // GOOYA's calendar on the Mac, as Apple Calendar is on macOS 27: macOS's sidebar at the left and the toolbar over the
@@ -30,7 +30,8 @@ import { useMacColors, ZOOMS } from "./theme";
 // weekday) with ‹ Today › at the right, then the Day, Week, Month or Year view. New items and an item's details open
 // in Apple's popover beside what was clicked (the Day view fills in its pane instead). The menus' commands and keys:
 // View's By Day … By Year, Next and Previous, Go to Today, Zoom In and Out; New Schedule or Task, New Routine, New
-// Category; Search; Settings; Escape cancels a drag or leaves a popover.
+// Category; Search; Settings. Escape cancels a drag; Escape and Return save and close the form that is open (the
+// popover's or the Day view's pane's), as a click elsewhere does.
 
 /** The title's row under the toolbar; the Day view's weekday under it. */
 const TITLE_H = 54;
@@ -69,8 +70,8 @@ export function MacCalendar() {
   useMacAgenda();
   useOpenAtLoginOnce();
   useEffect(() => setMenuState(view), [view]);
-  // A popover, a new item or the Day view's chosen item does not outlive the view it was made in.
-  useEffect(() => useMac.setState({ popover: null, draft: null, picked: null, item: null }), [view]);
+  // A popover, a new item or the Day view's chosen item does not outlive the view it was made in (its form is saved).
+  useEffect(() => commitThen(() => useMac.setState({ popover: null, draft: null, picked: null, item: null })), [view]);
 
   /** What the toolbar's + points at when the new item's day is not on the screen. */
   const plusAnchor = useMemo<Anchor>(() => ({ x: left + 4, y: 10, w: 36, h: 32 }), [left]);
@@ -90,11 +91,13 @@ export function MacCalendar() {
 
   /** A new schedule or task where it makes sense: the chosen day (else the one shown, or today) at 9 AM. */
   const newHere = useCallback(() => {
-    const pad = usePad.getState();
-    const day = useMac.getState().day ?? (pad.view === "day" || pad.view === "week" ? pad.date : today);
-    if (pad.view === "month" && monthApi.current) monthApi.current.newAt(day);
-    else if (pad.view === "day") useMac.getState().newItem(pad.date, 9 * 60, null);
-    else useMac.getState().newItem(day, 9 * 60, plusAnchor);
+    commitThen(() => {
+      const pad = usePad.getState();
+      const day = useMac.getState().day ?? (pad.view === "day" || pad.view === "week" ? pad.date : today);
+      if (pad.view === "month" && monthApi.current) monthApi.current.newAt(day);
+      else if (pad.view === "day") useMac.getState().newItem(pad.date, 9 * 60, null);
+      else useMac.getState().newItem(day, 9 * 60, plusAnchor);
+    });
   }, [today, plusAnchor]);
 
   /** A double-click on an item: its form in the popover, or its details when GOOYA cannot change it. */
@@ -126,8 +129,9 @@ export function MacCalendar() {
         setTimeout(() => router.push(path), home ? 0 : 400);
       };
       if (id === "escape") {
-        if (!cancelDrag()) useMac.getState().close();
-      } else if (id.startsWith("view.")) {
+        if (!cancelDrag()) void commitOpen();
+      } else if (id === "return") void commitOpen();
+      else if (id.startsWith("view.")) {
         toCalendar();
         pad.setView(id.slice(5) as PadView);
       } else if (id === "today") {
@@ -183,30 +187,28 @@ export function MacCalendar() {
         useSheets.getState().openEditor({ kind: "routine", routine: occ.routine, dayOnly: dayOnly ? occ.dateKey : undefined });
         router.push("/sheet/edit");
       },
-      createTask: (d, person, minutes) => useMac.getState().newItem(d, minutes, plusAnchor, person),
+      createTask: (d, person, minutes) => commitThen(() => useMac.getState().newItem(d, minutes, plusAnchor, person)),
       select: (o) => useMac.getState().selectItem(o?.key ?? null),
-      newAt: (d, minutes, anchor, person) => useMac.getState().newItem(d, minutes, anchor, person),
+      newAt: (d, minutes, anchor, person) => commitThen(() => useMac.getState().newItem(d, minutes, anchor, person)),
     }),
     [openItem, plusAnchor],
   );
-  const dayActions = useMemo<DayActions>(
-    () => ({
+  const dayActions = useMemo<DayActions>(() => {
+    // The Day view's pane shows what is chosen (a click is enough, as in Apple's), and fills in a new item; what was being
+    // changed there is saved first, as a click elsewhere in the day saves it.
+    const pick = (o: Occ) => {
+      if (useMac.getState().picked?.key !== o.key) commitThen(() => useMac.getState().pick(o));
+    };
+    return {
       ...weekActions,
-      // The Day view's pane shows what is chosen (a click is enough, as in Apple's), and fills in a new item.
-      openTask: (o) => useMac.getState().pick(o),
-      openEvent: (o) => useMac.getState().pick(o),
-      openRoutine: (o) => useMac.getState().pick(o),
-      createTask: (d, person, minutes) => useMac.getState().newItem(d, minutes, null, person),
-      select: (o) => {
-        const mac = useMac.getState();
-        if (o) mac.pick(o);
-        else if (mac.commit) void mac.commit();
-        else mac.pick(null);
-      },
-      newAt: (d, minutes, _anchor, person) => useMac.getState().newItem(d, minutes, null, person),
-    }),
-    [weekActions],
-  );
+      openTask: pick,
+      openEvent: pick,
+      openRoutine: pick,
+      createTask: (d, person, minutes) => commitThen(() => useMac.getState().newItem(d, minutes, null, person)),
+      select: (o) => (o ? pick(o) : commitThen(() => useMac.getState().pick(null))),
+      newAt: (d, minutes, _anchor, person) => commitThen(() => useMac.getState().newItem(d, minutes, null, person)),
+    };
+  }, [weekActions]);
 
   const title = view === "day" || view === "week" ? { y: Number(date.slice(0, 4)), m: Number(date.slice(5, 7)) } : scrolled;
   const nav = <Nav onStep={step} onToday={() => usePad.getState().goToday()} />;

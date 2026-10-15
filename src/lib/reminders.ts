@@ -22,6 +22,7 @@ import {
 import { deviceTimeZone } from "@shared/time";
 import { getMessaging, onMessage } from "@react-native-firebase/messaging";
 import { formatShortDate, formatTime12 } from "@shared/fmt";
+import { describeRule } from "@shared/recurrence";
 import { AppState, Platform } from "react-native";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
@@ -135,6 +136,8 @@ function deviceReminder(r: Native.NativeReminder): DeviceReminder {
     listId: r.listId,
     priority: r.priority,
     recurring: r.recurring === true,
+    // A repeat the phone could not write down is not known (not "none"): GOOYA's then never replaces it.
+    rrule: r.rrule === undefined || (r.rrule === null && r.recurring) ? undefined : r.rrule,
   };
 }
 
@@ -252,6 +255,7 @@ async function carryOut(
         ...(c.title !== undefined ? { title: c.title } : {}),
         ...(c.notes !== undefined ? { notes: c.notes } : {}),
         ...(c.dueDate !== undefined ? { setDue: true, dueDate: c.dueDate, dueTime: c.dueTime ?? null } : {}),
+        ...(c.rrule !== undefined ? { setRepeat: true, rrule: c.rrule } : {}),
         ...(c.completed !== undefined ? { completed: c.completed } : {}),
         ...(c.priority !== undefined ? { priority: c.priority } : {}),
       });
@@ -274,7 +278,7 @@ async function carryOut(
   const links = { ...useReminders.getState().links };
   for (const c of plan.creates) {
     try {
-      const saved = await Native.save({ listId: c.listId, title: c.title, notes: c.notes, setDue: !!c.dueDate, dueDate: c.dueDate, dueTime: c.dueTime, alarmAtDue: !!c.dueTime, completed: c.completed, priority: c.priority });
+      const saved = await Native.save({ listId: c.listId, title: c.title, notes: c.notes, setDue: !!c.dueDate, dueDate: c.dueDate, dueTime: c.dueTime, alarmAtDue: !!c.dueTime, setRepeat: !!c.rrule, rrule: c.rrule, completed: c.completed, priority: c.priority });
       links[c.taskId] = saved.id;
       // Remembered at once: if the app stops before GOOYA hears of it, the next sync does not make it twice.
       useReminders.setState({ links: { ...links } });
@@ -309,6 +313,7 @@ function changeWords(c: ReminderPlan["changes"][number], saved: Native.NativeRem
   if (c.notes !== undefined) words.push("notes changed");
   if (c.listId !== undefined) words.push(`moved to the list “${saved.list}”`);
   if (c.priority !== undefined) words.push("priority changed");
+  if (c.rrule !== undefined) words.push(c.rrule ? `set to repeat ${describeRule(c.rrule).toLowerCase()}` : "no longer repeats");
   return words;
 }
 

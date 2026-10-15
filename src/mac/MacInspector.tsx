@@ -1,21 +1,22 @@
 import type { DateKey, EventOccurrence, RoutineOccurrence, TaskOccurrence } from "@shared/model";
 import { addDaysKey, makeKey, weekdayOfKey } from "@shared/time";
-import { useEffect, useRef } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DetailContent, type DetailHost } from "@/app/sheet/detail";
 import { WEEKDAY_LETTERS } from "@/lib/format";
 import { useMe } from "@/lib/people";
 import { useToday } from "@/lib/useNow";
 import { ScheduleEditor } from "@/sheets/ScheduleEditor";
-import { TaskEditor, type EditorHost } from "@/sheets/TaskEditor";
+import { TaskEditor } from "@/sheets/TaskEditor";
 import { usePrefs } from "@/store/prefs";
 import { useIsDark } from "@/theme";
+import { useMacFormHost } from "./formHost";
 import { useMac } from "./state";
 import { useMacColors, useWindowActive, type MacColors } from "./theme";
 
 // The pane at the right of Apple Calendar's Day view on the Mac (macOS 27), 388 points wide in a grey a shade off the
 // window's: the day's month at the top (the day shown in a dark circle, today's number red), and under it the chosen
-// item's form; a new item made in the day (a double-click on an empty time) is filled in here, not in a popover.
+// item's form; a new item made in the day (a double-click on an empty time) is filled in here, not in a popover. The form
+// has Cancel and Add (or Done) at its foot, and is saved with them, Return, Escape, or a click elsewhere in the day.
 
 export const INSPECTOR_WIDTH = 388;
 
@@ -32,32 +33,24 @@ export function MacInspector({ width, date, onPickDate, nav }: { width: number; 
         <MiniMonth date={date} onPick={onPickDate} colors={colors} />
         <View style={styles.nav}>{nav}</View>
       </View>
-      {draft && !popover ? <NewHere /> : picked ? <Picked key={picked.key} occ={picked} /> : null}
+      {draft && !popover ? <NewHere key={draft.id} /> : picked ? <Picked key={picked.key} occ={picked} /> : null}
     </View>
   );
 }
 
-/** A new item made in the Day view: Schedule | Task, then its form (saved with Return, or when the window is clicked elsewhere). */
+/** A new item made in the Day view: Schedule | Task, then its form. */
 function NewHere() {
   const draft = useMac((s) => s.draft)!;
   const kind = usePrefs((s) => s.newKind);
   const me = useMe();
   const dark = useIsDark();
-  const saveRef = useRef<(() => Promise<boolean>) | null>(null);
-  const close = () => useMac.getState().close();
-  const host: EditorHost = { variant: "mac", register: (save) => (saveRef.current = save), onTitle: (t) => useMac.getState().setDraftTitle(t) };
-  // A click elsewhere in the day saves it (with a title), as a click away from Apple's popover does.
-  useEffect(() => {
-    useMac.setState({
-      commit: async () => {
-        const save = saveRef.current;
-        saveRef.current = null;
-        if (save) await save();
-        useMac.getState().close();
-      },
-    });
-    return () => useMac.setState({ commit: null });
-  }, []);
+  const id = draft.id;
+  // Closes this new item (not one made since, while it was being saved).
+  const close = () => {
+    const mac = useMac.getState();
+    if (mac.draft?.id === id) mac.close();
+  };
+  const host = useMacFormHost(close, (t) => useMac.getState().setDraftTitle(t));
   return (
     <View style={styles.form}>
       <View style={[styles.kinds, { backgroundColor: dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.07)" }]}>
@@ -80,9 +73,12 @@ function NewHere() {
 
 /** The chosen item: its form when GOOYA can change it, its details otherwise (a routine, a read-only event). */
 function Picked({ occ }: { occ: Occ }) {
-  const saveRef = useRef<(() => Promise<boolean>) | null>(null);
-  const close = () => useMac.getState().pick(null);
-  const host: EditorHost = { variant: "mac", register: (save) => (saveRef.current = save) };
+  // Closes this item's form (not another one's, chosen while it was being saved).
+  const close = () => {
+    const mac = useMac.getState();
+    if (mac.picked?.key === occ.key) mac.pick(null);
+  };
+  const host = useMacFormHost(close);
   const detailHost: DetailHost = { embedded: true, toEditor: close, close };
   if (occ.kind === "task") return <TaskEditor task={occ.task} occ={occ} onClose={close} host={host} />;
   if (occ.kind === "event" && (occ.event.source === "gooya" || occ.event.editable)) return <ScheduleEditor event={occ.event} occ={occ} onClose={close} host={host} />;

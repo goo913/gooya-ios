@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DetailContent, type DetailHost } from "@/app/sheet/detail";
-import { wantEscape } from "@/lib/dragCancel";
 import { useMe } from "@/lib/people";
 import { ScheduleEditor } from "@/sheets/ScheduleEditor";
-import { TaskEditor, type EditorHost } from "@/sheets/TaskEditor";
+import { TaskEditor } from "@/sheets/TaskEditor";
 import { usePrefs } from "@/store/prefs";
 import { useColors, useIsDark } from "@/theme";
-import { useMac, type Anchor } from "./state";
+import { useMacFormHost } from "./formHost";
+import { commitOpen, useMac, type Anchor, type MacPopover } from "./state";
 
 // Apple Calendar's popover on the Mac (macOS 27): beside what it is about, an arrow pointing at it; 300 points wide,
 // rounded, over a light material. A new item's has Event | Reminder at the top (GOOYA's Schedule | Task); the rest is the
-// item's form (src/sheets, in their Mac look). It is saved when Return is pressed in the title or when the window is
-// clicked anywhere else, and left with Escape (a new item with no title is never saved).
+// item's form (src/sheets, in their Mac look), with Cancel and Add (or Done) at its foot. It is saved with Add or Done,
+// Return, Escape, or a click anywhere else in the window; Cancel leaves it unsaved (a new item with no title is never
+// saved).
 
 const WIDTH = 320;
 const ARROW = 9;
@@ -31,34 +32,29 @@ function place(anchor: Anchor, panelH: number, bounds: { width: number; height: 
 /** The popover layer over the whole window (the calendar's coordinates are the window's). */
 export function MacPopoverLayer({ width, height, top }: { width: number; height: number; top: number }) {
   const popover = useMac((s) => s.popover);
+  if (!popover) return null;
+  return <Popover key={popover.id} popover={popover} width={width} height={height} top={top} />;
+}
+
+function Popover({ popover, width, height, top }: { popover: MacPopover; width: number; height: number; top: number }) {
   const draft = useMac((s) => s.draft);
   const kind = usePrefs((s) => s.newKind);
   const me = useMe();
   const dark = useIsDark();
-  const saveRef = useRef<(() => Promise<boolean>) | null>(null);
   const [panelH, setPanelH] = useState(420);
-  const open = !!popover;
-  useEffect(() => {
-    wantEscape("popover", open);
-    return () => wantEscape("popover", false);
-  }, [open]);
-  if (!popover) return null;
-  const close = () => useMac.getState().close();
-  // A click away saves (a new item only with a title); then it closes.
-  const commit = async () => {
-    const save = saveRef.current;
-    saveRef.current = null;
-    if (save) await save();
-    close();
+  // Closes this popover (not one opened since, while a save was being made).
+  const close = () => {
+    const mac = useMac.getState();
+    if (mac.popover?.id === popover.id) mac.close();
   };
-  const host: EditorHost = { variant: "mac", register: (save) => (saveRef.current = save), onTitle: popover.kind === "new" ? (t) => useMac.getState().setDraftTitle(t) : undefined };
+  const host = useMacFormHost(close, popover.kind === "new" ? (t) => useMac.getState().setDraftTitle(t) : undefined);
   const p = place(popover.anchor, panelH, { width, height, top });
   const bg = dark ? "#2c2c2e" : "#fbfbfb";
   const rim = dark ? "rgba(255,255,255,0.14)" : "rgba(0,0,0,0.14)";
   const detailHost: DetailHost = { embedded: true, toEditor: close, close };
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <Pressable accessibilityLabel="Close" style={StyleSheet.absoluteFill} onPress={() => void commit()} />
+      <Pressable accessibilityLabel="Close" style={StyleSheet.absoluteFill} onPress={() => void commitOpen()} />
       <View style={[styles.arrow, { backgroundColor: bg, borderColor: rim, top: p.y + p.arrowY - ARROW, left: p.side === "right" ? p.x - ARROW + 1 : p.x + WIDTH - ARROW - 1 }]} />
       {/* The shadow outside, the rounded clip inside (a view that clips draws no shadow). */}
       <View onLayout={(e) => setPanelH(Math.round(e.nativeEvent.layout.height))} style={[styles.shadow, { left: p.x, top: p.y, maxHeight: height - top - 2 * MARGIN }]}>

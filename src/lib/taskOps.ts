@@ -75,6 +75,8 @@ export async function setCompleted(task: Task, dateKey: DateKey | null, complete
   if (completed) set.add(dateKey)
   else set.delete(dateKey)
   await patchTask(task.id, { completedDates: Array.from(set).sort() })
+  // A repeating reminder's time done: its owner's iPhone marks it done in Reminders (which moves it on to its next time).
+  if (touchesReminders(task)) syncRemindersSoon()
 }
 
 /** Done, or not done again: a task's ring clicked (this occurrence of a repeating one). */

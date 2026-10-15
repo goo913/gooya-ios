@@ -108,6 +108,10 @@ public class GooyaMacModule: Module {
       #endif
     }
 
+    Function("setReturn") { (on: Bool) in
+      DispatchQueue.main.async { GooyaMacMenu.returnKey = on }
+    }
+
     Function("setEscape") { (on: Bool) in
       DispatchQueue.main.async { GooyaMacMenu.escape = on }
     }

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DetailContent, EventAnswers, type DetailHost } from "@/app/sheet/detail";
+import { wantEscape } from "@/lib/dragCancel";
 import { MONTH_NAMES, WEEKDAY_SHORT } from "@/lib/format";
 import { useMe } from "@/lib/people";
 import { useToday } from "@/lib/useNow";
@@ -16,6 +17,7 @@ import { DayView, type DayActions } from "@/views/DayView";
 import { PadMonth, PadWeekdays } from "./PadMonth";
 import { PAD_HEADER, PadTitle, PadToolbar } from "./PadToolbar";
 import { PadYear } from "./PadYear";
+import { onCommand } from "../../modules/gooya-mac";
 
 /**
  * The iPad's calendar, after Apple Calendar for iPad (iPadOS 27): one screen with the bar at the top, the title under
@@ -154,6 +156,19 @@ function PadDay({ width }: { width: number }) {
   // Apple's pane is 376 points wide at any width that leaves the day room.
   const paneW = Math.round(Math.min(376, width * 0.46));
   const host = useMemo<DetailHost>(() => ({ embedded: true, toEditor: () => router.push("/sheet/edit"), close: () => select(null) }), [select]);
+  // Escape on the iPad's keyboard closes the details at the right (not while a sheet over them has the key).
+  const shown = !!selected;
+  useEffect(() => {
+    if (!shown) return;
+    wantEscape("pane", true);
+    const sub = onCommand((id) => {
+      if (id === "escape" && !useSheets.getState().editor) select(null);
+    });
+    return () => {
+      sub?.remove();
+      wantEscape("pane", false);
+    };
+  }, [shown, select]);
   return (
     <View style={styles.fill}>
       <PadStrip width={width} colors={colors} />

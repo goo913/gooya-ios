@@ -33,6 +33,8 @@ export interface NativeReminder {
   priority: number;
   /** It repeats. Saved as done, it comes back at its next time, not done; a done copy of that time is a new reminder. */
   recurring: boolean;
+  /** Its repeat as an RRULE body ("FREQ=WEEKLY;BYDAY=MO"), null when none or one GOOYA cannot write down; missing from older builds. */
+  rrule?: string | null;
   alarms: ({ at: number } | { offset: number })[];
   lastModified: number;
 }
@@ -52,6 +54,9 @@ export interface ReminderSave {
   alarmAtDue?: boolean;
   completed?: boolean;
   priority?: number;
+  /** Change the repeat to `rrule` (an RRULE body; null: no repeat). A reminder without a due date gets none. */
+  setRepeat?: boolean;
+  rrule?: string | null;
 }
 
 export interface ListSave {

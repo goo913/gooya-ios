@@ -10,7 +10,7 @@ import type { ViewProps } from "react-native";
 
 /**
  * A menu, toolbar or key command: "settings", "new" (a schedule or task), "new.routine", "new.category", "search",
- * "view.day" … "view.year", "today", "next", "previous", "zoom.in", "zoom.out", "escape" (while asked for).
+ * "view.day" … "view.year", "today", "next", "previous", "zoom.in", "zoom.out", "escape" and "return" (while asked for).
  */
 export type MacCommand = string;
 
@@ -96,6 +96,7 @@ interface GooyaMacModule {
   setSplit(shown: boolean): void;
   setSidebar(sections: SidebarSection[], today: string): void;
   setEscape(on: boolean): void;
+  setReturn?: (on: boolean) => void;
   windowActive(): boolean;
   bringForward(): void;
   openSettings(tab: SettingsTab | null): void;
@@ -148,13 +149,22 @@ export function onWindowActive(listener: (active: boolean) => void): EventSubscr
   return isMac && native ? native.addListener("onWindowActive", (e) => listener(e.active)) : null;
 }
 
-/** Escape comes to `onCommand` as "escape" while this is on (something to cancel: a drag, a new item's popover). */
+/**
+ * Escape comes to `onCommand` as "escape" while this is on (something to cancel: a drag, a form to save and close), on
+ * the Mac and from an iPad's (or iPhone's) keyboard.
+ */
 export function setEscape(on: boolean): void {
-  if (isMac) native?.setEscape(on);
+  native?.setEscape(on);
 }
 
+/** Return comes to `onCommand` as "return" while this is on (a form is open), unless a field being typed in takes it. */
+export function setReturn(on: boolean): void {
+  native?.setReturn?.(on);
+}
+
+/** The menus' and keys' commands: all of them on the Mac, Escape and Return (while asked for) on an iPad or iPhone. */
 export function onCommand(listener: (id: MacCommand) => void): EventSubscription | null {
-  return isMac && native ? native.addListener("onCommand", (e) => listener(e.id)) : null;
+  return native ? native.addListener("onCommand", (e) => listener(e.id)) : null;
 }
 
 /** The menu bar's agenda: its sections, then its actions. */

@@ -194,7 +194,7 @@ const withMacMenus = (config) =>
     GooyaMacMenu.perform(command)
   }
 
-  // ⌘= for Zoom In, and Escape while there is something to cancel.
+  // ⌘= for Zoom In, and Escape and Return while a form is open (or a drag can be cancelled).
   override var keyCommands: [UIKeyCommand]? {
     (super.keyCommands ?? []) + GooyaMacMenu.keyCommands()
   }
@@ -204,6 +204,15 @@ const withMacMenus = (config) =>
   func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
     GooyaMacSettings.factory = reactNativeFactory
     return GooyaMacSettings.configuration(for: connectingSceneSession, options: options)
+  }
+#else
+  // Escape and Return from an iPad's keyboard while a form is open (modules/gooya-mac sends them to JavaScript).
+  @objc func gooyaCommand(_ command: UICommand) {
+    GooyaMacMenu.perform(command)
+  }
+
+  override var keyCommands: [UIKeyCommand]? {
+    (super.keyCommands ?? []) + GooyaMacMenu.keyCommands()
   }
 #endif
 `,

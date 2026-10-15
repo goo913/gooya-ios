@@ -2,10 +2,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import type { Task, TaskList } from './model'
+import { normalizeRule, repeatPresetKey, sameRule } from './recurrence'
+import { addDaysKey } from './time'
 import {
   applePriority,
   applyReminderImport,
   baselineOf,
+  doneAtDue,
   dueOnPhone,
   gooyaPriority,
   mergeIntoTask,
@@ -148,7 +151,7 @@ test('a task deleted in GOOYA deletes its reminder, unless the reminder changed 
 
 test('a task made in GOOYA in one of my Reminders lists becomes a reminder there', () => {
   const plan = planReminderSync([], [gooyaTask({ listId: 'rl_school', priority: 2 })], {}, 'gooya', LISTS)
-  assert.deepEqual(plan.creates, [{ taskId: 't9', listId: 'L2', title: 'Buy stamps', notes: '', dueDate: '2026-09-29', dueTime: '10:00', completed: false, priority: 5 }])
+  assert.deepEqual(plan.creates, [{ taskId: 't9', listId: 'L2', title: 'Buy stamps', notes: '', dueDate: '2026-09-29', dueTime: '10:00', completed: false, priority: 5, rrule: null }])
   // In GOOYA's own list, or in someone else's Reminders list: it stays in GOOYA.
   assert.deepEqual(planReminderSync([], [gooyaTask({ listId: 'tasks' })], {}, 'gooya', LISTS).creates, [])
   assert.deepEqual(planReminderSync([], [gooyaTask({ listId: 'rl_eunbi' })], {}, 'gooya', LISTS).creates, [])
@@ -300,11 +303,11 @@ test('a category a task is in gets a list on the owner’s iPhone: theirs, one o
   assert.deepEqual(none.create, [{ categoryId: 'school', title: 'School', color: '#5856d6' }])
 })
 
-test('a done or repeating task that never was a reminder makes no list; a list someone shared is not renamed', () => {
-  const plan = planCategoryLists('gooya', [], [gooyaTask({ listId: 'school', completed: true }), gooyaTask({ id: 't2', listId: 'bills', rrule: 'FREQ=WEEKLY' })], CATS, {})
-  assert.deepEqual(plan.create, [])
+test('a done task that never was a reminder makes no list, a repeating one a repeating reminder; a list someone shared is not renamed', () => {
+  const plan = planCategoryLists('gooya', [], [gooyaTask({ listId: 'school', completed: true }), gooyaTask({ id: 't2', listId: 'tasks', rrule: 'FREQ=WEEKLY' })], CATS, {})
+  assert.deepEqual(plan.create.map((c) => c.categoryId), ['tasks'])
   const repeating = planReminderSync([], [gooyaTask({ listId: 'school', rrule: 'FREQ=WEEKLY;BYDAY=MO' })], {}, 'gooya', CATS, {}, undefined, { categoryTargets: { school: 'L9' } })
-  assert.deepEqual(repeating.creates, [])
+  assert.deepEqual(repeating.creates.map((c) => [c.listId, c.rrule]), [['L9', 'FREQ=WEEKLY;BYDAY=MO']])
   const shared = planCategoryLists('gooya', [device('L1', 'Food', '#34c759', { editable: false })], [], CATS, { L1: { title: 'Food', color: '#34c759' } })
   assert.deepEqual(shared.update, [])
 })
@@ -380,8 +383,14 @@ function remindersApp(today: string, ...initial: DeviceReminder[]) {
   let copies = 0
   const markDone = (r: DeviceReminder) => {
     if (!r.recurring || !r.dueDate) return void (r.completed = true)
-    const copy = { ...r, id: `copy${++copies}`, completed: true, recurring: false }
+    const copy = { ...r, id: `copy${++copies}`, completed: true, recurring: false, ...(r.rrule !== undefined ? { rrule: null } : {}) }
     items.set(copy.id, copy)
+    if (r.rrule?.startsWith('FREQ=DAILY')) {
+      let day = addDaysKey(r.dueDate, 1)
+      while (day <= today) day = addDaysKey(day, 1)
+      r.dueDate = day
+      return
+    }
     let year = Number(r.dueDate.slice(0, 4)) + 1
     while (`${year}${r.dueDate.slice(4)}` <= today) year++
     r.dueDate = `${year}${r.dueDate.slice(4)}`
@@ -396,12 +405,18 @@ function remindersApp(today: string, ...initial: DeviceReminder[]) {
       if (c.notes !== undefined) r.notes = c.notes
       if (c.dueDate !== undefined) [r.dueDate, r.dueTime] = [c.dueDate, c.dueTime ?? null]
       if (c.priority !== undefined) r.priority = c.priority
+      // EventKit gives a repeat back in its own order of days.
+      if (c.rrule !== undefined) [r.rrule, r.recurring] = [c.rrule?.replace('BYDAY=SU,SA', 'BYDAY=SA,SU') ?? null, !!c.rrule]
       if (c.completed === true) markDone(r)
       else if (c.completed === false) r.completed = false
       return { ...r }
     },
     /** Marked done in the Reminders app. */
     markDone: (id: string) => markDone(items.get(id)!),
+    /** Changed in the Reminders app. */
+    edit: (id: string, change: Partial<DeviceReminder>) => Object.assign(items.get(id)!, change),
+    /** A reminder GOOYA made (GooyaRemindersModule's save without an id). */
+    create: (r: DeviceReminder) => (items.set(r.id, { ...r }), { ...r }),
   }
 }
 
@@ -426,7 +441,17 @@ function sync(w: World, local: Task[] = w.tasks): { changes: ReminderChange[]; k
     const c = plan.changes.find((x) => x.id === r.id)
     return c ? w.phone.save(c) : r
   })
-  const payload = { lists: PHONE_LISTS, reminders: reminders.map((r) => toImport(r, { base: sentBase(w.baseline[r.id], plan.seen[r.id]) })), full: true, timezone: 'Asia/Seoul' }
+  // GOOYA's new tasks, made as reminders and sent with the task each was made from.
+  const made = plan.creates.map((c) => ({
+    taskId: c.taskId,
+    r: w.phone.create({ id: `new:${c.taskId}`, title: c.title, notes: c.notes, url: '', dueDate: c.dueDate, dueTime: c.dueTime, completed: c.completed, list: '미리 알림', listId: c.listId, priority: c.priority, recurring: !!c.rrule, rrule: c.rrule }),
+  }))
+  const payload = {
+    lists: PHONE_LISTS,
+    reminders: [...reminders.map((r) => toImport(r, { base: sentBase(w.baseline[r.id], plan.seen[r.id]) })), ...made.map((m) => toImport(m.r, { taskId: m.taskId }))],
+    full: true,
+    timezone: 'Asia/Seoul',
+  }
   const out = applyReminderImport('eunbi', w.tasks, w.lists, payload, 1, hash)
   const written = new Set([...out.lists, ...out.categories].map((l) => l.id))
   w.lists = [...w.lists.filter((l) => !written.has(l.id) && !out.deleteLists.includes(l.id)), ...out.categories, ...out.lists]
@@ -435,7 +460,7 @@ function sync(w: World, local: Task[] = w.tasks): { changes: ReminderChange[]; k
     ...w.tasks.filter((t) => !out.deleteTasks.includes(t.id)).map((t) => (updates.has(t.id) ? ({ ...t, ...updates.get(t.id) } as Task) : t)),
     ...out.tasks.filter((t) => t.create).map((t) => ({ id: t.id, ...t.fields }) as Task),
   ]
-  w.baseline = baselineOf(reminders)
+  w.baseline = baselineOf([...reminders, ...made.map((m) => m.r)])
   return { changes: plan.changes, kept: out.kept }
 }
 
@@ -541,4 +566,124 @@ test('the server never keeps GOOYA’s done mark on a repeating reminder that ha
   // Not repeating: GOOYA's done mark stays, for the phone to take to the reminder.
   const plain = mergeIntoTask(current, phone, base)
   assert.deepEqual([plain.fields.dueDate, plain.fields.completed, plain.kept], ['2028-03-23', true, ['completed']])
+})
+
+// ---------------------------------------------------------------- repeats, both ways
+
+test('a repeat is compared as written one way: its days in order, no INTERVAL=1', () => {
+  assert.ok(sameRule('FREQ=WEEKLY;BYDAY=SA,SU', 'BYDAY=SU,SA;FREQ=WEEKLY;INTERVAL=1'))
+  assert.ok(!sameRule('FREQ=WEEKLY', 'FREQ=WEEKLY;INTERVAL=2'))
+  assert.ok(sameRule(null, undefined))
+  assert.ok(!sameRule('FREQ=DAILY', null))
+  assert.equal(normalizeRule('FREQ=MONTHLY;BYDAY=2TU,-1FR'), 'BYDAY=-1FR,2TU;FREQ=MONTHLY')
+  // So Reminders' weekend repeat is GOOYA's Weekends.
+  assert.equal(repeatPresetKey('FREQ=WEEKLY;BYDAY=SA,SU'), 'weekends')
+  assert.equal(repeatPresetKey('INTERVAL=1;FREQ=DAILY'), 'daily')
+})
+
+/** 은비's iPhone with her "일기쓰기" at 9 PM today in "미리 알림", not repeating, synced once. */
+function journal(): World {
+  const r = reminder({ id: 'R', title: '일기쓰기', dueDate: '2026-10-15', dueTime: '21:00', list: '미리 알림', rrule: null })
+  const w: World = { phone: remindersApp('2026-10-15', r), tasks: [], lists: [], baseline: {} }
+  sync(w)
+  return w
+}
+const changeTask = (w: World, reminderId: string, change: Partial<Task>) => (w.tasks = w.tasks.map((t) => (reminderIdOf(t) === reminderId ? ({ ...t, ...change } as Task) : t)))
+
+test('a repeat set in GOOYA goes to the reminder once, and one taken off stops it repeating', () => {
+  const w = journal()
+  changeTask(w, 'R', { rrule: 'FREQ=WEEKLY;BYDAY=SU,SA' })
+  const after = rounds(w, 3)
+  assert.deepEqual(after.map((s) => s.changes), [[{ id: 'R', rrule: 'FREQ=WEEKLY;BYDAY=SU,SA' }], [], []])
+  assert.deepEqual(after.map((s) => s.kept), [0, 0, 0])
+  // Reminders writes the days its own way: the same repeat, so nothing goes back and forth.
+  assert.deepEqual([w.phone.get('R').rrule, w.phone.get('R').recurring], ['FREQ=WEEKLY;BYDAY=SA,SU', true])
+  assert.ok(sameRule(taskOf(w, 'R')?.rrule, 'FREQ=WEEKLY;BYDAY=SU,SA'))
+  changeTask(w, 'R', { rrule: null })
+  assert.deepEqual(rounds(w, 2).map((s) => s.changes), [[{ id: 'R', rrule: null }], []])
+  assert.equal(w.phone.get('R').recurring, false)
+  assert.equal(taskOf(w, 'R')?.rrule, null)
+})
+
+test('a repeat set in Reminders comes to GOOYA, and nothing goes back', () => {
+  const w = journal()
+  w.phone.edit('R', { rrule: 'FREQ=DAILY', recurring: true })
+  assert.deepEqual(rounds(w, 2).map((s) => [s.changes.length, s.kept]), [[0, 0], [0, 0]])
+  assert.equal(taskOf(w, 'R')?.rrule, 'FREQ=DAILY')
+})
+
+test('what was agreed before repeats were synced: a reminder’s repeat comes to GOOYA, GOOYA’s goes to a reminder without one', () => {
+  const agreedBefore = (r: DeviceReminder) => {
+    const { rrule: _, ...rest } = reminderFields(r)
+    return { r1: rest }
+  }
+  const repeating = reminder({ rrule: 'FREQ=DAILY', recurring: true })
+  assert.deepEqual(planReminderSync([repeating], [taskFrom(repeating)], agreedBefore(repeating), 'gooya', LISTS).changes, [])
+  const plain = reminder({ rrule: null })
+  assert.deepEqual(planReminderSync([plain], [taskFrom(plain, { rrule: 'FREQ=DAILY' })], agreedBefore(plain), 'gooya', LISTS).changes, [{ id: 'r1', rrule: 'FREQ=DAILY' }])
+  // A phone that cannot say what a reminder's repeat is sends nothing about it.
+  const unknown = reminder()
+  assert.deepEqual(planReminderSync([unknown], [taskFrom(unknown, { rrule: 'FREQ=DAILY' })], baselineOf([unknown]), 'gooya', LISTS).changes, [])
+})
+
+test('a repeating task marked done in GOOYA is done once in Reminders; the task moves on with it, that time’s done copy a task of its own', () => {
+  const w = journal()
+  changeTask(w, 'R', { rrule: 'FREQ=DAILY' })
+  rounds(w, 2)
+  // Today's time done in GOOYA.
+  changeTask(w, 'R', { completedDates: ['2026-10-15'] })
+  assert.ok(doneAtDue(taskOf(w, 'R')!))
+  const after = rounds(w, 3)
+  assert.deepEqual(after.map((s) => s.changes), [[{ id: 'R', completed: true }], [], []])
+  assert.deepEqual(after.map((s) => s.kept), [0, 0, 0])
+  const t = taskOf(w, 'R')!
+  assert.deepEqual([t.dueDate, t.completed, t.completedDates, t.rrule], ['2026-10-16', false, [], 'FREQ=DAILY'])
+  assert.deepEqual(dueAndDone(taskOf(w, 'copy1')), { dueDate: '2026-10-15', completed: true })
+  assert.equal(taskOf(w, 'copy1')?.rrule, null)
+  assert.equal(w.tasks.length, 2)
+})
+
+test('a time of a repeating task marked done ahead in GOOYA stays done when the reminder gets to it, and is done there then', () => {
+  const w = journal()
+  changeTask(w, 'R', { rrule: 'FREQ=DAILY' })
+  rounds(w, 2)
+  // Tomorrow's done in GOOYA today: nothing to tell Reminders yet (the reminder is at today's).
+  changeTask(w, 'R', { completedDates: ['2026-10-16'] })
+  assert.deepEqual(sync(w).changes, [])
+  // Today's done in Reminders: the reminder moves on to tomorrow's, which GOOYA has done; so it is done there too.
+  w.phone.markDone('R')
+  const after = rounds(w, 3)
+  assert.deepEqual(after.map((s) => s.changes), [[], [{ id: 'R', completed: true }], []])
+  const t = taskOf(w, 'R')!
+  assert.deepEqual([t.dueDate, t.completedDates], ['2026-10-17', []])
+  assert.deepEqual(w.tasks.filter((x) => x.completed).map((x) => x.dueDate).sort(), ['2026-10-15', '2026-10-16'])
+})
+
+test('a repeating task made in GOOYA becomes a repeating reminder, and stays that one task', () => {
+  const w = journal()
+  const list = w.lists.find((l) => l.externalId === 'L1')!
+  w.tasks.push(gooyaTask({ id: 'g1', owner: 'eunbi', createdBy: 'eunbi', listId: list.id, title: '물 마시기', dueDate: '2026-10-15', dueTime: '09:00', rrule: 'FREQ=DAILY' }))
+  const first = sync(w)
+  assert.equal(first.changes.length, 0)
+  assert.deepEqual([w.phone.get('new:g1').rrule, w.phone.get('new:g1').recurring], ['FREQ=DAILY', true])
+  const t = w.tasks.find((x) => x.id === 'g1')!
+  assert.deepEqual([reminderIdOf(t), t.rrule, t.dueDate, t.dueTime], ['new:g1', 'FREQ=DAILY', '2026-10-15', '09:00'])
+  assert.deepEqual(rounds(w, 2).map((s) => [s.changes.length, s.kept]), [[0, 0], [0, 0]])
+  assert.equal(w.tasks.length, 2)
+})
+
+test('the server leaves a task’s repeat as it is when the phone does not say, and merges it when it does', () => {
+  const base = { title: 'A', notes: '', dueDate: '2026-10-15', dueTime: '21:00', completed: false, priority: 0 as const, gooyaListId: 'rl_errands' }
+  const current = { ...base, listId: 'rl_errands', rrule: 'FREQ=DAILY', completedDates: [] as string[] }
+  // An older app: its import writes no repeat.
+  assert.equal('rrule' in mergeIntoTask(current, base, base).fields, false)
+  // Changed in GOOYA after the phone looked: GOOYA's stays, for the phone to take to the reminder.
+  const here = mergeIntoTask({ ...current, rrule: 'FREQ=WEEKLY' }, { ...base, rrule: 'FREQ=DAILY', recurring: true }, { ...base, rrule: 'FREQ=DAILY' })
+  assert.deepEqual([here.fields.rrule, here.kept], ['FREQ=WEEKLY', ['repeat']])
+  // Taken off in Reminders: the reminder's.
+  const there = mergeIntoTask(current, { ...base, rrule: null }, { ...base, rrule: 'FREQ=DAILY' })
+  assert.deepEqual([there.fields.rrule, there.kept], [null, []])
+  // A repeating reminder done at its time (its last one): that time's mark, not the whole task's.
+  const last = mergeIntoTask(current, { ...base, rrule: 'FREQ=DAILY', recurring: true, completed: true }, { ...base, rrule: 'FREQ=DAILY' })
+  assert.deepEqual([last.fields.completed, last.fields.completedDates], [false, ['2026-10-15']])
 })

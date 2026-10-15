@@ -183,7 +183,7 @@ export interface UserSettings {
   routineIntensity: number | null
   /** Hide the same external event arriving from two calendars. */
   avoidDuplicates: boolean
-  /** Show the other person's local time as a second gutter in the timeline. */
+  /** Show the other person's local time as a second column of hours in the day and week views (on by default). */
   secondGutter: boolean
   /** Push me when the other person adds a task to my calendar. */
   notifyOnOtherAdds: boolean
@@ -251,7 +251,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   showPastSchedules: true,
   routineIntensity: null,
   avoidDuplicates: true,
-  secondGutter: false,
+  secondGutter: true,
   notifyOnOtherAdds: true,
   defaultAlertTimed: null,
   defaultAlertAllDay: null,

@@ -27,10 +27,13 @@ import { usePickers } from "@/store/pickers";
 import { useColors, useIsDark } from "@/theme";
 import { isMac } from "../../modules/gooya-mac";
 import { CategoryMenu } from "@/mac/CategoryMenu";
+import { MacFormBar } from "@/mac/MacFormBar";
+import { MacTimeMenu } from "@/mac/MacTimeMenu";
 
 /**
  * Where an editor is: a sheet (Cancel and Add at the top), or on the Mac Apple Calendar's popover or the Day view's
- * pane (no buttons: Return or a click away saves it, Escape leaves it; the host calls `saveRef`).
+ * pane (Cancel and Add or Done at its foot; Return, Escape or a click away saves it too: the host calls what the form
+ * registers).
  */
 export interface EditorHost {
   variant: "sheet" | "mac";
@@ -135,6 +138,8 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const [showCal, setShowCal] = useState(false);
   const [showWheel, setShowWheel] = useState(false);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(task?.rrule ?? null));
+  // A repeat left as it was is kept as it was (its end, or a repeat made in Reminders that the menu shows as Custom).
+  const [repeatTouched, setRepeatTouched] = useState(false);
   const [customFreq, setCustomFreq] = useState<(typeof FREQS)[number]>(initialRule.freq === "other" ? "weekly" : initialRule.freq);
   const [customInterval, setCustomInterval] = useState(initialRule.interval);
   const [customDays, setCustomDays] = useState<number[]>(initialRule.weekdays);
@@ -184,11 +189,16 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     setEditZone(zone);
   };
   const rrule = useMemo(() => {
+    if (task && !repeatTouched) return task.rrule ?? null;
     if (repeatKey === "custom") return buildRuleBody({ freq: customFreq, interval: customInterval, weekdays: customFreq === "weekly" ? customDays : [] });
     return REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null;
-  }, [repeatKey, customFreq, customInterval, customDays]);
+  }, [task, repeatTouched, repeatKey, customFreq, customInterval, customDays]);
+  const touchRepeat = <T,>(set: (v: T) => void) => (v: T) => {
+    setRepeatTouched(true);
+    set(v);
+  };
   const earlyMinutes = customEarly ? Math.max(1, customEarlyAmount) * (customEarlyUnit === "days" ? 1440 : customEarlyUnit === "hours" ? 60 : 1) : early;
-  const valid = title.trim().length > 0 && (repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !readOnly;
+  const valid = title.trim().length > 0 && (!repeatTouched || repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !readOnly;
 
   // Unchanged, a task keeps the day, time and zone it had (shown on its owner's clock, it may read differently).
   const unchanged = !!task && dateOn && timeOn && dueDate === shown0.date && dueTime === shown0.time;
@@ -200,8 +210,8 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     dueDate: dateOn ? (unchanged ? task!.dueDate : dueDate) : null,
     dueTime: dateOn && timeOn ? (unchanged ? task!.dueTime : dueTime) : null,
     timezone: dateOn && timeOn ? (unchanged ? task!.timezone : editZone) : task?.timezone || editZone,
-    // Repeating is set in the Reminders app for a reminder; GOOYA does not send a repeat there.
-    rrule: dateOn && !inReminders ? rrule : null,
+    // A reminder repeats in Reminders as it does here (its owner's iPhone sets the repeat there).
+    rrule: dateOn ? rrule : null,
     earlyReminders: dateOn && earlyMinutes != null && earlyMinutes > 0 ? [earlyMinutes] : [],
     tags,
     flagged,
@@ -210,8 +220,10 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     private: owner === me && !shared,
   });
 
+  // A save under way (a second Return or click while it is made would make the task twice).
+  const saving = useRef(false);
   const save = async (scope: EditScope = "future", asked = false) => {
-    if (!valid || busy) return;
+    if (!valid || busy || saving.current) return;
     if (task && occ && task.rrule && scope === "future" && !asked && task.dueDate && occ.dateKey > task.dueDate) {
       ActionSheetIOS.showActionSheetWithOptions({ title: "This is a repeating task.", options: ["Save for This Task Only", "Save for Future Tasks", "Cancel"], cancelButtonIndex: 2 }, (i) => {
         if (i === 0) void save("this", true);
@@ -219,30 +231,39 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
       });
       return;
     }
+    saving.current = true;
+    const write = task ? applyTaskEdit(task, occ ?? null, fields(), scope) : createTask(fields(), me);
+    if (popover) {
+      // The Mac's popover and pane close at once: the calendar has the change as soon as it is made here.
+      onClose();
+      void write.catch((e: unknown) => console.warn("Couldn't save the task", e));
+      return;
+    }
     setBusy(true);
     try {
-      if (task) await applyTaskEdit(task, occ ?? null, fields(), scope);
-      else await createTask(fields(), me);
+      await write;
       onClose();
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   };
-  // The popover's host saves on Return and when clicked away (nothing to save with no title, nor when nothing changed).
+  // On the Mac: Done, Return, Escape and a click elsewhere save (nothing with no title; only close when nothing changed).
   const opened = useRef<string | null>(null);
   if (opened.current === null) opened.current = JSON.stringify(fields());
+  const submit = async (): Promise<boolean> => {
+    if (saving.current) return true;
+    if (!valid) return false;
+    if (task && JSON.stringify(fields()) === opened.current) {
+      onClose();
+      return true;
+    }
+    await save();
+    return true;
+  };
   const register = host?.register;
   useLayoutEffect(() => {
-    if (!register) return;
-    register(async () => {
-      if (!valid) return false;
-      if (task && JSON.stringify(fields()) === opened.current) {
-        onClose();
-        return true;
-      }
-      await save();
-      return true;
-    });
+    register?.(submit);
   });
 
   const remove = async (scope: EditScope | "all") => {
@@ -282,7 +303,11 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     setDueDate(c.date);
     setDueTime(c.time);
   };
-  const otherClock = (what: "date" | "time") => (
+  const otherClock = (what: "date" | "time") =>
+    // On the Mac a time is picked from a menu (macOS's pop-up button), on that clock, on the day it is there.
+    isMac && what === "time" && zones[1] ? (
+      <MacTimeMenu label="Due time" value={clockOf(dueAt, zones[1].zone).time} onChange={(t) => setDueAt(zonedMs(clockOf(dueAt, zones[1].zone).date, t, zones[1].zone))} />
+    ) : (
     <DateTimePicker
       value={new Date(dueAt)}
       mode={what}
@@ -292,7 +317,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
       themeVariant={dark ? "dark" : "light"}
       onChange={(_, d) => d && zones[1] && setDueAt(pickedOn(dueAt, d.getTime(), zones[1].zone, what))}
     />
-  );
+    );
   const people = PERSON_KEYS.map((k) => ({ value: k, label: k === "gooya" ? "구야" : "은비" }));
 
   return (
@@ -307,7 +332,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               autoFocus={!editing}
               defaultValue={title}
               onChangeText={setTitle}
-              onSubmitEditing={popover ? () => void save() : undefined}
+              onSubmitEditing={popover ? () => void submit() : undefined}
               placeholder={editing ? "Title" : "New Task"}
               placeholderTextColor={colors.label3}
               autoCapitalize="sentences"
@@ -390,20 +415,28 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               />
             </View>
           ) : null}
-          <Row icon="clock" label="Time" dim={!dateOn} detail={dateOn && timeOn ? formatHM(dueTimeParts.h, dueTimeParts.min) : undefined} onPress={dateOn && timeOn ? () => setShowWheel((v) => !v) : undefined}>
-            <Switch
-              label="Time"
-              value={dateOn && timeOn}
-              disabled={!dateOn}
-              onChange={(v) => {
-                setTimeOn(v);
-                setShowWheel(v);
-              }}
-            />
-          </Row>
-          {dateOn && timeOn && showWheel ? (
+          {isMac ? (
+            // The Mac: the time in a menu of the day's quarter hours (macOS's pop-up button), beside its switch.
+            <Row icon="clock" label="Time" dim={!dateOn}>
+              {dateOn && timeOn ? <MacTimeMenu label="Time" value={dueTime} onChange={setDueTime} /> : null}
+              <Switch label="Time" value={dateOn && timeOn} disabled={!dateOn} onChange={setTimeOn} />
+            </Row>
+          ) : (
+            <Row icon="clock" label="Time" dim={!dateOn} detail={dateOn && timeOn ? formatHM(dueTimeParts.h, dueTimeParts.min) : undefined} onPress={dateOn && timeOn ? () => setShowWheel((v) => !v) : undefined}>
+              <Switch
+                label="Time"
+                value={dateOn && timeOn}
+                disabled={!dateOn}
+                onChange={(v) => {
+                  setTimeOn(v);
+                  setShowWheel(v);
+                }}
+              />
+            </Row>
+          )}
+          {!isMac && dateOn && timeOn && showWheel ? (
             <View style={styles.pickerWrap}>
-              <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display={popover ? "compact" : "spinner"} minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
+              <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display="spinner" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
             </View>
           ) : null}
         </Group>
@@ -418,18 +451,18 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
             !dateOn
               ? undefined
               : inReminders
-                ? `Reminders alerts ${timeOn ? "at the due time" : "on the day"}; an early reminder comes from GOOYA. A repeat is set in the Reminders app.`
+                ? `Reminders alerts ${timeOn ? "at the due time" : "on the day"}; an early reminder comes from GOOYA.`
                 : timeOn
                   ? "Alerts at the due time; early reminders fire before it."
                   : "Date-only tasks alert at 9:00 AM."
           }
         >
-          <ValueRow icon="repeat" label="Repeat" dim={!dateOn || inReminders} value={inReminders ? "Never" : repeatLabel} options={repeatLabels} title="Repeat" onPick={(_, i) => setRepeatKey(i < REPEAT_PRESETS.length ? REPEAT_PRESETS[i].key : "custom")} />
-          {dateOn && !inReminders && repeatKey === "custom" ? (
+          <ValueRow icon="repeat" label="Repeat" dim={!dateOn} value={dateOn ? repeatLabel : "Never"} options={repeatLabels} title="Repeat" onPick={(_, i) => touchRepeat(setRepeatKey)(i < REPEAT_PRESETS.length ? REPEAT_PRESETS[i].key : "custom")} />
+          {dateOn && repeatKey === "custom" ? (
             <View>
-              <ValueRow label="Frequency" value={FREQ_LABELS[FREQS.indexOf(customFreq)]} options={FREQ_LABELS} onPick={(_, i) => setCustomFreq(FREQS[i])} />
-              <ValueRow label="Every" value={`${customInterval} ${customFreq === "daily" ? "day(s)" : customFreq === "weekly" ? "week(s)" : customFreq === "monthly" ? "month(s)" : "year(s)"}`} options={Array.from({ length: 12 }, (_, i) => String(i + 1))} onPick={(_, i) => setCustomInterval(i + 1)} />
-              {customFreq === "weekly" ? <DayToggles value={customDays} onChange={setCustomDays} /> : null}
+              <ValueRow label="Frequency" value={FREQ_LABELS[FREQS.indexOf(customFreq)]} options={FREQ_LABELS} onPick={(_, i) => touchRepeat(setCustomFreq)(FREQS[i])} />
+              <ValueRow label="Every" value={`${customInterval} ${customFreq === "daily" ? "day(s)" : customFreq === "weekly" ? "week(s)" : customFreq === "monthly" ? "month(s)" : "year(s)"}`} options={Array.from({ length: 12 }, (_, i) => String(i + 1))} onPick={(_, i) => touchRepeat(setCustomInterval)(i + 1)} />
+              {customFreq === "weekly" ? <DayToggles value={customDays} onChange={touchRepeat(setCustomDays)} /> : null}
             </View>
           ) : null}
           <ValueRow
@@ -510,6 +543,7 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
 
         {editing && !readOnly ? <DestructiveButton onPress={askDelete}>{task?.source === "apple-reminders" || inReminders ? "Delete Reminder" : "Delete Task"}</DestructiveButton> : null}
       </ScrollView>
+      {popover ? <MacFormBar onCancel={onClose} onDone={() => void submit()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} /> : null}
     </View>
   );
 }

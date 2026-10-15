@@ -245,10 +245,36 @@ export const REPEAT_PRESETS: Array<{ key: string; label: string; rrule: string |
   { key: 'yearly', label: 'Yearly', rrule: 'FREQ=YEARLY' },
 ]
 
+/**
+ * A rule body written one way: its parts in order, BYDAY's days Sunday first, no INTERVAL=1. Apple Reminders and GOOYA
+ * write the same repeat differently ("BYDAY=SA,SU", "INTERVAL=1;FREQ=DAILY").
+ */
+export function normalizeRule(body: string): string {
+  return body
+    .toUpperCase()
+    .split(';')
+    .map((p) => p.trim())
+    .filter((p) => p && p !== 'INTERVAL=1')
+    .map((p) => {
+      if (!p.startsWith('BYDAY=')) return p
+      const days = p.slice(6).split(',').filter(Boolean)
+      const order = (d: string) => BYDAY.indexOf(d.slice(-2)) + 7 * (Number(d.slice(0, -2)) || 0)
+      return `BYDAY=${days.sort((a, b) => order(a) - order(b)).join(',')}`
+    })
+    .sort()
+    .join(';')
+}
+
+/** The same repeat (or both none). */
+export function sameRule(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return !a && !b
+  return normalizeRule(a) === normalizeRule(b)
+}
+
 /** Preset key for a rule body, or 'custom'. */
 export function repeatPresetKey(body: string | null): string {
   if (!body) return 'never'
-  const norm = (b: string) => b.split(';').filter((p) => !p.startsWith('UNTIL')).sort().join(';')
+  const norm = (b: string) => normalizeRule(b).split(';').filter((p) => !p.startsWith('UNTIL')).join(';')
   const found = REPEAT_PRESETS.find((p) => p.rrule && norm(p.rrule) === norm(body))
   return found ? found.key : 'custom'
 }

@@ -4,7 +4,7 @@ import type { DateKey, Routine, RoutineKind } from "@shared/model";
 import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
 import { buildRuleBody, parseRuleFields } from "@shared/recurrence";
 import { addDaysKey, minutesOf, zonedMs } from "@shared/time";
-import { useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, Switch, TextRow, ValueRow } from "@/components/Form";
 import { Segmented } from "@/components/Segmented";
@@ -17,6 +17,9 @@ import { overrideRoutineDay } from "@/lib/routineOps";
 import { useToday } from "@/lib/useNow";
 import { clockOf, useEditZones } from "@/lib/zones";
 import { useColors, useIsDark } from "@/theme";
+import { MacTimeMenu } from "@/mac/MacTimeMenu";
+import { isMac } from "../../modules/gooya-mac";
+import type { EditorHost } from "./TaskEditor";
 
 const PRESETS: Record<RoutineKind, { title: string; icon: string; start: string; end: string; freq: "daily" | "weekly"; days: number[] }> = {
   sleep: { title: "Sleep", icon: "💤", start: "23:00", end: "07:00", freq: "daily", days: [] },
@@ -32,9 +35,11 @@ interface Props {
   initialMinutes?: number;
   topBar?: ReactNode;
   onClose: () => void;
+  /** Where it is: a sheet whose keyboard's Escape and Return save it (src/app/sheet/edit.tsx). */
+  host?: EditorHost;
 }
 
-export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, initialMinutes, topBar, onClose }: Props) {
+export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, initialMinutes, topBar, onClose, host }: Props) {
   const colors = useColors();
   const dark = useIsDark();
   const me = useMe();
@@ -121,14 +126,33 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
     }
   };
 
+  // A keyboard's Escape or Return saves it (nothing when it cannot be saved).
+  const register = host?.register;
+  useLayoutEffect(() => {
+    register?.(async () => {
+      if (!valid) return false;
+      await save();
+      return true;
+    });
+  });
+
   const tzNote = useMemo(() => `Times are in ${ownerInfo.name}’s time zone (${ownerInfo.timezone.replace("_", " ")}).`, [ownerInfo]);
-  const timePicker = (value: string, onChange: (t: string) => void) => (
-    <DateTimePicker value={dateFromHHmm(value)} mode="time" display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(hhmmFromDate(d))} />
-  );
+  // On the Mac a time is picked from a menu of the day's quarter hours (macOS's pop-up button).
+  const timePicker = (value: string, onChange: (t: string) => void) =>
+    isMac ? (
+      <MacTimeMenu value={value} onChange={onChange} />
+    ) : (
+      <DateTimePicker value={dateFromHHmm(value)} mode="time" display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(hhmmFromDate(d))} />
+    );
   /** A time on the other clock: picked there, kept as the owner's wall-clock time. */
-  const otherPicker = (at: number, onChange: (t: string) => void) => (
-    <DateTimePicker value={new Date(at)} mode="time" display="compact" minuteInterval={5} timeZoneName={zones[1]?.zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(clockOf(d.getTime(), zone).time)} />
-  );
+  const otherPicker = (at: number, onChange: (t: string) => void) => {
+    const other = zones[1]?.zone;
+    if (isMac && other) {
+      const there = clockOf(at, other);
+      return <MacTimeMenu value={there.time} onChange={(t) => onChange(clockOf(zonedMs(there.date, t, other), zone).time)} />;
+    }
+    return <DateTimePicker value={new Date(at)} mode="time" display="compact" minuteInterval={5} timeZoneName={other} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(clockOf(d.getTime(), zone).time)} />;
+  };
   const datePicker = (value: DateKey, onChange: (k: DateKey) => void, min?: DateKey) => (
     <DateTimePicker value={dateFromKey(value)} minimumDate={min ? dateFromKey(min) : undefined} mode="date" display="compact" themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(keyFromDate(d))} />
   );
