@@ -588,9 +588,9 @@ export function DayView({ dateKey, onChangeDate, actions, width: paneWidth, days
                         styles.dateTitle,
                         { color: date === today && days > 1 ? colors.red : colors.label, fontSize: m.dayTitle, lineHeight: titleH, marginTop: people.length > 1 || allDayRows ? 7 : (m.dayTitleBand - titleH) / 2 },
                         // One day: centred on the whole screen, as Apple's title is, not on the column right of the hours.
-                        days === 1 && titleCentred && { marginLeft: -gutterW, paddingLeft: 0 },
+                        days === 1 && (titleCentred ? { marginLeft: -gutterW, paddingLeft: 0 } : { paddingHorizontal: 6 }),
                       ]}
-                      adjustsFontSizeToFit={days === 1}
+                      adjustsFontSizeToFit
                       minimumFontScale={0.8}
                     >
                       {days === 1 ? formatDayTitle(date) : days >= 5 ? "" : formatColumnHeader(date)}
@@ -1585,7 +1585,7 @@ const styles = StyleSheet.create({
   shiftBadge: { position: "absolute", right: 2, top: 0, bottom: 0, justifyContent: "center" },
   check: { alignItems: "center", justifyContent: "center" },
   pillText: { fontWeight: "600", flexShrink: 1 },
-  week: { flexGrow: 0, borderBottomWidth: StyleSheet.hairlineWidth },
+  week: { flexGrow: 0, flexShrink: 0, borderBottomWidth: StyleSheet.hairlineWidth },
   weekDay: { flex: 1, alignItems: "center" },
   weekLetter: { position: "absolute", fontWeight: "600" },
   weekNumWrap: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },

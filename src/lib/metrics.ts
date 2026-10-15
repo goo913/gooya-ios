@@ -126,23 +126,28 @@ export function metricsFor(fontScale: number): Metrics {
 function dayMetrics(fontScale: number, grid: number) {
   const day = clamp(1 + 1.7 * (fontScale - 1), 0.75, 1.6);
   const weekMarkHeight = 34.3 - (grid - 1) * 22;
+  const weekDateCenter = 47.8 - (grid - 1) * 21;
+  // The hours' column follows the hours' text, which stops growing at the larger accessibility sizes (`day`).
+  const gutterScale = clamp(fontScale, 0.82, 1 + 0.6 / 1.7);
   return {
     day,
     hourHeightBase: 50,
-    gutter: 63.3 * (1 + 0.63 * (fontScale - 1)),
+    gutter: 63.3 * (1 + 0.63 * (gutterScale - 1)),
     hourNumber: 14.2 * day,
     hourSuffix: 8.5 * day,
     noon: 12 * day,
     nowText: 12.3 * day,
     nowHeight: 16.7 * day,
-    weekStrip: 62 + (grid - 1) * 37.2,
+    // Apple's strip is about as tall at every Text Size (76 points, a little more at the larger sizes), with room under
+    // the dates' mark (iOS 27, measured at Extra Small, the default, XXL and AX5); never shorter than its mark needs.
+    weekStrip: Math.max(76 + Math.max(0, grid - 1) * 11, weekDateCenter + weekMarkHeight / 2 + 8),
     weekLetter: 10 * grid,
     weekNumber: 18 * grid,
     weekMarkHeight,
     weekMarkWidth: Math.max(weekMarkHeight, 35 + (grid - 1) * 11),
     // A circle at the default Text Size; a rounded square once the numbers outgrow it (as Apple draws it).
     weekMarkRadius: grid > 1.06 ? 9 : weekMarkHeight / 2,
-    weekDateCenter: 47.8 - (grid - 1) * 21,
+    weekDateCenter,
     dayTitle: 15 * grid,
     dayTitleBand: 36,
     personName: 11 * grid,
