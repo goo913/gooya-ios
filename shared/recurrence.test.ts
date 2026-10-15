@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { expandRoutine, expandTask, splitByDay, occurrenceDays, describeRule, withUntil } from './recurrence.ts'
+import { expandRoutine, expandTask, splitByDay, occurrenceDays, describeRule, withUntil, ruleEnd, ruleWithEnd, ruleForExport } from './recurrence.ts'
 import { keyInZone, zonedMs, fieldsInZone, offsetMinutes } from './time.ts'
 import type { Routine, Task } from './model.ts'
 
@@ -136,4 +136,29 @@ test('a schedule without an end time is one moment on its day (the day view draw
   assert.equal(segs[0].dateKey, '2026-09-29')
   assert.equal(segs[0].startMin, 9 * 60)
   assert.equal(segs[0].endMin, 9 * 60)
+})
+
+test('a repeat ends with a day, to the end of it, and keeps the rest of its rule', () => {
+  assert.equal(ruleEnd('FREQ=DAILY'), null)
+  assert.equal(ruleEnd('FREQ=DAILY;UNTIL=20261213T235959Z'), '2026-12-13')
+  assert.equal(ruleWithEnd('FREQ=DAILY', '2026-12-13'), 'FREQ=DAILY;UNTIL=20261213T235959Z')
+  assert.equal(ruleWithEnd('FREQ=MONTHLY;BYDAY=2TU;UNTIL=20261213T235959Z', null), 'FREQ=MONTHLY;BYDAY=2TU')
+  assert.equal(ruleWithEnd('FREQ=WEEKLY;COUNT=5', '2027-01-02'), 'FREQ=WEEKLY;UNTIL=20270102T235959Z')
+  // Daily at 9 PM until Dec 13: the 13th is the last.
+  const t: Task = {
+    id: 't', owner: 'gooya', createdBy: 'gooya', listId: 'tasks', title: 'Journal', notes: '', dueDate: '2026-12-10', dueTime: '21:00', timezone: NY,
+    rrule: ruleWithEnd('FREQ=DAILY', '2026-12-13'), exdates: [], overrides: {}, completed: false, completedDates: [], earlyReminders: [], tags: [], flagged: false, priority: 0,
+    source: 'gooya', externalRefs: [], createdAt: 0, updatedAt: 0,
+  } as Task
+  const days = expandTask(t, zonedMs('2026-12-01', '00:00', NY), zonedMs('2026-12-31', '00:00', NY)).map((o) => o.dateKey)
+  assert.deepEqual(days, ['2026-12-10', '2026-12-11', '2026-12-12', '2026-12-13'])
+})
+
+test('other calendars get the end as the end of that day on the item’s clock (UTC), or the day for an all-day item', () => {
+  const rule = 'FREQ=DAILY;UNTIL=20261213T235959Z'
+  // New York in December is UTC−5: the 13th ends at 04:59:59 UTC on the 14th.
+  assert.equal(ruleForExport(rule, NY, false), 'FREQ=DAILY;UNTIL=20261214T045959Z')
+  assert.equal(ruleForExport(rule, SEOUL, false), 'FREQ=DAILY;UNTIL=20261213T145959Z')
+  assert.equal(ruleForExport(rule, NY, true), 'FREQ=DAILY;UNTIL=20261213')
+  assert.equal(ruleForExport('FREQ=WEEKLY;BYDAY=MO', NY, false), 'FREQ=WEEKLY;BYDAY=MO')
 })

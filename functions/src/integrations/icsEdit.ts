@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto'
 import type { AttendeeStatus, CalendarEvent, DateKey, EventAttendee, EventConference, EventOverride, Schedule } from '../../../shared/model'
 import type { CalendarCopy, CopyOccurrence } from '../../../shared/calendarCopy'
 import { findConference, providerOf } from '../../../shared/conference'
+import { ruleForExport } from '../../../shared/recurrence'
 import { scheduleAsEvent } from '../../../shared/schedules'
 import { addDaysKey, fieldsInZone, keyInZone, makeKey, pad2, zonedMs } from '../../../shared/time'
 import { alertList, attendee, invitees, organizerOf, type EventDetails } from './eventDetails'
@@ -376,6 +377,8 @@ export function copyFromIcs(data: string, tz: string, now = Date.now()): { copy:
 
 /** A schedule's VEVENT components (the series and its changed days), for the subscription feed. */
 export function scheduleVevents(s: Schedule): string[] {
-  const cal = new ICAL.Component(ICAL.parse(applyEventToIcs(null, scheduleAsEvent(s, '#0091ff'), s.updatedAt || s.createdAt || 0)))
+  // Its repeat's end as iCloud reads it (the end of the last day on the schedule's clock).
+  const exported = s.rrule ? { ...s, rrule: ruleForExport(s.rrule, s.timezone || 'UTC', s.allDay) } : s
+  const cal = new ICAL.Component(ICAL.parse(applyEventToIcs(null, scheduleAsEvent(exported, '#0091ff'), s.updatedAt || s.createdAt || 0)))
   return cal.getAllSubcomponents('vevent').map((v) => v.toString())
 }

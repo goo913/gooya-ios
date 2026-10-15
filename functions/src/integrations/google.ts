@@ -9,6 +9,7 @@ import type { AttendeeStatus, CalendarEvent, Schedule, Task } from '../../../sha
 import { deletedInCalendar, plainNotes, scheduleChangeFromCopy, scheduleOccurrenceChange, taskChangeFromCopy, taskIsCopied, taskOccurrenceChange, type CalendarCopy, type ScheduleCopy } from '../../../shared/calendarCopy'
 import { normalizeEvent, normalizeSchedule, normalizeTask } from '../../../shared/normalize'
 import { PEOPLE, personForEmail, type PersonKey } from '../../../shared/people'
+import { ruleForExport } from '../../../shared/recurrence'
 import { addDaysKey, fieldsInZone, keyInZone, pad2, zonedMs } from '../../../shared/time'
 import {
   APP_URL,
@@ -577,7 +578,7 @@ function taskToGoogle(t: Task): calendar_v3.Schema$Event | null {
     body.end = { date: addDaysKey(t.dueDate, 1) }
   }
   if (t.rrule) {
-    const rec = [`RRULE:${t.rrule}`]
+    const rec = [`RRULE:${ruleForExport(t.rrule, tz, !t.dueTime)}`]
     if (t.exdates?.length) rec.push(t.dueTime ? `EXDATE;TZID=${tz}:${t.exdates.map((d) => `${d.replace(/-/g, '')}T${t.dueTime!.replace(':', '')}00`).join(',')}` : `EXDATE;VALUE=DATE:${t.exdates.map((d) => d.replace(/-/g, '')).join(',')}`)
     body.recurrence = rec
   }
@@ -596,7 +597,7 @@ function scheduleToGoogle(s: Schedule): calendar_v3.Schema$Event {
     body.end = { dateTime: new Date(Math.max(s.start, s.end)).toISOString(), timeZone: tz }
   }
   if (s.rrule) {
-    const rec = [`RRULE:${s.rrule}`]
+    const rec = [`RRULE:${ruleForExport(s.rrule, tz, s.allDay)}`]
     if (s.exdates.length) {
       const f = fieldsInZone(s.start, tz)
       rec.push(s.allDay ? `EXDATE;VALUE=DATE:${s.exdates.map((d) => d.replace(/-/g, '')).join(',')}` : `EXDATE;TZID=${tz}:${s.exdates.map((d) => `${d.replace(/-/g, '')}T${pad2(f.h)}${pad2(f.min)}00`).join(',')}`)

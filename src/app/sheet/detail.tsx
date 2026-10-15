@@ -1,7 +1,7 @@
 import { categoryOfList, isCategory } from "@shared/categories";
 import type { AttendeeStatus, DateKey, Task, TaskOccurrence } from "@shared/model";
 import { findConference } from "@shared/conference";
-import { describeRule, eventDays, expandEvent, expandTask, occurrenceDays } from "@shared/recurrence";
+import { describeRule, eventDays, expandEvent, expandTask, occurrenceDays, ruleEnd } from "@shared/recurrence";
 import { DAY_MS, addDaysKey, keyInZone, minutesSinceMidnight, startOfDayMs } from "@shared/time";
 import { router } from "expo-router";
 import { httpsCallable } from "@react-native-firebase/functions";
@@ -95,6 +95,12 @@ function longDate(key: DateKey): string {
 }
 
 /** "Thu, Oct 8", and with the year "Thu, Oct 8, 2026". */
+/** "Every Day", and its last day when it ends: "Every Day, until Sun, Dec 13, 2026". */
+function repeatText(rrule: string): string {
+  const end = ruleEnd(rrule);
+  return end ? `${describeRule(rrule)}, until ${shortDate(end, true)}` : describeRule(rrule);
+}
+
 function shortDate(key: DateKey, withYear = false): string {
   const [y, m, d] = key.split("-").map(Number);
   return `${WEEKDAY_SHORT[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTH_SHORT[m - 1]} ${d}${withYear ? `, ${y}` : ""}`;
@@ -248,7 +254,7 @@ function TaskDetail({ taskId, dateKey }: { taskId: string; dateKey: DateKey }) {
         {task.rrule ? (
           <View style={styles.repeat}>
             <Icon name="repeat" size={17} color={colors.label2} />
-            <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(task.rrule)}</Text>
+            <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{repeatText(task.rrule)}</Text>
           </View>
         ) : null}
         {occ.completed ? <Text style={[styles.small, { color: colors.green }]}>Completed</Text> : null}
@@ -455,7 +461,7 @@ function EventDetail({ eventId, dateKey }: { eventId: string; dateKey: DateKey }
           {event.rrule ? (
             <View style={styles.repeat}>
               <Icon name="repeat" size={17} color={colors.label2} />
-              <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{describeRule(event.rrule)}</Text>
+              <Text style={[styles.whenText, { color: colors.label2, flex: 1 }]}>{repeatText(event.rrule)}</Text>
             </View>
           ) : null}
         </View>

@@ -2,12 +2,12 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { categoryOfList, defaultListFor, listForCategory } from "@shared/categories";
 import type { DateKey, HHmm, Priority, Task, TaskOccurrence } from "@shared/model";
 import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
-import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPresetKey } from "@shared/recurrence";
+import { REPEAT_PRESETS, buildRuleBody, describeRule, parseRuleFields, repeatPresetKey, ruleEnd, ruleWithEnd } from "@shared/recurrence";
 import { isReminderList } from "@shared/reminders";
 import { addDaysKey, formatHHmm, parseHHmm, parseKey, todayKey, weekdayOfKey, zonedMs } from "@shared/time";
 import { router } from "expo-router";
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ActionSheetIOS, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ActionSheetIOS, Keyboard, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { DayToggles, DestructiveButton, Group, Row, SectionTitle, Switch, ValueRow, pickOption } from "@/components/Form";
 import { TaskRing } from "@/components/Chips";
 import { CategoryValue } from "@/components/ColorSwatches";
@@ -28,7 +28,10 @@ import { useColors, useIsDark } from "@/theme";
 import { isMac } from "../../modules/gooya-mac";
 import { CategoryMenu } from "@/mac/CategoryMenu";
 import { MacFormBar } from "@/mac/MacFormBar";
-import { MacTimeMenu } from "@/mac/MacTimeMenu";
+import { MacTimeField } from "@/mac/MacTimeField";
+import { MacDateField } from "@/mac/MacDateField";
+import { TimeWheels } from "@/components/TimeWheels";
+import { MonthPicker } from "@/components/MonthPicker";
 
 /**
  * Where an editor is: a sheet (Cancel and Add at the top), or on the Mac Apple Calendar's popover or the Day view's
@@ -66,6 +69,7 @@ const PRIORITIES: { value: Priority; label: string }[] = [
 const FREQS = ["daily", "weekly", "monthly", "yearly"] as const;
 const FREQ_LABELS = ["Daily", "Weekly", "Monthly", "Yearly"];
 const UNITS = ["minutes", "hours", "days"] as const;
+const END_REPEAT = ["Never", "On Date"];
 
 const roundTo5 = (min: number): number => Math.min(23 * 60 + 55, Math.max(0, Math.round(min / 5) * 5));
 
@@ -140,6 +144,13 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(task?.rrule ?? null));
   // A repeat left as it was is kept as it was (its end, or a repeat made in Reminders that the menu shows as Custom).
   const [repeatTouched, setRepeatTouched] = useState(false);
+  // The day the repeat ends with (End Repeat: On Date), or null (Never).
+  const [endKey, setEndKey] = useState<DateKey | null>(ruleEnd(task?.rrule ?? null));
+  const [endTouched, setEndTouched] = useState(false);
+  const [showEndCal, setShowEndCal] = useState(false);
+  // The Mac's hour and minute columns under the other clock's time, or its month under its day.
+  const [showOtherWheel, setShowOtherWheel] = useState(false);
+  const [showOtherCal, setShowOtherCal] = useState(false);
   const [customFreq, setCustomFreq] = useState<(typeof FREQS)[number]>(initialRule.freq === "other" ? "weekly" : initialRule.freq);
   const [customInterval, setCustomInterval] = useState(initialRule.interval);
   const [customDays, setCustomDays] = useState<number[]>(initialRule.weekdays);
@@ -188,17 +199,20 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
     }
     setEditZone(zone);
   };
-  const rrule = useMemo(() => {
+  // The repeat chosen, then with its end: kept as it was until either is changed.
+  const repeatRule = useMemo(() => {
     if (task && !repeatTouched) return task.rrule ?? null;
     if (repeatKey === "custom") return buildRuleBody({ freq: customFreq, interval: customInterval, weekdays: customFreq === "weekly" ? customDays : [] });
     return REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null;
   }, [task, repeatTouched, repeatKey, customFreq, customInterval, customDays]);
+  const rrule = repeatRule && (repeatTouched || endTouched) ? ruleWithEnd(repeatRule, endKey) : repeatRule;
   const touchRepeat = <T,>(set: (v: T) => void) => (v: T) => {
     setRepeatTouched(true);
     set(v);
   };
   const earlyMinutes = customEarly ? Math.max(1, customEarlyAmount) * (customEarlyUnit === "days" ? 1440 : customEarlyUnit === "hours" ? 60 : 1) : early;
-  const valid = title.trim().length > 0 && (!repeatTouched || repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !readOnly;
+  // A repeat cannot end before it starts.
+  const valid = title.trim().length > 0 && (!repeatTouched || repeatKey !== "custom" || customFreq !== "weekly" || customDays.length > 0) && !(rrule && dateOn && endKey && endKey < dueDate) && !readOnly;
 
   // Unchanged, a task keeps the day, time and zone it had (shown on its owner's clock, it may read differently).
   const unchanged = !!task && dateOn && timeOn && dueDate === shown0.date && dueTime === shown0.time;
@@ -298,21 +312,48 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   const zones = useEditZones(owner, dueAt, editZone);
   const dual = dateOn && timeOn && zones.length > 1;
   const when = useWhenLayout();
+  // The iPhone's wheel above the keypad a tap on it brings up (to type the time), not under it.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  const wheelRef = useRef<View>(null);
+  const wheelOpen = useRef(false);
+  useEffect(() => {
+    wheelOpen.current = showWheel;
+  }, [showWheel]);
+  useEffect(() => {
+    if (isMac) return;
+    const sub = Keyboard.addListener("keyboardDidShow", (e) => {
+      if (!wheelOpen.current || TextInput.State.currentlyFocusedInput()) return;
+      wheelRef.current?.measureInWindow((_x, y, _w, h) => {
+        const under = y + h + 12 - e.endCoordinates.screenY;
+        if (under > 0) scrollRef.current?.scrollTo({ y: scrollY.current + under, animated: true });
+      });
+    });
+    return () => sub.remove();
+  }, []);
   const setDueAt = (ms: number) => {
     const c = clockOf(ms, editZone);
     setDueDate(c.date);
     setDueTime(c.time);
   };
+  // The time on the other clock, on the day it is there.
+  const otherTime = zones[1] ? clockOf(dueAt, zones[1].zone).time : null;
+  const setOtherTime = (t: HHmm) => zones[1] && setDueAt(zonedMs(clockOf(dueAt, zones[1].zone).date, t, zones[1].zone));
+  // Its day on the other clock (at the time it has there).
+  const otherDay = zones[1] ? clockOf(dueAt, zones[1].zone).date : null;
+  const setOtherDay = (k: DateKey) => zones[1] && setDueAt(zonedMs(k, clockOf(dueAt, zones[1].zone).time, zones[1].zone));
   const otherClock = (what: "date" | "time") =>
-    // On the Mac a time is picked from a menu (macOS's pop-up button), on that clock, on the day it is there.
-    isMac && what === "time" && zones[1] ? (
-      <MacTimeMenu label="Due time" value={clockOf(dueAt, zones[1].zone).time} onChange={(t) => setDueAt(zonedMs(clockOf(dueAt, zones[1].zone).date, t, zones[1].zone))} />
+    // On the Mac a time is typed, or picked in the hour and minute columns under the row; a day in its month there.
+    isMac && what === "time" && otherTime ? (
+      <MacTimeField label="Due time" value={otherTime} onChange={setOtherTime} open={showOtherWheel} onOpen={(open) => (setShowOtherWheel(open), open && setShowOtherCal(false))} />
+    ) : isMac && what === "date" && otherDay ? (
+      <MacDateField label="Due date" value={otherDay} open={showOtherCal} onOpen={(open) => (setShowOtherCal(open), open && setShowOtherWheel(false))} />
     ) : (
     <DateTimePicker
       value={new Date(dueAt)}
       mode={what}
       display="compact"
-      minuteInterval={5}
+      minuteInterval={1}
       timeZoneName={zones[1]?.zone}
       themeVariant={dark ? "dark" : "light"}
       onChange={(_, d) => d && zones[1] && setDueAt(pickedOn(dueAt, d.getTime(), zones[1].zone, what))}
@@ -323,7 +364,17 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
   return (
     <View style={popover ? styles.popover : [styles.fill, { backgroundColor: colors.bg2 }]}>
       {popover ? null : <DetailsBar title={editing ? "Details" : "New Task"} onCancel={onClose} onDone={() => void save()} doneLabel={editing ? "Done" : "Add"} doneDisabled={!valid || busy} />}
-      <ScrollView keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={popover ? styles.popoverContent : styles.content} showsVerticalScrollIndicator={false} style={popover ? styles.popoverScroll : undefined}>
+      <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => (scrollY.current = e.nativeEvent.contentOffset.y)}
+        scrollEventThrottle={32}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+        contentContainerStyle={popover ? styles.popoverContent : styles.content}
+        showsVerticalScrollIndicator={false}
+        style={popover ? styles.popoverScroll : undefined}
+      >
         {topBar}
         {(() => {
           // defaultValue, not value: a busy moment in JavaScript must never overwrite what is being typed.
@@ -402,24 +453,36 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
             />
           </Row>
           {dateOn && showCal ? (
-            <View style={styles.pickerWrap}>
-              <DateTimePicker
-                value={dateFromKey(dueDate)}
-                mode="date"
-                display="inline"
-                themeVariant={dark ? "dark" : "light"}
-                accentColor={colors.blue}
-                onChange={(_, d) => {
-                  if (d) setDueDate(keyFromDate(d));
-                }}
-              />
-            </View>
+            isMac ? (
+              <MonthPicker value={dueDate} onChange={setDueDate} />
+            ) : (
+              <View style={styles.pickerWrap}>
+                <DateTimePicker
+                  value={dateFromKey(dueDate)}
+                  mode="date"
+                  display="inline"
+                  themeVariant={dark ? "dark" : "light"}
+                  accentColor={colors.blue}
+                  onChange={(_, d) => {
+                    if (d) setDueDate(keyFromDate(d));
+                  }}
+                />
+              </View>
+            )
           ) : null}
           {isMac ? (
-            // The Mac: the time in a menu of the day's quarter hours (macOS's pop-up button), beside its switch.
-            <Row icon="clock" label="Time" dim={!dateOn}>
-              {dateOn && timeOn ? <MacTimeMenu label="Time" value={dueTime} onChange={setDueTime} /> : null}
-              <Switch label="Time" value={dateOn && timeOn} disabled={!dateOn} onChange={setTimeOn} />
+            // The Mac: the time typed in its field, or picked in the hour and minute columns that open under the row.
+            <Row icon="clock" label="Time" dim={!dateOn} onPress={dateOn && timeOn ? () => setShowWheel((v) => !v) : undefined}>
+              {dateOn && timeOn ? <MacTimeField value={dueTime} onChange={setDueTime} open={showWheel} onOpen={setShowWheel} /> : null}
+              <Switch
+                label="Time"
+                value={dateOn && timeOn}
+                disabled={!dateOn}
+                onChange={(v) => {
+                  setTimeOn(v);
+                  setShowWheel(v);
+                }}
+              />
             </Row>
           ) : (
             <Row icon="clock" label="Time" dim={!dateOn} detail={dateOn && timeOn ? formatHM(dueTimeParts.h, dueTimeParts.min) : undefined} onPress={dateOn && timeOn ? () => setShowWheel((v) => !v) : undefined}>
@@ -434,15 +497,22 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               />
             </Row>
           )}
-          {!isMac && dateOn && timeOn && showWheel ? (
-            <View style={styles.pickerWrap}>
-              <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display="spinner" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
-            </View>
+          {dateOn && timeOn && showWheel ? (
+            isMac ? (
+              <TimeWheels value={dueTime} onChange={setDueTime} />
+            ) : (
+              // Apple's wheels, every minute; a tap on them types the time on the keypad.
+              <View ref={wheelRef} style={styles.pickerWrap}>
+                <DateTimePicker value={dateFromHHmm(dueTime)} mode="time" display="spinner" minuteInterval={1} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && setDueTime(hhmmFromDate(d))} />
+              </View>
+            )
           ) : null}
         </Group>
         {dual ? (
           <Group header={zones[1].label} footer="The same moment on both clocks: change either one and the other follows.">
             <WhenRow layout={when} label="Due" date={otherClock("date")} time={otherClock("time")} />
+            {isMac && showOtherCal && otherDay ? <MonthPicker value={otherDay} onChange={setOtherDay} /> : null}
+            {isMac && showOtherWheel && otherTime ? <TimeWheels value={otherTime} onChange={setOtherTime} /> : null}
           </Group>
         ) : null}
 
@@ -464,6 +534,49 @@ export function TaskEditor({ task, occ, initialOwner, initialDate, initialMinute
               <ValueRow label="Every" value={`${customInterval} ${customFreq === "daily" ? "day(s)" : customFreq === "weekly" ? "week(s)" : customFreq === "monthly" ? "month(s)" : "year(s)"}`} options={Array.from({ length: 12 }, (_, i) => String(i + 1))} onPick={(_, i) => touchRepeat(setCustomInterval)(i + 1)} />
               {customFreq === "weekly" ? <DayToggles value={customDays} onChange={touchRepeat(setCustomDays)} /> : null}
             </View>
+          ) : null}
+          {dateOn && rrule ? (
+            // Apple's End Repeat: Never, or On Date (the last day it repeats on, a calendar under it).
+            <ValueRow
+              label="End Repeat"
+              value={endKey ? "On Date" : "Never"}
+              options={END_REPEAT}
+              title="End Repeat"
+              onPick={(_, i) => {
+                setEndTouched(true);
+                setEndKey(i === 0 ? null : (endKey ?? addDaysKey(dueDate, 30)));
+                setShowEndCal(i === 1);
+              }}
+            />
+          ) : null}
+          {dateOn && rrule && endKey ? <Row label="Ends On" detail={describeDate(endKey, todayKey(editZone))} onPress={() => setShowEndCal((v) => !v)} /> : null}
+          {dateOn && rrule && endKey && showEndCal ? (
+            isMac ? (
+              <MonthPicker
+                value={endKey}
+                min={dueDate}
+                onChange={(k) => {
+                  setEndTouched(true);
+                  setEndKey(k);
+                }}
+              />
+            ) : (
+              <View style={styles.pickerWrap}>
+                <DateTimePicker
+                  value={dateFromKey(endKey)}
+                  minimumDate={dateFromKey(dueDate)}
+                  mode="date"
+                  display="inline"
+                  themeVariant={dark ? "dark" : "light"}
+                  accentColor={colors.blue}
+                  onChange={(_, d) => {
+                    if (!d) return;
+                    setEndTouched(true);
+                    setEndKey(keyFromDate(d));
+                  }}
+                />
+              </View>
+            )
           ) : null}
           <ValueRow
             icon="bell"

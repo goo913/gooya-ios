@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 import { useColors } from "@/theme";
+import { isMac } from "../../modules/gooya-mac";
 
 /**
  * Apple's Starts / Ends rows: the label at the left, the date and time pickers at the right. The pickers of the rows
@@ -15,7 +16,8 @@ export interface WhenLayout {
   measure: (what: "row" | "label" | "date" | "time", e: LayoutChangeEvent) => void;
 }
 
-const PADDING = 16;
+// The Mac's rows are Apple Calendar's popover's (10 points in, 36 high), the iPhone's 16 and 44.
+const PADDING = isMac ? 10 : 16;
 const LABEL_GAP = 12;
 const PICKER_GAP = 6;
 
@@ -62,9 +64,10 @@ export function WhenRow({ layout, label, date, time }: { layout: WhenLayout; lab
 }
 
 const styles = StyleSheet.create({
-  row: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: PADDING, paddingVertical: 5 },
+  row: { minHeight: isMac ? 36 : 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: PADDING, paddingVertical: isMac ? 4 : 5 },
   rowUnder: { flexDirection: "column", alignItems: "stretch", paddingVertical: 8, gap: 6 },
-  label: { fontSize: 17 },
+  // The Mac's forms' 13 points (Apple Calendar's popover), the iPhone's 17.
+  label: { fontSize: isMac ? 13 : 17 },
   labelUnder: { alignSelf: "flex-start" },
   pickers: { flexDirection: "row", alignItems: "center", gap: PICKER_GAP, marginLeft: LABEL_GAP },
   pickersUnder: { alignSelf: "flex-end", marginLeft: 0 },

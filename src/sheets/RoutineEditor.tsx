@@ -17,7 +17,10 @@ import { overrideRoutineDay } from "@/lib/routineOps";
 import { useToday } from "@/lib/useNow";
 import { clockOf, useEditZones } from "@/lib/zones";
 import { useColors, useIsDark } from "@/theme";
-import { MacTimeMenu } from "@/mac/MacTimeMenu";
+import { MacTimeField } from "@/mac/MacTimeField";
+import { TimeWheels } from "@/components/TimeWheels";
+import { MonthPicker } from "@/components/MonthPicker";
+import { MacDateField } from "@/mac/MacDateField";
 import { isMac } from "../../modules/gooya-mac";
 import type { EditorHost } from "./TaskEditor";
 
@@ -66,6 +69,8 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
   const [color, setColor] = useState<string | null>(routine?.color ?? null);
   const [shared, setShared] = useState(!routine?.private);
   const [busy, setBusy] = useState(false);
+  // On the Mac, the time whose hour and minute columns are open.
+  const [openTime, setOpenTime] = useState<"start" | "end" | "otherStart" | "otherEnd" | "startDay" | "endDay" | null>(null);
   const otherName = usePerson(otherPerson(me)).name;
 
   const ownerInfo = usePerson(owner);
@@ -137,22 +142,28 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
   });
 
   const tzNote = useMemo(() => `Times are in ${ownerInfo.name}’s time zone (${ownerInfo.timezone.replace("_", " ")}).`, [ownerInfo]);
-  // On the Mac a time is picked from a menu of the day's quarter hours (macOS's pop-up button).
-  const timePicker = (value: string, onChange: (t: string) => void) =>
-    isMac ? (
-      <MacTimeMenu value={value} onChange={onChange} />
-    ) : (
-      <DateTimePicker value={dateFromHHmm(value)} mode="time" display="compact" minuteInterval={5} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(hhmmFromDate(d))} />
-    );
+  // Apple's wheels on the iPhone and iPad (every minute; a tap types it); on the Mac a field to type the time in, with
+  // the hour and minute columns under its row.
+  const field = (key: NonNullable<typeof openTime>, value: string, onChange: (t: string) => void) => (
+    <MacTimeField value={value} onChange={onChange} open={openTime === key} onOpen={(open) => setOpenTime(open ? key : null)} />
+  );
+  const wheels = (key: NonNullable<typeof openTime>, value: string, onChange: (t: string) => void) => (isMac && openTime === key ? <TimeWheels value={value} onChange={onChange} /> : null);
+  const timePicker = (key: "start" | "end", value: string, onChange: (t: string) => void) =>
+    isMac ? field(key, value, onChange) : <DateTimePicker value={dateFromHHmm(value)} mode="time" display="compact" minuteInterval={1} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(hhmmFromDate(d))} />;
   /** A time on the other clock: picked there, kept as the owner's wall-clock time. */
-  const otherPicker = (at: number, onChange: (t: string) => void) => {
-    const other = zones[1]?.zone;
-    if (isMac && other) {
-      const there = clockOf(at, other);
-      return <MacTimeMenu value={there.time} onChange={(t) => onChange(clockOf(zonedMs(there.date, t, other), zone).time)} />;
-    }
-    return <DateTimePicker value={new Date(at)} mode="time" display="compact" minuteInterval={5} timeZoneName={other} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(clockOf(d.getTime(), zone).time)} />;
-  };
+  const other = zones[1]?.zone;
+  const otherTime = (at: number) => (other ? clockOf(at, other).time : "00:00");
+  const setOtherTime = (at: number, onChange: (t: string) => void) => (t: string) => other && onChange(clockOf(zonedMs(clockOf(at, other).date, t, other), zone).time);
+  const otherPicker = (key: "otherStart" | "otherEnd", at: number, onChange: (t: string) => void) =>
+    isMac && other ? (
+      field(key, otherTime(at), setOtherTime(at, onChange))
+    ) : (
+      <DateTimePicker value={new Date(at)} mode="time" display="compact" minuteInterval={1} timeZoneName={other} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(clockOf(d.getTime(), zone).time)} />
+    );
+  // On the Mac a day opens its month under the row (MonthPicker); Apple's compact picker elsewhere.
+  const dayField = (key: "startDay" | "endDay", value: DateKey, onChange: (k: DateKey) => void, min?: DateKey) =>
+    isMac ? <MacDateField value={value} open={openTime === key} onOpen={(open) => setOpenTime(open ? key : null)} /> : datePicker(value, onChange, min);
+  const month = (key: "startDay" | "endDay", value: DateKey, onChange: (k: DateKey) => void, min?: DateKey) => (isMac && openTime === key ? <MonthPicker value={value} min={min} onChange={onChange} /> : null);
   const datePicker = (value: DateKey, onChange: (k: DateKey) => void, min?: DateKey) => (
     <DateTimePicker value={dateFromKey(value)} minimumDate={min ? dateFromKey(min) : undefined} mode="date" display="compact" themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(keyFromDate(d))} />
   );
@@ -195,13 +206,17 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
         </Group>
 
         <Group header={zones.length > 1 ? zones[0].label : undefined} footer={crossesMidnight ? "Ends the next day." : undefined}>
-          <Row label="Starts">{timePicker(startTime, setStartTime)}</Row>
-          <Row label="Ends">{timePicker(endTime, setEndTime)}</Row>
+          <Row label="Starts">{timePicker("start", startTime, setStartTime)}</Row>
+          {wheels("start", startTime, setStartTime)}
+          <Row label="Ends">{timePicker("end", endTime, setEndTime)}</Row>
+          {wheels("end", endTime, setEndTime)}
         </Group>
         {zones.length > 1 ? (
           <Group header={zones[1].label} footer={`The same hours on ${formatMediumDate(refDate, false)} on this clock; change either one and the other follows.`}>
-            <Row label="Starts">{otherPicker(startAt, setStartTime)}</Row>
-            <Row label="Ends">{otherPicker(endAt, setEndTime)}</Row>
+            <Row label="Starts">{otherPicker("otherStart", startAt, setStartTime)}</Row>
+            {wheels("otherStart", otherTime(startAt), setOtherTime(startAt, setStartTime))}
+            <Row label="Ends">{otherPicker("otherEnd", endAt, setEndTime)}</Row>
+            {wheels("otherEnd", otherTime(endAt), setOtherTime(endAt, setEndTime))}
           </Group>
         ) : null}
 
@@ -224,11 +239,13 @@ export function RoutineEditor({ routine, dayOnly, initialOwner, initialDate, ini
             </Group>
 
             <Group>
-              <Row label="Starts on">{datePicker(startDate, setStartDate)}</Row>
+              <Row label="Starts on">{dayField("startDay", startDate, setStartDate)}</Row>
+              {month("startDay", startDate, setStartDate)}
               <Row label="End Repeat">
                 <Switch label="End repeat" value={hasEnd} onChange={setHasEnd} />
               </Row>
-              {hasEnd ? <Row label="Ends on">{datePicker(endDate, setEndDate, startDate)}</Row> : null}
+              {hasEnd ? <Row label="Ends on">{dayField("endDay", endDate, setEndDate, startDate)}</Row> : null}
+              {hasEnd ? month("endDay", endDate, setEndDate, startDate) : null}
             </Group>
 
             <Group header="Color" footer={color ? undefined : `Uses ${ownerInfo.name}’s color.`}>

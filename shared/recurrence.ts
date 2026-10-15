@@ -224,6 +224,40 @@ export function buildRuleBody(f: { freq: 'daily' | 'weekly' | 'monthly' | 'yearl
   return parts.join(';')
 }
 
+/** The day a rule's repeat ends on (its UNTIL), or null when it repeats on and on. */
+export function ruleEnd(body: string | null): DateKey | null {
+  const m = body ? /(?:^|;)UNTIL=(\d{4})(\d{2})(\d{2})/i.exec(body) : null
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null
+}
+
+/**
+ * The rule ending with the day `until` (to the end of it), or repeating on and on (null); the rest of the rule as it
+ * was, unlike withUntil (a repeat made in Reminders keeps its days of the month and the like). A COUNT gives way.
+ */
+export function ruleWithEnd(body: string, until: DateKey | null): string {
+  const parts = body.split(';').filter((p) => p && !/^(UNTIL|COUNT)=/i.test(p))
+  if (until) parts.push(`UNTIL=${until.replace(/-/g, '')}T235959Z`)
+  return parts.join(';')
+}
+
+/**
+ * A rule as another calendar (Google, iCloud) reads it. GOOYA ends a repeat with a day, to the end of that day on the
+ * item's own clock; there the end is an instant in UTC, or the day itself for an all-day item. Written as GOOYA keeps
+ * it, the last time of an evening item in New York (after midnight in UTC) would be left out.
+ */
+export function ruleForExport(body: string, tz: string, allDay: boolean): string {
+  const m = /(^|;)UNTIL=(\d{4})(\d{2})(\d{2})T235959Z(?=;|$)/i.exec(body)
+  if (!m) return body
+  const key = `${m[2]}-${m[3]}-${m[4]}`
+  let until = `${m[2]}${m[3]}${m[4]}`
+  if (!allDay) {
+    const d = new Date(startOfDayMs(addDaysKey(key, 1), tz) - 1000)
+    const p = (n: number) => String(n).padStart(2, '0')
+    until = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`
+  }
+  return body.replace(m[0], `${m[1]}UNTIL=${until}`)
+}
+
 /** Return the rule body with UNTIL set to the end of `untilKey` (or removed when null). */
 export function withUntil(body: string, untilKey: string | null): string {
   const f = parseRuleFields(body)

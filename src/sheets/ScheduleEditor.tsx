@@ -3,7 +3,7 @@ import { ColorPicker, Host } from "@expo/ui/swift-ui";
 import { isCategory } from "@shared/categories";
 import type { CalendarEvent, DateKey, EventOccurrence, EventOverride, Schedule } from "@shared/model";
 import { PERSON_KEYS, otherPerson, type PersonKey } from "@shared/people";
-import { REPEAT_PRESETS, describeRule, repeatPresetKey } from "@shared/recurrence";
+import { REPEAT_PRESETS, describeRule, repeatPresetKey, ruleEnd, ruleWithEnd } from "@shared/recurrence";
 import { SCHEDULE_CALENDAR, hasEndTime } from "@shared/schedules";
 import { addDaysKey, deviceTimeZone, diffDaysKey, fieldsInZone, formatHHmm, keyInZone, zonedMs } from "@shared/time";
 import { router } from "expo-router";
@@ -16,6 +16,7 @@ import { DetailsBar } from "@/components/SheetHeader";
 import { SourceBadge } from "@/components/SourceBadge";
 import { WhenRow, useWhenLayout } from "@/components/WhenRows";
 import { dateFromKey, keyFromDate } from "@/lib/dates";
+import { formatLongDate } from "@/lib/format";
 import { deleteSchedule, newId, patchEvent, patchSchedule, saveEventLocal, saveSchedule } from "@/lib/db";
 import { useMe, usePerson, usePersonColor } from "@/lib/people";
 import { useToday, viewerTz } from "@/lib/useNow";
@@ -26,7 +27,10 @@ import { useColors, useIsDark } from "@/theme";
 import { isMac } from "../../modules/gooya-mac";
 import { CategoryMenu } from "@/mac/CategoryMenu";
 import { MacFormBar } from "@/mac/MacFormBar";
-import { MacTimeMenu } from "@/mac/MacTimeMenu";
+import { MacTimeField } from "@/mac/MacTimeField";
+import { TimeWheels } from "@/components/TimeWheels";
+import { MonthPicker } from "@/components/MonthPicker";
+import { MacDateField } from "@/mac/MacDateField";
 import type { EditorHost } from "./TaskEditor";
 
 /** A calendar of a connected account whose events can be changed in GOOYA (Two-way, and writable). */
@@ -71,6 +75,7 @@ interface Props {
 }
 
 const MIN_MS = 60_000;
+const END_REPEAT = ["Never", "On Date"];
 const GOOYA = "gooya";
 
 /** A new schedule's start: the given day and time, or the next full hour today. */
@@ -115,8 +120,15 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   const [endDate, setEndDate] = useState<DateKey>(occ?.endDate ?? event?.endDate ?? initialDate ?? today);
   const [owner, setOwner] = useState<PersonKey>(event?.owner ?? initialOwner ?? me);
   const [repeatKey, setRepeatKey] = useState(repeatPresetKey(event?.rrule ?? null));
-  // A repeat left as it was is kept as it was (with its end, which the menu does not show).
+  // A repeat left as it was is kept as it was.
   const [repeatTouched, setRepeatTouched] = useState(false);
+  // The day the repeat ends with (End Repeat: On Date), or null (Never).
+  const [endKey, setEndKey] = useState<DateKey | null>(ruleEnd(event?.rrule ?? null));
+  const [endTouched, setEndTouched] = useState(false);
+  const [showEndCal, setShowEndCal] = useState(false);
+  // On the Mac, the day or time whose month or hour and minute columns are open under its row (`${zone}:start`,
+  // `${zone}:startDay`, …).
+  const [openTime, setOpenTime] = useState<string | null>(null);
   const [calendarKey, setCalendarKey] = useState(event ? (event.source === GOOYA ? GOOYA : `${event.accountId}/${event.calendarId}`) : GOOYA);
   const [categoryId, setCategoryId] = useState<string | null>(stored ? (stored.categoryId ?? null) : (initialCategoryId ?? null));
   const [ownColor, setOwnColor] = useState<string | null>(stored?.color ?? null);
@@ -139,9 +151,13 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   // Its own colour, else its category's, else its owner's: as it is drawn.
   const drawnColor = ownColor ?? category?.color ?? ownerColor;
   const setListPicker = usePickers((s) => s.setList);
-  const rrule = event && (!repeatTouched || repeatKey === "custom") ? (event.rrule ?? null) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null);
+  // The repeat chosen, then with its end: kept as it was until either is changed.
+  const repeatRule = event && (!repeatTouched || repeatKey === "custom") ? (event.rrule ?? null) : (REPEAT_PRESETS.find((p) => p.key === repeatKey)?.rrule ?? null);
+  const rrule = repeatRule && (repeatTouched || endTouched) ? ruleWithEnd(repeatRule, endKey) : repeatRule;
+  // Its first day, on its own clock: a repeat cannot end before it.
+  const firstDay = allDay ? startDate : keyInZone(start.getTime(), tz);
 
-  const valid = title.trim().length > 0 && (inGooya || !!calendar) && (allDay ? endDate >= startDate : endless || end.getTime() > start.getTime());
+  const valid = title.trim().length > 0 && (inGooya || !!calendar) && (allDay ? endDate >= startDate : endless || end.getTime() > start.getTime()) && !(rrule && endKey && endKey < firstDay);
 
   /** The times as GOOYA keeps them: instants, and days on the schedule's clock. */
   const times = () => {
@@ -269,7 +285,7 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   };
 
   // On the Mac: Done, Return, Escape and a click elsewhere save (nothing with no title; only close when nothing changed).
-  const snapshot = () => JSON.stringify([title, location, notes, allDay, start.getTime(), end.getTime(), hasEnd, startDate, endDate, owner, repeatKey, calendarKey, categoryId, ownColor, shared]);
+  const snapshot = () => JSON.stringify([title, location, notes, allDay, start.getTime(), end.getTime(), hasEnd, startDate, endDate, owner, repeatKey, endKey, calendarKey, categoryId, ownColor, shared]);
   const opened = useRef<string | null>(null);
   if (opened.current === null) opened.current = snapshot();
   const submit = async (): Promise<boolean> => {
@@ -312,14 +328,30 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   };
 
   const when = useWhenLayout();
-  // A day's pickers (all-day) are on this phone's calendar; a time's on the clock of their zone. On the Mac a time is
-  // picked from a menu of the day's quarter hours (macOS's pop-up button).
-  const picker = (mode: "date" | "time", value: Date, zone: string | undefined, onChange: (d: Date) => void, min?: Date) =>
-    isMac && mode === "time" ? (
-      <MacTimeMenu value={clockIn(value, zone ?? viewerTz)} onChange={(t) => onChange(new Date(zonedMs(keyInZone(value.getTime(), zone ?? viewerTz), t, zone ?? viewerTz)))} />
+  // A day's pickers (all-day) are on this phone's calendar; a time's on the clock of their zone: Apple's wheels on the
+  // iPhone and iPad (every minute; a tap types it), on the Mac a field to type it in with the hour and minute columns
+  // under its row.
+  const picker = (mode: "date" | "time", value: Date, zone: string | undefined, onChange: (d: Date) => void, min?: Date) => (
+    <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={1} timeZoneName={zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
+  );
+  /** A time on a zone's clock, on the day `was` has there. */
+  const atTime = (was: Date, t: string, zone: string) => new Date(zonedMs(keyInZone(was.getTime(), zone), t, zone));
+  const timePicker = (key: string, value: Date, zone: string, onChange: (d: Date) => void) =>
+    isMac ? (
+      <MacTimeField value={clockIn(value, zone)} onChange={(t) => onChange(atTime(value, t, zone))} open={openTime === key} onOpen={(open) => setOpenTime(open ? key : null)} />
     ) : (
-      <DateTimePicker value={value} minimumDate={min} mode={mode} display="compact" minuteInterval={5} timeZoneName={zone} themeVariant={dark ? "dark" : "light"} onChange={(_, d) => d && onChange(d)} />
+      picker("time", value, zone, onChange)
     );
+  const wheels = (key: string, value: Date, zone: string, onChange: (d: Date) => void) =>
+    isMac && openTime === key ? <TimeWheels key={`wheels-${key}`} value={clockIn(value, zone)} onChange={(t) => onChange(atTime(value, t, zone))} /> : null;
+  /** A day: Apple's compact picker on the iPhone and iPad; on the Mac a field opening the month under its row. */
+  const dayPicker = (key: string, day: DateKey, onPick: (k: DateKey) => void, min?: DateKey) =>
+    isMac ? (
+      <MacDateField value={day} open={openTime === key} onOpen={(open) => setOpenTime(open ? key : null)} />
+    ) : (
+      picker("date", dateFromKey(day), undefined, (d) => onPick(keyFromDate(d)), min ? dateFromKey(min) : undefined)
+    );
+  const month = (key: string, day: DateKey, onPick: (k: DateKey) => void, min?: DateKey) => (isMac && openTime === key ? <MonthPicker key={`month-${key}`} value={day} min={min} onChange={onPick} /> : null);
   const setStartKeepingLength = (d: Date) => {
     const length = end.getTime() - start.getTime();
     setStart(d);
@@ -337,15 +369,47 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
   // event on this phone's.
   const zones = inGooya ? editZones : [{ zone: viewerTz, label: "" }];
   const dual = zones.length > 1;
-  const timedRows = (zone: string, withEndSwitch: boolean) => [
-    <WhenRow key="s" layout={when} label="Starts" date={picker("date", start, zone, (d) => setStartKeepingLength(withDay(start, d, zone)))} time={picker("time", start, zone, (d) => setStartKeepingLength(withTime(start, d, zone)))} />,
-    withEndSwitch && inGooya ? (
-      <Row key="e" label="End Time">
-        <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
-      </Row>
-    ) : null,
-    !endless ? <WhenRow key="t" layout={when} label="Ends" date={picker("date", end, zone, (d) => setEnd(withDay(end, d, zone)), start)} time={picker("time", end, zone, (d) => setEnd(withTime(end, d, zone)))} /> : null,
-  ];
+  const timedRows = (zone: string, withEndSwitch: boolean) => {
+    const setStartTime = (d: Date) => setStartKeepingLength(withTime(start, d, zone));
+    const setEndTime = (d: Date) => setEnd(withTime(end, d, zone));
+    // A day picked on the Mac's month, at the time it had on this clock.
+    const setStartDay = (k: DateKey) => setStartKeepingLength(new Date(zonedMs(k, clockIn(start, zone), zone)));
+    const setEndDay = (k: DateKey) => setEnd(new Date(zonedMs(k, clockIn(end, zone), zone)));
+    const startDay = keyInZone(start.getTime(), zone);
+    const endDay = keyInZone(end.getTime(), zone);
+    return [
+      <WhenRow
+        key="s"
+        layout={when}
+        label="Starts"
+        date={isMac ? dayPicker(`${zone}:startDay`, startDay, setStartDay) : picker("date", start, zone, (d) => setStartKeepingLength(withDay(start, d, zone)))}
+        time={timePicker(`${zone}:start`, start, zone, setStartTime)}
+      />,
+      month(`${zone}:startDay`, startDay, setStartDay),
+      wheels(`${zone}:start`, start, zone, setStartTime),
+      withEndSwitch && inGooya ? (
+        <Row key="e" label="End Time">
+          <Switch label="End time" value={hasEnd} onChange={setHasEnd} />
+        </Row>
+      ) : null,
+      !endless ? (
+        <WhenRow
+          key="t"
+          layout={when}
+          label="Ends"
+          date={isMac ? dayPicker(`${zone}:endDay`, endDay, setEndDay, startDay) : picker("date", end, zone, (d) => setEnd(withDay(end, d, zone)), start)}
+          time={timePicker(`${zone}:end`, end, zone, setEndTime)}
+        />
+      ) : null,
+      !endless ? month(`${zone}:endDay`, endDay, setEndDay, startDay) : null,
+      !endless ? wheels(`${zone}:end`, end, zone, setEndTime) : null,
+    ];
+  };
+  /** An all-day schedule's first day: it keeps its length. */
+  const pickStartDate = (k: DateKey) => {
+    setEndDate(addDaysKey(k, Math.max(0, diffDaysKey(startDate, endDate))));
+    setStartDate(k);
+  };
   const people = PERSON_KEYS.map((k) => ({ value: k, label: k === "gooya" ? "구야" : "은비" }));
   const places = [{ key: GOOYA, name: SCHEDULE_CALENDAR }, ...calendars.map((c) => ({ key: `${c.accountId}/${c.calendarId}`, name: c.name }))];
   const shown = inGooya
@@ -376,18 +440,10 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
           <Row label="All-day">
             <Switch label="All-day" value={allDay} onChange={setAllDay} />
           </Row>
-          {allDay ? (
-            <WhenRow
-              layout={when}
-              label="Starts"
-              date={picker("date", dateFromKey(startDate), undefined, (d) => {
-                const k = keyFromDate(d);
-                setEndDate(addDaysKey(k, Math.max(0, diffDaysKey(startDate, endDate))));
-                setStartDate(k);
-              })}
-            />
-          ) : null}
-          {allDay ? <WhenRow layout={when} label="Ends" date={picker("date", dateFromKey(endDate), undefined, (d) => setEndDate(keyFromDate(d)), dateFromKey(startDate))} /> : null}
+          {allDay ? <WhenRow layout={when} label="Starts" date={dayPicker("allStart", startDate, pickStartDate)} /> : null}
+          {allDay ? month("allStart", startDate, pickStartDate) : null}
+          {allDay ? <WhenRow layout={when} label="Ends" date={dayPicker("allEnd", endDate, setEndDate, startDate)} /> : null}
+          {allDay ? month("allEnd", endDate, setEndDate, startDate) : null}
           {!allDay ? timedRows(zones[0].zone, true) : null}
         </Group>
         {dual && !allDay ? (
@@ -406,6 +462,49 @@ export function ScheduleEditor({ event, occ, initialOwner, initialDate, initialM
             <Row label="Repeat">
               <Text style={[styles.value, { color: colors.label2 }]}>{describeRule(event.rrule)}</Text>
             </Row>
+          ) : null}
+          {inGooya && rrule ? (
+            // Apple's End Repeat: Never, or On Date (the last day it repeats on, a calendar under it).
+            <ValueRow
+              label="End Repeat"
+              value={endKey ? "On Date" : "Never"}
+              options={END_REPEAT}
+              title="End Repeat"
+              onPick={(_, i) => {
+                setEndTouched(true);
+                setEndKey(i === 0 ? null : (endKey ?? addDaysKey(firstDay, 30)));
+                setShowEndCal(i === 1);
+              }}
+            />
+          ) : null}
+          {inGooya && rrule && endKey ? <Row label="Ends On" detail={formatLongDate(endKey)} onPress={() => setShowEndCal((v) => !v)} /> : null}
+          {inGooya && rrule && endKey && showEndCal ? (
+            isMac ? (
+              <MonthPicker
+                value={endKey}
+                min={firstDay}
+                onChange={(k) => {
+                  setEndTouched(true);
+                  setEndKey(k);
+                }}
+              />
+            ) : (
+              <View style={styles.pickerWrap}>
+                <DateTimePicker
+                  value={dateFromKey(endKey)}
+                  minimumDate={dateFromKey(firstDay)}
+                  mode="date"
+                  display="inline"
+                  themeVariant={dark ? "dark" : "light"}
+                  accentColor={colors.blue}
+                  onChange={(_, d) => {
+                    if (!d) return;
+                    setEndTouched(true);
+                    setEndKey(keyFromDate(d));
+                  }}
+                />
+              </View>
+            )
           ) : null}
           {editing || !calendars.length ? (
             <Row label="Calendar">
@@ -487,4 +586,5 @@ const styles = StyleSheet.create({
   value: { fontSize: isMac ? 13 : 17, flexShrink: 1 },
   reset: { fontSize: isMac ? 13 : 17 },
   colorWell: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  pickerWrap: { paddingHorizontal: 8, paddingBottom: 6 },
 });

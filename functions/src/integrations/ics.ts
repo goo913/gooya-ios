@@ -3,6 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore'
 import { normalizeSchedule, normalizeTask, normalizeUser } from '../../../shared/normalize'
 import type { Task } from '../../../shared/model'
 import { PEOPLE } from '../../../shared/people'
+import { ruleForExport } from '../../../shared/recurrence'
 import { fieldsInZone, zonedMs } from '../../../shared/time'
 import { personFromWidgetToken } from './common'
 import { scheduleVevents } from './icsEdit'
@@ -54,7 +55,7 @@ export function taskToVevent(t: Task, uidSuffix = '@gooya'): string | null {
     const next = new Date(Date.UTC(Number(t.dueDate.slice(0, 4)), Number(t.dueDate.slice(5, 7)) - 1, Number(t.dueDate.slice(8, 10)) + 1))
     lines.push(`DTSTART;VALUE=DATE:${icsDate(t.dueDate)}`, `DTEND;VALUE=DATE:${next.getUTCFullYear()}${pad(next.getUTCMonth() + 1)}${pad(next.getUTCDate())}`)
   }
-  if (t.rrule) lines.push(`RRULE:${t.rrule}`)
+  if (t.rrule) lines.push(`RRULE:${ruleForExport(t.rrule, tz, !t.dueTime)}`)
   for (const ex of t.exdates ?? []) lines.push(t.dueTime ? `EXDATE;TZID=${tz}:${icsDate(ex)}T${t.dueTime.replace(':', '')}00` : `EXDATE;VALUE=DATE:${icsDate(ex)}`)
   if (t.completed && !t.rrule) lines.push('STATUS:CANCELLED')
   lines.push('END:VEVENT')
